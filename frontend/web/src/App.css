@@ -1,0 +1,110 @@
+.page {
+  min-height: 100vh;
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 3rem 1.25rem 2rem;
+  display: flex;
+  flex-direction: column;
+  gap: 2rem;
+}
+
+.header {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.brand {
+  margin: 0;
+  font-size: clamp(2.4rem, 6vw, 3.4rem);
+  letter-spacing: -0.03em;
+  line-height: 1.05;
+}
+
+.tagline {
+  margin: 0;
+  max-width: 34rem;
+  color: #3d5363;
+  font-family: "Avenir Next", "Segoe UI", sans-serif;
+  font-size: 1.05rem;
+}
+
+.main {
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+}
+
+.ask-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.ask-form label {
+  font-family: "Avenir Next", "Segoe UI", sans-serif;
+  font-size: 0.85rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #4a6273;
+}
+
+.ask-form textarea {
+  width: 100%;
+  resize: vertical;
+  border: 1px solid #9bb0bf;
+  background: rgba(255, 255, 255, 0.72);
+  padding: 0.9rem 1rem;
+  border-radius: 0;
+}
+
+.ask-form button {
+  align-self: flex-start;
+  border: 0;
+  background: #12202b;
+  color: #f7fafc;
+  padding: 0.7rem 1.25rem;
+  cursor: pointer;
+  font-family: "Avenir Next", "Segoe UI", sans-serif;
+}
+
+.ask-form button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.error {
+  margin: 0;
+  color: #8a1f1f;
+  font-family: "Avenir Next", "Segoe UI", sans-serif;
+}
+
+.result {
+  border-top: 1px solid #9bb0bf;
+  padding-top: 1rem;
+}
+
+.result h2,
+.result h3 {
+  margin: 0 0 0.5rem;
+  font-size: 1.15rem;
+}
+
+.result p,
+.result li {
+  font-family: "Avenir Next", "Segoe UI", sans-serif;
+}
+
+.meta {
+  color: #4a6273;
+  font-size: 0.9rem;
+}
+
+.footer {
+  margin-top: auto;
+  padding-top: 1rem;
+  border-top: 1px solid #b7c7d2;
+  color: #4a6273;
+  font-family: "Avenir Next", "Segoe UI", sans-serif;
+  font-size: 0.8rem;
+}
