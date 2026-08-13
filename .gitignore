@@ -5,10 +5,11 @@
 *.swp
 *.swo
 
-# Env
+# Env — personal settings, never committed. The .example files ARE committed.
 .env
-.env.local
-.env.*.local
+.env.*
+!.env.example
+!frontend/app/.env.example
 
 # Python
 __pycache__/
@@ -19,12 +20,13 @@ venv/
 backend/staticfiles/
 backend/.pytest_cache/
 
-# Node
+# Node / Expo
 node_modules/
+.expo/
 dist/
 build/
-.expo/
 web-build/
+expo-env.d.ts
 *.log
 npm-debug.log*
 

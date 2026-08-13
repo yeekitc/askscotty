@@ -1,3 +1,11 @@
+# Docker runs the fiddly parts: the Postgres database and the Django API.
+#
+# The frontend (frontend/app) is NOT in here on purpose. It runs on your own
+# machine with `npx expo start`, because Expo needs direct network access to
+# talk to your phone, simulator, and browser.
+#
+# Start everything:  ./setup.sh   (first time)  /  docker compose up -d  (later)
+
 services:
   db:
     image: postgres:16-alpine
@@ -8,8 +16,13 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-askscotty}
     volumes:
       - postgres_data:/var/lib/postgresql/data
-    ports:
-      - "${POSTGRES_PORT:-5432}:5432"
+    # The database port is deliberately NOT published to your machine. The API
+    # reaches it over Docker's internal network. Publishing 5432 is the single
+    # most common first-run failure, because anyone with Postgres already
+    # installed gets "address already in use". If you want to connect a database
+    # GUI, uncomment these two lines:
+    # ports:
+    #   - "${POSTGRES_PORT:-5432}:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-askscotty} -d ${POSTGRES_DB:-askscotty}"]
       interval: 5s
@@ -20,42 +33,36 @@ services:
     build:
       context: ./backend
     restart: unless-stopped
-    env_file:
-      - .env
+    # Values come from the root .env when it exists, otherwise these defaults
+    # apply. Using interpolation rather than `env_file:` means `docker compose
+    # up` still works for someone who has not run ./setup.sh yet.
     environment:
+      DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:-dev-only-change-me-askscotty-hackathon}
+      DJANGO_DEBUG: ${DJANGO_DEBUG:-true}
+      DJANGO_ALLOWED_HOSTS: ${DJANGO_ALLOWED_HOSTS:-*}
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-}
+      POSTGRES_DB: ${POSTGRES_DB:-askscotty}
+      POSTGRES_USER: ${POSTGRES_USER:-askscotty}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-askscotty}
       POSTGRES_HOST: db
       POSTGRES_PORT: 5432
     volumes:
+      # Your local backend/ folder is live-mounted, so editing Python files
+      # reloads the server automatically — no rebuild needed.
       - ./backend:/app
     ports:
       - "${BACKEND_PORT:-8000}:8000"
     depends_on:
       db:
         condition: service_healthy
+    # Overrides the image's gunicorn CMD with Django's auto-reloading dev server.
     command: python manage.py runserver 0.0.0.0:8000
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/api/health/"]
-      interval: 10s
+      interval: 5s
       timeout: 5s
       retries: 12
-      start_period: 20s
-
-  web:
-    build:
-      context: ./frontend/web
-      dockerfile: Dockerfile
-    restart: unless-stopped
-    environment:
-      VITE_API_URL: ${VITE_API_URL:-http://localhost:8000}
-    volumes:
-      - ./frontend/web:/app
-      - web_node_modules:/app/node_modules
-    ports:
-      - "${WEB_PORT:-5173}:5173"
-    depends_on:
-      backend:
-        condition: service_healthy
+      start_period: 15s
 
 volumes:
   postgres_data:
-  web_node_modules:

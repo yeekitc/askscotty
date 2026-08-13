@@ -1,0 +1,10 @@
+node_modules/
+.expo/
+dist/
+web-build/
+expo-env.d.ts
+
+# Expo reads .env from THIS folder. setup.sh generates it; never commit it.
+.env
+.env.local
+*.log

@@ -91,6 +91,12 @@ USE_TZ = True
 STATIC_URL = "static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"
 STORAGES = {
+    # Defining STORAGES replaces Django's default wholesale, so "default" must be
+    # listed explicitly. Without it, any FileField or default_storage use raises
+    # InvalidStorageError at request time.
+    "default": {
+        "BACKEND": "django.core.files.storage.FileSystemStorage",
+    },
     "staticfiles": {
         "BACKEND": "whitenoise.storage.CompressedStaticFilesStorage",
     },
@@ -100,12 +106,15 @@ DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 CORS_ALLOWED_ORIGINS = [
     origin.strip()
-    for origin in os.getenv(
-        "CORS_ALLOWED_ORIGINS",
-        "http://localhost:5173,http://127.0.0.1:5173,http://localhost:8081,http://127.0.0.1:8081",
-    ).split(",")
+    for origin in os.getenv("CORS_ALLOWED_ORIGINS", "").split(",")
     if origin.strip()
 ]
+
+# In development the frontend can appear on a lot of origins: Expo web on :8081,
+# a LAN IP when testing on a physical phone, a tunnel URL, or a different port if
+# 8081 was taken. Rather than have teammates debug CORS errors, allow any origin
+# while DEBUG is on. When DEBUG is off, only CORS_ALLOWED_ORIGINS is honoured.
+CORS_ALLOW_ALL_ORIGINS = DEBUG and not CORS_ALLOWED_ORIGINS
 
 CORS_ALLOW_CREDENTIALS = True
 
@@ -114,7 +123,12 @@ REST_FRAMEWORK = {
         "rest_framework.renderers.JSONRenderer",
         "rest_framework.renderers.BrowsableAPIRenderer",
     ],
+    # Form parsers are needed for the browsable API at /api/ask/ to be able to
+    # submit — with JSONParser alone its form returns 415. That page is the
+    # easiest way for a non-technical teammate to poke the API.
     "DEFAULT_PARSER_CLASSES": [
         "rest_framework.parsers.JSONParser",
+        "rest_framework.parsers.FormParser",
+        "rest_framework.parsers.MultiPartParser",
     ],
 }

@@ -19,3 +19,8 @@ RUN chmod +x /app/entrypoint.sh
 EXPOSE 8000
 
 ENTRYPOINT ["/app/entrypoint.sh"]
+
+# entrypoint.sh ends in `exec "$@"`, so without a CMD the container would run
+# migrations and then exit silently. docker-compose overrides this with
+# runserver for hot reload; this default makes the image runnable on its own.
+CMD ["gunicorn", "config.wsgi:application", "--bind", "0.0.0.0:8000", "--workers", "3"]
