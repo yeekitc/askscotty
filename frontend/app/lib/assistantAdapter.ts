@@ -64,14 +64,11 @@ export function sourcePartToCitation(part: SourceMessagePart): Citation {
 }
 
 /**
- * `getSources` and `onQuerySent` are read at request time rather than closed
- * over once, so the adapter always sees the screen's current source filter
- * and recents list without needing to be recreated on every state change.
+ * `getSources` is read at request time rather than closed over once, so the
+ * adapter always sees the screen's current Sources filter without needing
+ * to be recreated whenever that selection changes.
  */
-export function createHttpAdapter(
-  getSources: () => string[] | undefined,
-  onQuerySent?: (query: string) => void,
-): ChatModelAdapter {
+export function createHttpAdapter(getSources: () => string[] | undefined): ChatModelAdapter {
   return {
     async *run({ messages }) {
       const lastUser = [...messages].reverse().find((m) => m.role === 'user')
@@ -81,8 +78,6 @@ export function createHttpAdapter(
         yield { content: [{ type: 'text', text: 'No input provided.' }] }
         return
       }
-
-      onQuerySent?.(text)
 
       try {
         const res = await ask(text, getSources())

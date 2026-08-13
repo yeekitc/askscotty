@@ -5,13 +5,18 @@
  * Built on ComposerPrimitive so Enter-to-send and clear-on-submit are
  * handled by assistant-ui itself; we only style it and add the source
  * filter dropdown, which is app-specific and has no primitive of its own.
+ *
+ * The dropdown is `position: absolute`, anchored to the pill and opening
+ * upward (`bottom: 100%`) — it floats over the page instead of pushing the
+ * pill (and everything below it) up when it opens.
  */
 
 import { useState } from 'react'
-import { Pressable, StyleSheet, Text, View } from 'react-native'
+import { StyleSheet, Text, View } from 'react-native'
 import { ComposerPrimitive as Composer } from '@assistant-ui/react-native'
 
-import { colors, spacing } from '../lib/theme'
+import { colors, radius, shadows, spacing } from '../lib/theme'
+import { HoverPressable } from './HoverPressable'
 
 /** Matches the live/mock sources the backend can eventually filter by (PRD §4–§7). */
 export const SOURCE_OPTIONS = ['Course Catalog', 'Directory', 'Piazza', 'Canvas', 'Handshake']
@@ -23,6 +28,7 @@ type Props = {
 
 export function AskComposer({ sources, onSourcesChange }: Props) {
   const [showSources, setShowSources] = useState(false)
+  const [sendHovered, setSendHovered] = useState(false)
 
   function toggleSource(name: string) {
     onSourcesChange(
@@ -40,16 +46,26 @@ export function AskComposer({ sources, onSourcesChange }: Props) {
           accessibilityLabel="Ask Scotty"
         />
 
-        <Pressable
-          style={styles.sourcesButton}
+        <HoverPressable
+          style={({ pressed, hovered }) => [
+            styles.sourcesButton,
+            (pressed || hovered) && styles.sourcesButtonActive,
+          ]}
           accessibilityRole="button"
           accessibilityState={{ expanded: showSources }}
           onPress={() => setShowSources((s) => !s)}
         >
           <Text style={styles.sourcesText}>Sources ▾</Text>
-        </Pressable>
+        </HoverPressable>
 
-        <Composer.Send style={styles.sendButton}>
+        <Composer.Send
+          onHoverIn={() => setSendHovered(true)}
+          onHoverOut={() => setSendHovered(false)}
+          style={({ pressed }) => [
+            styles.sendButton,
+            (pressed || sendHovered) && styles.sendButtonActive,
+          ]}
+        >
           <Text style={styles.sendText}>↑</Text>
         </Composer.Send>
       </Composer.Root>
@@ -59,9 +75,9 @@ export function AskComposer({ sources, onSourcesChange }: Props) {
           {SOURCE_OPTIONS.map((name) => {
             const checked = sources.includes(name)
             return (
-              <Pressable
+              <HoverPressable
                 key={name}
-                style={styles.menuItem}
+                style={({ hovered }) => [styles.menuItem, hovered && styles.menuItemHovered]}
                 onPress={() => toggleSource(name)}
                 accessibilityRole="checkbox"
                 accessibilityState={{ checked }}
@@ -70,7 +86,7 @@ export function AskComposer({ sources, onSourcesChange }: Props) {
                   {checked ? <Text style={styles.checkmark}>✓</Text> : null}
                 </View>
                 <Text style={styles.menuText}>{name}</Text>
-              </Pressable>
+              </HoverPressable>
             )
           })}
         </View>
@@ -84,21 +100,18 @@ const styles = StyleSheet.create({
     width: '100%',
     maxWidth: 720,
     alignSelf: 'center',
+    // Anchors the absolutely-positioned dropdown below to this box.
+    position: 'relative',
   },
   pill: {
     flexDirection: 'row',
     alignItems: 'center',
     width: '100%',
     backgroundColor: colors.surface,
-    borderRadius: 999,
-    borderWidth: 1,
-    borderColor: colors.border,
+    borderRadius: radius.pill,
     paddingVertical: 8,
     paddingHorizontal: 12,
-    shadowColor: '#000',
-    shadowOpacity: 0.05,
-    shadowRadius: 8,
-    elevation: 2,
+    ...shadows.soft,
   },
   input: {
     flex: 1,
@@ -111,8 +124,10 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 8,
     marginRight: 8,
-    borderLeftWidth: 1,
-    borderLeftColor: colors.border,
+    borderRadius: radius.md,
+  },
+  sourcesButtonActive: {
+    backgroundColor: colors.sidebarHover,
   },
   sourcesText: {
     color: colors.textMuted,
@@ -120,10 +135,13 @@ const styles = StyleSheet.create({
   },
   sendButton: {
     backgroundColor: colors.accent,
-    borderRadius: 999,
+    borderRadius: radius.pill,
     paddingHorizontal: 14,
     paddingVertical: 8,
     marginLeft: 8,
+  },
+  sendButtonActive: {
+    opacity: 0.8,
   },
   sendText: {
     color: colors.accentText,
@@ -131,20 +149,27 @@ const styles = StyleSheet.create({
     fontWeight: '700',
   },
   menu: {
-    marginTop: spacing.sm,
-    alignSelf: 'flex-end',
+    position: 'absolute',
+    bottom: '100%',
+    right: 0,
+    marginBottom: spacing.sm,
+    zIndex: 50,
     backgroundColor: colors.surface,
-    borderWidth: 1,
-    borderColor: colors.border,
-    borderRadius: 8,
+    borderRadius: radius.lg,
     padding: spacing.sm,
-    minWidth: 180,
+    minWidth: 190,
+    ...shadows.soft,
   },
   menuItem: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingVertical: 6,
+    paddingVertical: 8,
+    paddingHorizontal: spacing.sm,
     gap: spacing.sm,
+    borderRadius: radius.sm,
+  },
+  menuItemHovered: {
+    backgroundColor: colors.sidebarHover,
   },
   checkbox: {
     width: 16,

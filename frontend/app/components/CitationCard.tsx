@@ -7,7 +7,7 @@
 
 import { Linking, Pressable, StyleSheet, Text, View } from 'react-native'
 
-import { colors, spacing } from '../lib/theme'
+import { colors, radius, spacing } from '../lib/theme'
 import type { Citation } from '../lib/types'
 
 /** "2026-08-12T14:03:00Z" -> "Aug 12, 2:03 PM". Falls back to raw text. */
@@ -73,10 +73,11 @@ export function CitationCard({ citation }: { citation: Citation }) {
 const styles = StyleSheet.create({
   card: {
     borderWidth: 1,
-    borderColor: colors.border,
+    borderColor: colors.borderSoft,
     backgroundColor: colors.surface,
     padding: spacing.md,
     marginBottom: spacing.sm,
+    borderRadius: radius.lg,
     gap: spacing.xs,
   },
   titleRow: {
@@ -100,7 +101,8 @@ const styles = StyleSheet.create({
     color: colors.mockBadge,
     borderWidth: 1,
     borderColor: colors.mockBadge,
-    paddingHorizontal: spacing.xs,
+    borderRadius: radius.pill,
+    paddingHorizontal: spacing.sm,
     paddingVertical: 1,
   },
   source: {

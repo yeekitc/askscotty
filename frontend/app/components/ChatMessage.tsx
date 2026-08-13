@@ -9,7 +9,7 @@
 import { Image, StyleSheet, Text, View } from 'react-native'
 import { MessagePrimitive as Message } from '@assistant-ui/react-native'
 
-import { colors, spacing } from '../lib/theme'
+import { colors, radius, spacing } from '../lib/theme'
 import { sourcePartToCitation } from '../lib/assistantAdapter'
 import { CitationCard } from './CitationCard'
 
@@ -54,9 +54,9 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surface,
     paddingHorizontal: spacing.lg,
     paddingVertical: spacing.md,
-    borderRadius: 18,
+    borderRadius: radius.xl,
     borderWidth: 1,
-    borderColor: colors.border,
+    borderColor: colors.borderSoft,
     maxWidth: '80%',
   },
   userText: {
@@ -68,21 +68,23 @@ const styles = StyleSheet.create({
     alignItems: 'flex-start',
     gap: spacing.md,
   },
+  // No marginTop here on purpose — both the avatar and assistantCard are
+  // top-aligned flex children of the same row, so a 0 offset is what makes
+  // the avatar's top edge land exactly on the card's top edge.
   avatar: {
     width: 36,
     height: 36,
-    borderRadius: 18,
-    marginTop: 4,
+    borderRadius: radius.pill,
     borderWidth: 1,
-    borderColor: colors.border,
+    borderColor: colors.borderSoft,
   },
   assistantCard: {
     flex: 1,
     borderWidth: 1,
-    borderColor: colors.border,
+    borderColor: colors.borderSoft,
     backgroundColor: colors.surface,
-    padding: spacing.md,
-    borderRadius: 12,
+    padding: spacing.lg,
+    borderRadius: radius.xl,
     gap: spacing.sm,
   },
   assistantText: {

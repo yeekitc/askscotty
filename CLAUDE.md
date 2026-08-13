@@ -72,8 +72,6 @@ These are non-negotiable; see PRD.md §9 and §10.
 - **Respect robots.txt**, rate-limit crawls, and identify the crawler user-agent.
 - **Do not scrape behind logins** — no SIO, Stellic, Canvas-scraping, Autolab, 25Live,
   or Handshake SSO.
-- **Credits text is fixed wording** and must stay in the app. It lives in
-  `frontend/app/components/Credits.tsx`. We are not affiliated with ScottyLabs.
 
 ## Style
 
