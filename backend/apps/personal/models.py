@@ -1,14 +1,10 @@
 """User-scoped connections to personal sources (Canvas, Ed, …).
 
-Scoping model for the hackathon (tasklist §1): an **anonymous session id**, not a
-Django user account. The app generates one, stores it on the device, and sends
-it with every request. That is enough to scope a connector to one person for a
-demo, and it means nobody has to build a login screen.
-
-The trade-off is worth stating plainly: anyone who learns a session id can read
-that session's connected data. It is opaque and never guessable from anything
-public, but it is a bearer token, not an identity. Real accounts are the upgrade
-path if this outlives the hackathon.
+Scoped by an anonymous session id the app generates and stores on the device,
+not a Django user account (tasklist §1) — enough to scope a connector for a demo
+without building a login screen. The trade-off, stated plainly: a session id is
+a bearer token, not an identity, so anyone who learns one can read that
+session's connected data. Real accounts are the upgrade path.
 
 PRD §7 rules this file exists to enforce:
   - tokens are encrypted at rest, never logged, never returned by any endpoint
@@ -26,8 +22,8 @@ from .crypto import decrypt, encrypt
 class Provider(models.TextChoices):
     """The personal sources a session can connect.
 
-    The value is the slug used everywhere else: in `requires_connector` on a
-    tool, in the connect/disconnect URLs, and in the settings UI.
+    The value is the slug used everywhere else: `requires_connector` on a tool,
+    the connect/disconnect URLs, and the settings UI.
     """
 
     CANVAS = "canvas", "Canvas"
@@ -38,9 +34,9 @@ class Provider(models.TextChoices):
 class UserConnection(models.Model):
     """One credential, belonging to one session.
 
-    Deliberately **not** registered in admin.py: the admin renders every field of
-    a model, and `encrypted_token` showing up in a browser — even as ciphertext —
-    is exactly the kind of accident PRD §9 is about.
+    Deliberately not registered in admin.py: the admin renders every field, and
+    `encrypted_token` reaching a browser — even as ciphertext — is exactly the
+    accident PRD §9 is about.
     """
 
     session_id = models.CharField(
@@ -61,8 +57,8 @@ class UserConnection(models.Model):
 
     class Meta:
         constraints = [
-            # One credential per provider per session. Reconnecting updates the
-            # existing row rather than quietly leaving a stale token behind.
+            # Reconnecting updates the existing row rather than quietly leaving
+            # a stale token behind.
             models.UniqueConstraint(
                 fields=["session_id", "provider"],
                 name="unique_connection_per_session_provider",
@@ -71,7 +67,7 @@ class UserConnection(models.Model):
         ordering = ["provider"]
 
     def __str__(self) -> str:
-        # Truncated session, no token. This string ends up in logs and error
+        # Truncated session, no token: this string ends up in logs and error
         # pages, so it must stay boring.
         return f"{self.get_provider_display()} (session {self.session_id[:8]}…)"
 
@@ -82,7 +78,7 @@ class UserConnection(models.Model):
     def get_token(self) -> str:
         """Decrypt the credential for an outbound API call.
 
-        Keep the return value in a local variable and let it go out of scope.
-        Do not log it, do not attach it to an exception, do not return it.
+        Keep the return value local and let it go out of scope. Do not log it,
+        do not attach it to an exception, do not return it.
         """
         return decrypt(self.encrypted_token)

@@ -1,14 +1,8 @@
 /**
- * The search/ask pill — used both centered under the empty-state hero and
- * pinned to the bottom once a thread has messages (see app/index.tsx).
- *
- * Built on ComposerPrimitive so Enter-to-send and clear-on-submit are
- * handled by assistant-ui itself; we only style it and add the source
- * filter dropdown, which is app-specific and has no primitive of its own.
- *
- * The dropdown is `position: absolute`, anchored to the pill and opening
- * upward (`bottom: 100%`) — it floats over the page instead of pushing the
- * pill (and everything below it) up when it opens.
+ * The search/ask pill, used both centered under the hero and pinned to the
+ * bottom of an active thread (app/index.tsx). Built on ComposerPrimitive, so
+ * Enter-to-send and clear-on-submit come from assistant-ui; the source filter
+ * dropdown is ours, as it has no primitive of its own.
  */
 
 import { useState } from 'react'
@@ -18,7 +12,7 @@ import { ComposerPrimitive as Composer } from '@assistant-ui/react-native'
 import { colors, radius, shadows, spacing } from '../lib/theme'
 import { HoverPressable } from './HoverPressable'
 
-/** Matches the live/mock sources the backend can eventually filter by (PRD §4–§7). */
+/** The sources the backend can eventually filter by (PRD §4–§7). */
 export const SOURCE_OPTIONS = ['Course Catalog', 'Directory', 'Piazza', 'Canvas', 'Handshake']
 
 type Props = {
@@ -100,7 +94,8 @@ const styles = StyleSheet.create({
     width: '100%',
     maxWidth: 720,
     alignSelf: 'center',
-    // Anchors the absolutely-positioned dropdown below to this box.
+    // Anchors the dropdown, which opens upward over the page rather than
+    // pushing the pill and everything below it up.
     position: 'relative',
   },
   pill: {

@@ -1,8 +1,7 @@
 /**
- * The signed-in student. There's no auth flow yet, so this is a stand-in —
- * once one exists, swap the body of `useCurrentUser` for the real session
- * user. Screens should read `user.displayName` instead of hardcoding a name,
- * so that swap is the only place that needs to change.
+ * A stand-in until there is an auth flow. Screens read `user.displayName`
+ * rather than hardcoding a name, so `useCurrentUser` is the only body that
+ * needs swapping when one exists.
  */
 
 export type CurrentUser = {

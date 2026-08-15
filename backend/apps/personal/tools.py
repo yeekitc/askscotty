@@ -1,17 +1,13 @@
 """User-scoped tools, offered only to sessions that connected the source.
 
-These are the tools that make the difference between "when are CS office hours"
-and "what's due this week" — and they are the reason the toolset is built per
-request instead of once at startup. A session with no Canvas connection is never
-told these exist (see `tools_for_session` in apps/tools/registry.py), so the
-model cannot call them and cannot mention data it has no business seeing.
+A session with no Canvas connection is never told these exist (see
+`tools_for_session` in apps/tools/registry.py), so the model cannot call them or
+mention data it has no business seeing.
 
-**The Canvas HTTP client is not wired yet — that is tasklist B5.** The tool
-definitions live here now because the toolset plumbing is what §1 is about: the
-registry, the per-session gating, and the credential handoff. Until the client
-lands each function raises `ToolError`, which is the same path a real Canvas
-outage takes, so the planner's degrade-don't-crash handling gets exercised
-either way.
+The Canvas HTTP client is not wired yet (tasklist B5); the definitions are here
+because the plumbing — registry, per-session gating, credential handoff — is
+what §1 is about. Until then each function raises `ToolError`, the same path a
+real Canvas outage takes, so degrade-don't-crash gets exercised either way.
 """
 
 from __future__ import annotations
@@ -20,8 +16,8 @@ from apps.tools.registry import ToolError, register_tool
 
 from .context import require_connection
 
-# Every tool here goes through Canvas, so they share one gate. `requires_connector`
-# is what hides them from sessions that have not pasted a token.
+# Passed as `requires_connector` below, which is what hides these tools from
+# sessions that have not pasted a token.
 CANVAS = "canvas"
 
 _NOT_WIRED = (
@@ -47,7 +43,6 @@ _NOT_WIRED = (
     requires_connector=CANVAS,
 )
 def canvas_list_courses(*, session_id: str) -> dict:
-    """The student's active Canvas courses."""
     connection = _canvas_connection(session_id)
     _ = connection.get_token()  # proves the credential decrypts; B5 sends it to Canvas
     raise ToolError(_NOT_WIRED)
@@ -90,7 +85,6 @@ def canvas_get_assignments(
     due_before: str | None = None,
     course_id: str | None = None,
 ) -> dict:
-    """The student's upcoming assignments and due dates."""
     connection = _canvas_connection(session_id)
     _ = connection.get_token()
     raise ToolError(_NOT_WIRED)
@@ -99,11 +93,10 @@ def canvas_get_assignments(
 def _canvas_connection(session_id: str):
     """Fetch this session's Canvas connection, as a ToolError if it is missing.
 
-    The registry already refuses to run a personal tool for a session that has
-    not connected the provider, so reaching this and finding nothing means the
-    connection was deleted mid-request. Re-raising as ToolError keeps every tool
-    failure one exception type, which is what lets the planner degrade instead of
-    500ing.
+    The registry already gates personal tools on the connector, so finding
+    nothing here means it was deleted mid-request. Re-raising as ToolError keeps
+    every tool failure one exception type, which is what lets the planner
+    degrade instead of 500ing.
     """
     try:
         return require_connection(session_id, CANVAS)

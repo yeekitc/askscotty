@@ -1,14 +1,11 @@
 /**
- * Bridges assistant-ui's runtime to our POST /api/ask/ endpoint.
+ * Bridges assistant-ui's runtime to POST /api/ask/.
  *
- * Citations ride along as assistant-ui "source" message parts — its built-in
- * part type for "this bit of the answer came from a link" — instead of a
- * bespoke shape, so the standard MessagePrimitive.Content renderSource slot
- * can pick them up. The extra fields the PRD requires on a citation (source
- * name, indexed_at/verified_at, is_mock) don't fit assistant-ui's SourcePart,
- * so they travel in `providerMetadata` under an "askscotty" key and get
- * unpacked again in `sourcePartToCitation`, which the message renderer uses
- * to feed the existing CitationCard component.
+ * Citations ride as assistant-ui "source" parts rather than a bespoke shape, so
+ * the standard MessagePrimitive.Content renderSource slot picks them up. The
+ * extra fields the PRD requires (source name, indexed_at/verified_at, is_mock)
+ * don't fit its SourcePart, so they travel in `providerMetadata` and are
+ * unpacked again by `sourcePartToCitation`.
  */
 
 import type { ChatModelAdapter, SourceMessagePart } from '@assistant-ui/react-native'
@@ -38,8 +35,8 @@ function citationToSourcePart(citation: Citation, index: number): SourceMessageP
     }
   }
 
-  // Citations without a live URL (mocks, PRD refs) are treated as opaque
-  // documents — the "document" variant requires mediaType instead of a url.
+  // Citations with no live URL (mocks, PRD refs) become opaque documents — that
+  // variant requires mediaType instead of a url.
   return {
     type: 'source',
     sourceType: 'document',
@@ -55,9 +52,8 @@ export function sourcePartToCitation(part: SourceMessagePart): Citation {
   const meta = part.providerMetadata?.[PROVIDER_KEY] ?? {}
   return {
     title: part.title || 'Source',
-    // Document-variant parts carry no url, and a thread reloaded from the
-    // backend has been through JSON both ways — so every field gets a default
-    // that matches the Citation contract in types.ts.
+    // Document parts carry no url, and a reloaded thread has been through JSON
+    // both ways, so every field defaults to the Citation contract in types.ts.
     url: typeof part.url === 'string' ? part.url : '',
     source: typeof meta.source === 'string' ? meta.source : 'Unknown',
     indexed_at: typeof meta.indexed_at === 'string' ? meta.indexed_at : null,
@@ -68,8 +64,8 @@ export function sourcePartToCitation(part: SourceMessagePart): Citation {
 
 /**
  * `getSources` is read at request time rather than closed over once, so the
- * adapter always sees the screen's current Sources filter without needing
- * to be recreated whenever that selection changes.
+ * adapter sees the current Sources filter without being recreated on every
+ * change to it.
  */
 export function createHttpAdapter(getSources: () => string[] | undefined): ChatModelAdapter {
   return {

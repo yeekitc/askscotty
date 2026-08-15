@@ -1,12 +1,10 @@
 /**
- * Renders one citation.
+ * Renders one citation, always surfacing indexed_at / verified_at when present
+ * because the PRD requires showing freshness.
  *
- * The PRD requires that we show indexed_at / verified_at, so this component
- * always surfaces them when present.
- *
- * Mock sources are deliberately NOT badged here — `is_mock` is reported to
- * the console by lib/api.ts instead. See the note there; PRD §9 still asks
- * for a visible label, so this is a knowing deviation.
+ * Mock sources are deliberately NOT badged here — `is_mock` is only logged to
+ * the console by lib/api.ts. PRD §9 asks for a visible label, so this is a
+ * knowing deviation; the badge markup is still in git history if it comes back.
  */
 
 import { Linking, Pressable, StyleSheet, Text, View } from 'react-native'

@@ -1,17 +1,9 @@
-"""The source registry — what AskScotty draws on, and how fresh it is.
+"""The source registry behind `GET /api/sources/` — the credits list and the
+freshness/mock honesty PRD §9 requires.
 
-This is what `GET /api/sources/` returns. It powers two things the PRD treats as
-non-negotiable (§9): the credits list, and honesty about where an answer came
-from — including which sources are mocks and when each was last refreshed.
-
-Sources are registered here rather than derived from the tool registry because
-they are not the same thing. One source can back several tools (the Courses API
-backs both `search_courses` and `get_course`), and the campus index backs a
-single tool while being the thing that actually needs a freshness date.
-
-The entries below come straight from PRD §3–§7. They are declared up front, and
-each lane ticks `implemented=True` as it lands, so the credits page tells the
-truth about what is wired even mid-build.
+Kept separate from the tool registry because sources and tools are not the same
+thing: one source can back several tools, and the campus index backs a single
+tool while being the thing that needs a freshness date.
 """
 
 from __future__ import annotations
@@ -20,12 +12,11 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Callable
 
-# Which half of the architecture a source sits in. "public" sources may be
-# indexed and shared between everyone; "personal" sources are user-scoped and
-# must never touch the shared index (PRD §3, §10).
+# "public" sources may be indexed and shared between everyone; "personal"
+# sources are user-scoped and must never touch the shared index (PRD §3, §10).
 TIERS: tuple[str, ...] = ("public", "personal")
 
-# How we get at the data. From the PRD's accessibility legend (§3):
+# The PRD's accessibility legend (§3):
 #   Crawl — we index the public pages ourselves
 #   Live  — public API we call at query time
 #   Token — the user pastes their own credential
@@ -40,12 +31,12 @@ class Source:
     name: str
     tier: str
     access: str
-    #: Called at request time to find out when this source was last refreshed.
-    #: Crawled sources will read the newest Document.fetched_at once the crawler
-    #: lands (tasklist B1); live and mock sources have no index date at all.
+    #: Called at request time. Crawled sources will read the newest
+    #: Document.fetched_at once the crawler lands (tasklist B1); live and mock
+    #: sources have no index date at all.
     indexed_at_resolver: Callable[[], datetime | None] | None = None
-    #: False while the lane is still a placeholder. Kept visible on purpose so
-    #: the credits page never implies more coverage than we actually have.
+    #: False while the lane is a placeholder. Surfaced in the API on purpose so
+    #: the credits page never implies more coverage than we have.
     implemented: bool = False
     #: One line explaining what this gives us, for the credits UI.
     note: str = ""
@@ -95,8 +86,8 @@ def all_sources() -> list[Source]:
 
 # --- The registry itself (PRD §3–§7) -----------------------------------------
 #
-# Adding a source here is what puts it in the credits. Flip `implemented` to
-# True in the same commit that wires the tool, not before.
+# Adding a source here is what puts it in the credits. Flip `implemented` to True
+# in the same commit that wires the tool, not before.
 
 register_source(
     "CMU public web (campus index)",

@@ -1,9 +1,6 @@
 /**
- * Required credits footer.
- *
- * The wording below is specified verbatim by PRD.md §8 (Credits). Do not
- * paraphrase or shorten it — the "not affiliated with ScottyLabs" line is a
- * hard requirement, and it must appear in the app and in the submission.
+ * The wording below is verbatim from PRD §8 and must not be paraphrased — the
+ * "not affiliated with ScottyLabs" line is a hard requirement.
  */
 
 import { StyleSheet, Text } from 'react-native'

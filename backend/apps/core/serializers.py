@@ -1,13 +1,11 @@
 """The API contract, in code.
 
 This file and `frontend/app/lib/types.ts` describe the same JSON. Change one,
-change the other — and update tasklist.md §2, which is where the contract is
-agreed. Frontend and backend both code against §2, so it moves only on purpose.
+change the other, and update tasklist §2 where the contract is agreed.
 
-The response serializers are not decoration. `AskView` runs its payload through
-`AskResponseSerializer` before returning it, so a planner that forgets
-`indexed_at` or invents a mode fails here, in the backend, rather than showing up
-as a blank chip on someone's phone during the demo.
+The response serializers are not decoration: views validate outgoing payloads
+through them, so a planner that forgets `indexed_at` or invents a mode fails
+here rather than as a blank chip on someone's phone.
 """
 
 from __future__ import annotations
@@ -31,9 +29,8 @@ class AskSerializer(serializers.Serializer):
 
     query = serializers.CharField(max_length=2000)
 
-    # The anonymous session this question belongs to. Optional: public questions
-    # work without one. When present it is what scopes personal connectors — see
-    # apps/personal/models.py for what that does and does not guarantee.
+    # Optional: public questions work without one. When present it is what
+    # scopes personal connectors (see apps/personal/models.py).
     session_id = serializers.CharField(
         max_length=128,
         required=False,
@@ -41,8 +38,8 @@ class AskSerializer(serializers.Serializer):
         default="",
     )
 
-    # Prior turns, oldest first. Capped so a runaway client cannot push an
-    # unbounded transcript through the planner's context window.
+    # Oldest first. Capped so a runaway client cannot push an unbounded
+    # transcript through the planner's context window.
     history = serializers.ListField(
         child=HistoryMessageSerializer(),
         required=False,
@@ -57,26 +54,23 @@ class AskSerializer(serializers.Serializer):
 class CitationSerializer(serializers.Serializer):
     """Where one piece of the answer came from, and how fresh it is.
 
-    PRD §3 and §9: every answer shows its sources with `indexed_at` /
-    `verified_at`, and anything from a fixture is visibly marked. `is_mock` is
-    what the UI badges, so it is required rather than defaulted — a citation that
-    forgot it would silently claim to be real data.
+    PRD §3 and §9: sources carry `indexed_at` / `verified_at`, and fixtures are
+    visibly marked. `is_mock` is what the UI badges, so it is required rather
+    than defaulted — a citation that forgot it would claim to be real data.
     """
 
     title = serializers.CharField()
 
     # Not URLField: mock sources legitimately have no link, and a deep link is
-    # not always http(s). Empty string means "no link", which the app renders as
-    # plain text instead of a tappable card.
+    # not always http(s). Empty string means "no link".
     url = serializers.CharField(allow_blank=True, default="")
 
-    # Human-readable, e.g. "CMU Eats" or "Campus maps (mock)" — this is what
-    # shows on the citation card, so it is not the internal tool name.
+    # Human-readable ("CMU Eats"), not the internal tool name — it goes on the
+    # citation card.
     source = serializers.CharField()
 
     # DateTimeField renders a datetime as ISO-8601 and passes an existing string
-    # through untouched, so a tool can return either and the wire format still
-    # matches what the app parses.
+    # through untouched, so a tool can return either.
     indexed_at = serializers.DateTimeField(required=False, allow_null=True, default=None)
     verified_at = serializers.DateTimeField(required=False, allow_null=True, default=None)
 
@@ -89,8 +83,8 @@ class AskResponseSerializer(serializers.Serializer):
     answer = serializers.CharField(allow_blank=True, trim_whitespace=False)
     citations = CitationSerializer(many=True)
 
-    # Fixed vocabulary, defined once in apps/tools/registry.py. ChoiceField means
-    # a typo'd mode is a backend error, not a chip that silently never renders.
+    # ChoiceField so a typo'd mode is a backend error, not a chip that silently
+    # never renders.
     modes_used = serializers.ListField(child=serializers.ChoiceField(choices=MODES))
 
     # Caveats worth surfacing above the answer: a tool that timed out, mock data
@@ -106,9 +100,8 @@ class SourceSerializer(serializers.Serializer):
     access = serializers.ChoiceField(choices=ACCESS)
     indexed_at = serializers.DateTimeField(required=False, allow_null=True, default=None)
 
-    # Beyond the §2 contract, and additive on purpose: the app can ignore both,
-    # but the credits page reads much better when it can say what a source gives
-    # us and which lanes are still placeholders.
+    # Beyond the §2 contract and additive on purpose: the app can ignore both,
+    # but the credits page uses them to say which lanes are still placeholders.
     implemented = serializers.BooleanField(default=False)
     note = serializers.CharField(allow_blank=True, default="")
 
@@ -125,29 +118,27 @@ class SourcesResponseSerializer(serializers.Serializer):
 class MessageSerializer(serializers.Serializer):
     """One stored turn, in the shape assistant-ui hands us.
 
-    `content` is a list of message *parts*, not a string — an assistant turn is
-    its answer text plus one part per citation. See apps/core/models.Message.
+    `content` is a list of message *parts*, not a string — answer text plus one
+    part per citation. See apps/core/models.Message.
     """
 
     role = serializers.ChoiceField(choices=["user", "assistant"])
     content = serializers.JSONField()
 
     def validate_content(self, value):
-        # JSONField accepts any JSON, but the app always sends a parts array and
-        # the renderer will crash on anything else. Rejecting it here means a
-        # malformed thread fails at save time with a clear message, rather than
-        # blanking someone's sidebar the next time they open the app.
+        # JSONField accepts any JSON, but the renderer crashes on anything that
+        # is not a parts array. Failing at save time beats blanking someone's
+        # sidebar the next time they open the app.
         if not isinstance(value, list):
             raise serializers.ValidationError("Expected a list of message parts.")
         return value
 
 
 class ThreadSerializer(serializers.Serializer):
-    """One thread, with its full message list.
+    """One thread, with its full message list. Used in both directions.
 
-    Used for both directions: the app PUTs this shape to save a thread, and
-    reads it back on load. `id` is the app's own thread id (`client_id` in the
-    model) so the sidebar's ids survive a reload.
+    `id` is the app's own thread id (`client_id` in the model), so the sidebar's
+    ids survive a reload.
     """
 
     id = serializers.CharField(max_length=64)

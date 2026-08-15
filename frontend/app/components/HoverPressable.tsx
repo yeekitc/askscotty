@@ -1,8 +1,7 @@
 /**
- * A Pressable that also tracks hover, so buttons can show a distinct
- * hover state on web/desktop (mouse) in addition to the press state that
- * works everywhere. `onHoverIn`/`onHoverOut` are real RN Pressable props —
- * they simply never fire on a touch-only device, so this is a no-op there.
+ * A Pressable that also tracks hover, for a distinct mouse state on web and
+ * desktop. `onHoverIn`/`onHoverOut` are real RN props that simply never fire on
+ * a touch-only device, so this costs nothing there.
  */
 
 import { useState } from 'react'

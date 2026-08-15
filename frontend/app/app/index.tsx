@@ -1,19 +1,9 @@
 /**
- * The ask screen — this is the whole app right now.
+ * The ask screen — the whole app right now.
  *
- * THIS ONE FILE RENDERS ON iOS, ANDROID, AND THE BROWSER.
- * Edit it and all three change. There is no separate web version.
- *
- * Chat state (messages, composer text, send/streaming) is owned by
- * assistant-ui's runtime (see AssistantRuntimeProvider below). We layer our
- * own local multi-thread history on top of it — see lib/chatThreads.ts for
- * why (assistant-ui's own thread list needs a backend we don't have yet).
- *
- * Note the components come from 'react-native', not HTML:
- *   <View>  instead of <div>
- *   <Text>  instead of <p> / <span>   (all text MUST be inside a <Text>)
- *   <Pressable> instead of <button>
- * Styles are objects in StyleSheet.create at the bottom, not CSS files.
+ * Chat state (messages, composer text, send/streaming) belongs to assistant-ui's
+ * runtime. Our own multi-thread history is layered on top of it, because
+ * assistant-ui's thread list needs a runtime we don't use — see lib/chatThreads.ts.
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
@@ -62,13 +52,12 @@ const DEFAULT_SOURCES = ['Course Catalog', 'Directory', 'Piazza', 'Canvas']
 const SIDEBAR_WIDTH = 280
 const WIDE_BREAKPOINT = 900
 
-/** How long to wait after the last change before saving a thread. */
 const SAVE_DEBOUNCE_MS = 600
 
-// The source filter is per-device UI state, so it stays on the device — but in
-// AsyncStorage, not localStorage, because `window` does not exist on a phone
-// (CLAUDE.md). Conversations themselves are *not* stored here: they live in the
-// backend now, scoped to this session (see lib/chatThreads.ts).
+// The source filter is per-device UI state, so it stays on the device — in
+// AsyncStorage, not localStorage, because `window` does not exist on a phone.
+// Conversations are not stored here: they live in the backend, scoped to this
+// session (see lib/chatThreads.ts).
 async function loadSources(): Promise<string[]> {
   try {
     const raw = await AsyncStorage.getItem(SOURCES_KEY)
@@ -98,9 +87,8 @@ export default function AskScreen() {
     sourcesRef.current = sources
   }, [sources])
 
-  // Read the saved filter once, then write on every later change. Without the
-  // flag, the write effect would immediately save back whatever the read just
-  // returned — harmless, but it makes the storage log confusing to follow.
+  // Without the flag, the write effect would immediately save back whatever the
+  // read just returned — harmless, but confusing to follow in the storage log.
   const sourcesLoaded = useRef(false)
   useEffect(() => {
     loadSources().then((stored) => {
@@ -112,16 +100,15 @@ export default function AskScreen() {
     if (sourcesLoaded.current) void saveSources(sources)
   }, [sources])
 
-  // `null` means "no explicit choice yet" — follow the width-based default
-  // until the user actually taps the toggle, so resizing the window doesn't
-  // fight a stale manual override.
+  // `null` means "no explicit choice yet": follow the width-based default until
+  // the toggle is tapped, so resizing doesn't fight a stale manual override.
   const [sidebarOpen, setSidebarOpen] = useState<boolean | null>(null)
   const sidebarEffectiveOpen = sidebarOpen ?? isWide
   const [searchQuery, setSearchQuery] = useState('')
 
-  // The app opens on a fresh chat, every time. Saved conversations arrive from
-  // the backend a moment later and fill the sidebar — they do not yank the
-  // runtime out from under someone who has already started typing.
+  // The app opens on a fresh chat every time. Saved conversations arrive a
+  // moment later and fill the sidebar rather than yanking the runtime out from
+  // under someone who has already started typing.
   const firstThread = useMemo(() => createEmptyThread(generateId()), [])
   const [threads, setThreads] = useState<ChatThread[]>([firstThread])
   const [activeThreadId, setActiveThreadId] = useState(firstThread.id)
@@ -130,12 +117,10 @@ export default function AskScreen() {
   const adapter = useMemo(() => createHttpAdapter(() => sourcesRef.current), [])
   const runtime = useLocalRuntime(adapter, { initialMessages: [] })
 
-  // Saving is debounced because the runtime fires its subscription on every
-  // status change, not just on a finished turn — an unthrottled save would PUT
-  // the whole thread several times per answer.
-  //
-  // Pending threads are held in a map rather than a single slot so switching
-  // conversations mid-debounce cannot drop the one being left behind.
+  // Debounced because the runtime fires its subscription on every status change,
+  // not just a finished turn — unthrottled, that PUTs the whole thread several
+  // times per answer. Pending threads sit in a map rather than one slot so
+  // switching conversations mid-debounce cannot drop the one being left behind.
   const pendingSaves = useRef(new Map<string, ChatThread>())
   const lastSaved = useRef(new Map<string, string>())
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -148,9 +133,8 @@ export default function AskScreen() {
       const fingerprint = JSON.stringify(thread.messages)
       lastSaved.current.set(thread.id, fingerprint)
       persistThread(thread).catch(() => {
-        // Drop the fingerprint so the next change retries this thread. A failed
-        // save should not cost the user their conversation, and a red banner
-        // mid-demo over a transient network blip is worse than a silent retry.
+        // Dropping the fingerprint makes the next change retry this thread. A
+        // silent retry beats a red banner mid-demo over a network blip.
         lastSaved.current.delete(thread.id)
       })
     }
@@ -158,8 +142,8 @@ export default function AskScreen() {
 
   const schedulePersist = useCallback(
     (thread: ChatThread) => {
-      // Never persist an empty thread: tapping "New Chat" would otherwise
-      // create a server row for a conversation that never happened.
+      // Never persist an empty thread, or "New Chat" would create a server row
+      // for a conversation that never happened.
       if (thread.messages.length === 0) return
       if (lastSaved.current.get(thread.id) === JSON.stringify(thread.messages)) return
 
@@ -178,7 +162,6 @@ export default function AskScreen() {
     }
   }, [flushSaves])
 
-  // Pull this session's saved conversations into the sidebar.
   useEffect(() => {
     let cancelled = false
 
@@ -186,16 +169,16 @@ export default function AskScreen() {
       .then((saved) => {
         if (cancelled || saved.length === 0) return
         setThreads((prev) => {
-          // Keep the chat we opened with only while it is still untouched;
-          // otherwise the user would lose whatever they typed during the load.
+          // Keep the chat we opened with only while it is untouched, or the
+          // user loses whatever they typed during the load.
           const current = prev.find((t) => t.id === activeThreadIdRef.current)
           const keepCurrent = current && current.messages.length === 0 ? [current] : []
           return [...keepCurrent, ...saved]
         })
       })
       .catch(() => {
-        // No history is a usable app; a blocked one is not. The fresh chat the
-        // screen already mounted with stays, and the next save will retry.
+        // No history is a usable app; a blocked one is not. The fresh chat
+        // stays, and the next save retries.
       })
 
     return () => {
@@ -203,19 +186,15 @@ export default function AskScreen() {
     }
   }, [])
 
-  // Whether to show the empty-state hero or the thread. Driven by our own
-  // state (set from the same subscription that mirrors messages below)
-  // rather than two separate <Thread.If> instances — those each subscribe
-  // to the runtime independently, and letting Thread.MessagesFlatList's own
-  // internal item list shrink to zero out from under it via thread.reset()
-  // raced its FlatList's index bookkeeping and crashed. One state value
-  // driving one conditional makes the empty/active swap atomic.
+  // Hero-or-thread, driven by one state value rather than two <Thread.If>
+  // instances: those subscribe to the runtime independently, and letting
+  // Thread.MessagesFlatList's item list shrink to zero under it via
+  // thread.reset() raced the FlatList's index bookkeeping and crashed.
   const [isEmpty, setIsEmpty] = useState(true)
 
-  // Mirrors the live thread's messages back into whichever thread is
-  // currently active, so switching away and back doesn't lose anything.
-  // Reads activeThreadIdRef (not the `activeThreadId` state) because this
-  // subscription is set up once — a ref is what stays current.
+  // Mirrors the live thread back into whichever thread is active, so switching
+  // away and back loses nothing. Reads activeThreadIdRef rather than the state,
+  // because this subscription is set up once and a ref is what stays current.
   useEffect(() => {
     return runtime.thread.subscribe(() => {
       const messages = runtime.thread.getState().messages
@@ -227,8 +206,8 @@ export default function AskScreen() {
       setThreads((prev) =>
         prev.map((t) => (t.id === id ? { ...t, messages: snapshot, updatedAt } : t)),
       )
-      // Queued outside the state updater on purpose: React may run an updater
-      // more than once, and a save is a side effect that should happen once.
+      // Outside the state updater on purpose: React may run an updater more
+      // than once, and a save is a side effect that should happen once.
       schedulePersist({ id, messages: snapshot, updatedAt })
     })
   }, [runtime, schedulePersist])
@@ -359,9 +338,8 @@ export default function AskScreen() {
               behavior={Platform.OS === 'ios' ? 'padding' : undefined}
               keyboardVerticalOffset={insets.top}
             >
-              {/* Empty state: hero + composer centered together. Active state:
-                  thread fills the height and the composer pins to the bottom.
-                  Only one of these two is ever mounted at a time. */}
+              {/* Only one of these is ever mounted: hero + composer centered
+                  together, or the thread with the composer pinned below it. */}
               {isEmpty ? (
                 <View style={styles.emptyState}>
                   <Text style={styles.hero}>Ask Scotty, {user.displayName}!</Text>
@@ -370,9 +348,8 @@ export default function AskScreen() {
               ) : (
                 <View style={styles.activeThread}>
                   <Thread.MessagesFlatList
-                    // Forces a full remount on every thread switch instead of
-                    // reconciling in place — the previous thread's messages
-                    // are a different list, not an edit of this one.
+                    // Forces a full remount per thread switch: the previous
+                    // thread's messages are a different list, not an edit.
                     key={activeThreadId}
                     style={styles.messageList}
                     contentContainerStyle={styles.messageListContent}
@@ -407,12 +384,9 @@ export default function AskScreen() {
 }
 
 /**
- * Bouncing dots at the foot of the thread while a request is in flight.
- *
  * `Thread.If running` is assistant-ui's own loading primitive — the runtime
- * sets `isRunning` for as long as the adapter's run() is pending, so we never
- * track "is a request open?" ourselves. /api/ask/ is non-streaming, which
- * means this stays up for the whole round trip.
+ * sets `isRunning` while the adapter's run() is pending, so nothing here tracks
+ * requests. /api/ask/ is non-streaming, so this stays up for the round trip.
  */
 function RunningIndicator() {
   return (

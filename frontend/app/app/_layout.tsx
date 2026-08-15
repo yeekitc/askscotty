@@ -1,9 +1,6 @@
 /**
- * Root layout — wraps every screen.
- *
- * Expo Router turns the files in this `app/` folder into screens automatically:
- * `app/index.tsx` is "/", `app/settings.tsx` would be "/settings", and so on.
- * Add a new file here and it becomes a new screen on phone and web at once.
+ * Root layout — wraps every screen. Expo Router turns each file in this folder
+ * into a route: `index.tsx` is "/", `settings.tsx` would be "/settings".
  */
 
 import { Stack } from 'expo-router'

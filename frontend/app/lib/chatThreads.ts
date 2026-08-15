@@ -1,18 +1,11 @@
 /**
- * Local multi-thread history for the sidebar.
+ * Multi-thread history for the sidebar, built by hand.
  *
- * assistant-ui's `useLocalRuntime` only ever runs a single live thread — its
- * built-in thread-list (the thing `<ThreadList />` is normally backed by)
- * throws "Method not implemented" for switching/creating/deleting threads,
- * because real multi-thread support expects a remote adapter talking to a
- * backend that persists threads (assistant-ui Cloud, or your own — see
- * https://www.assistant-ui.com/docs/architecture). We don't have that backend
- * yet (no Thread/Message models in Django today), so "New Chat" / switching
- * between past conversations is built here instead: each thread's message
- * list is snapshotted into this array via `thread.subscribe(...)`, and
- * switching calls `thread.reset(messages)` to load a different one back into
- * the one live runtime. It's a real, working multi-thread sidebar — just
- * backed by this device's storage rather than a server.
+ * `useLocalRuntime` runs a single live thread and its built-in thread-list
+ * throws "Method not implemented" for switching/creating/deleting — real
+ * multi-thread support expects a remote adapter. So each thread is snapshotted
+ * here via `thread.subscribe(...)`, and switching calls `thread.reset(messages)`
+ * to load another one back into the single live runtime.
  */
 
 import type { ThreadMessageLike } from '@assistant-ui/react-native'
@@ -32,16 +25,15 @@ export function createEmptyThread(id: string): ChatThread {
 
 // --- Persistence --------------------------------------------------------------
 //
-// Threads are saved to our Django backend (see backend/apps/core/models.py for
-// why we run our own storage rather than assistant-ui's hosted Cloud). This
-// replaces a localStorage cache that only ever worked on web — on a phone,
-// `window` does not exist, so every conversation was lost on restart.
+// Threads are saved to our Django backend, not assistant-ui's hosted Cloud (see
+// backend/apps/core/models.py). This replaces a localStorage cache that only
+// worked on web — `window` does not exist on a phone, so native builds lost
+// every conversation on restart.
 
 /**
- * The wire format and assistant-ui's format are the same JSON, but TypeScript
- * cannot know that: the server round-trips `content` as opaque JSON, so it
- * comes back as `unknown[]`. These two functions are where that is asserted,
- * deliberately in one place rather than at every call site.
+ * The wire format and assistant-ui's format are the same JSON, but the server
+ * round-trips `content` as opaque `unknown[]`. These two functions are the one
+ * place that gap is asserted away, rather than at every call site.
  */
 function toStored(thread: ChatThread): StoredMessage[] {
   return thread.messages.map((message) => ({
@@ -62,13 +54,7 @@ function fromStored(messages: StoredMessage[]): ThreadMessageLike[] {
   )
 }
 
-/**
- * Load this session's threads.
- *
- * Returns an empty list rather than throwing when the backend is unreachable —
- * a student with no network should still get a usable app with a fresh chat,
- * not an error screen. The caller decides what to show.
- */
+/** Throws when the backend is unreachable; the caller decides what to show. */
 export async function loadThreads(): Promise<ChatThread[]> {
   const stored = await fetchThreads()
   return stored.map((thread) => ({
@@ -78,17 +64,15 @@ export async function loadThreads(): Promise<ChatThread[]> {
   }))
 }
 
-/** Persist one thread. Creates it server-side on first call. */
 export async function persistThread(thread: ChatThread): Promise<void> {
   await saveThread(thread.id, toStored(thread))
 }
 
-/** Remove a thread from the server. */
 export async function removeThread(id: string): Promise<void> {
   await deleteThread(id)
 }
 
-/** Derives a display title from the first user message — there's no separate title field to keep in sync. */
+/** Derived from the first user message — there is no stored title to keep in sync. */
 export function threadTitle(thread: ChatThread): string {
   const firstUser = thread.messages.find((m) => m.role === 'user')
   if (!firstUser) return 'New chat'

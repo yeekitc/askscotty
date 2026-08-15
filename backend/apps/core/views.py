@@ -1,9 +1,4 @@
-"""The API endpoints.
-
-Three of them: a health check, the ask endpoint, and the source registry that
-powers the credits and freshness UI. Shapes are defined in serializers.py and
-agreed in tasklist.md §2.
-"""
+"""The API endpoints. Shapes live in serializers.py, agreed in tasklist §2."""
 
 from __future__ import annotations
 
@@ -45,15 +40,9 @@ class HealthView(APIView):
 class AskView(APIView):
     """POST /api/ask/ — the main endpoint.
 
-    Non-streaming, by decision (tasklist §1): one request, one JSON answer. The
-    app reports which modes ran from `modes_used` after the fact rather than
-    live, which is enough for P0 and avoids agreeing an SSE format before the
-    planner exists.
-
-    The planner itself is tasklist B4. What is real here is the contract and the
-    per-session toolset: `tools_for_session` returns the public tools plus any
-    personal ones this session has connected, and that list is what B4 hands to
-    the model.
+    Non-streaming by decision (tasklist §1): one request, one JSON answer, so we
+    do not have to agree an SSE format before the planner exists. The planner is
+    tasklist B4; the contract and the per-session toolset are real already.
     """
 
     authentication_classes: list = []
@@ -67,10 +56,8 @@ class AskView(APIView):
         session_id = serializer.validated_data["session_id"]
         history = serializer.validated_data["history"]
 
-        # The toolset this request is allowed to use. Building it here rather
-        # than inside the planner keeps the session-scoping decision in one
-        # place — and makes it visible in the stub answer below, so the wiring
-        # can be checked before B4 exists.
+        # Built here rather than inside the planner so the session-scoping
+        # decision lives in one place.
         tools = tools_for_session(session_id)
         personal_tools = [tool.name for tool in tools if tool.is_personal]
 
@@ -94,19 +81,17 @@ class AskView(APIView):
                     "source": "AskScotty (stub)",
                     "indexed_at": None,
                     "verified_at": datetime.now(timezone.utc),
-                    # Not live campus data, so it is badged like anything else
-                    # that isn't. PRD §9 applies to our own placeholder too.
+                    # PRD §9 applies to our own placeholder too.
                     "is_mock": True,
                 }
             ],
-            # Nothing ran, so nothing is claimed. Filling this with a plausible
-            # mode would make the demo look further along than it is.
+            # Nothing ran, so nothing is claimed.
             "modes_used": [],
             "note": "Demo stub — the planner is not wired up yet, so this is not live campus data.",
         }
 
-        # Validated on the way out. When B4 replaces the stub, a malformed answer
-        # fails here in the backend rather than rendering wrong in the app.
+        # Validated on the way out: a malformed answer fails here rather than
+        # rendering wrong in the app.
         response = AskResponseSerializer(data=payload)
         response.is_valid(raise_exception=True)
         return Response(response.validated_data, status=status.HTTP_200_OK)
@@ -116,8 +101,8 @@ class SourcesView(APIView):
     """GET /api/sources/ — what AskScotty draws on, and how fresh it is.
 
     Session-independent on purpose: it lists what the product *can* use, not what
-    any particular person has connected, so there is nothing here to leak. The
-    connectors UI asks a different question and gets its own endpoint (B5).
+    anyone has connected, so there is nothing here to leak. The connectors UI
+    gets its own endpoint (B5).
     """
 
     authentication_classes: list = []
@@ -147,16 +132,15 @@ class SourcesView(APIView):
 #
 # Chat history lives in our database rather than assistant-ui's hosted Cloud —
 # see apps/core/models.py for why. Every endpoint below is scoped to one
-# anonymous session (tasklist §1), the same way apps/personal scopes connectors.
+# anonymous session (tasklist §1).
 
 
 def _session_id(request: Request) -> str:
     """The session this request belongs to, or a 400 explaining that it must.
 
     Read from a header rather than the URL on purpose: a session id is a bearer
-    token (see apps/personal/models.py), and query strings end up in server
-    logs and browser history. `session_id` in the /api/ask/ body is optional
-    because public questions work without one; here it is required, because
+    token (see apps/personal/models.py), and query strings end up in server logs
+    and browser history. Required here, unlike in the /api/ask/ body, because
     "whose threads?" has no sensible default.
     """
     session_id = request.headers.get("X-Session-Id", "").strip()
@@ -170,13 +154,12 @@ def _session_id(request: Request) -> str:
 
 
 def _serialize_thread(thread: Thread) -> dict:
-    """One thread in the shape the app stores it (see ThreadSerializer)."""
     return {
         "id": thread.client_id,
         "messages": [
             {"role": message.role, "content": message.content}
-            # `.all()` rather than a fresh query so the prefetch in ThreadListView
-            # is actually used — otherwise this is one query per thread.
+            # `.all()` rather than a fresh query so ThreadListView's prefetch is
+            # actually used — otherwise this is one query per thread.
             for message in thread.messages.all()
         ],
         "updated_at": thread.updated_at,
@@ -186,10 +169,9 @@ def _serialize_thread(thread: Thread) -> dict:
 class ThreadListView(APIView):
     """GET /api/threads/ — every thread for this session, newest first.
 
-    Returns full message lists rather than just titles. The sidebar needs to be
-    able to switch threads instantly, and at demo scale (tens of threads) one
-    round trip beats a request per thread. If a session ever accumulates enough
-    history for that to hurt, this is where pagination goes.
+    Returns full message lists, not just titles, so the sidebar can switch
+    threads instantly: at demo scale one round trip beats a request per thread.
+    Pagination goes here if a session ever accumulates enough history to hurt.
     """
 
     authentication_classes: list = []
@@ -203,8 +185,6 @@ class ThreadListView(APIView):
         )
 
         payload = {"threads": [_serialize_thread(thread) for thread in threads]}
-        # Same belt-and-braces as AskView: serialize the response so a shape
-        # change here fails in the backend rather than in the app.
         return Response(
             ThreadListResponseSerializer(payload).data, status=status.HTTP_200_OK
         )
@@ -213,11 +193,9 @@ class ThreadListView(APIView):
 class ThreadDetailView(APIView):
     """PUT / DELETE /api/threads/{thread_id}/ — save or remove one thread.
 
-    PUT is an upsert: the app owns thread ids and creates them locally the
-    moment someone taps "New Chat", so the first save of a thread and every
-    later one are the same request. That also matches how the screen already
-    works — it mirrors the live thread's messages on every change rather than
-    appending turn by turn.
+    PUT is an upsert: the app owns thread ids and creates them locally the moment
+    someone taps "New Chat", so the first save and every later one are the same
+    request, mirroring the whole thread rather than appending turn by turn.
     """
 
     authentication_classes: list = []
@@ -230,16 +208,15 @@ class ThreadDetailView(APIView):
         serializer.is_valid(raise_exception=True)
         messages = serializer.validated_data["messages"]
 
-        # One transaction so a thread is never left half-written: readers see
-        # either the old message list or the new one.
+        # Readers see either the old message list or the new one, never a
+        # half-written thread.
         with transaction.atomic():
             thread, _created = Thread.objects.get_or_create(
                 session_id=session_id, client_id=thread_id
             )
 
-            # Replace rather than diff. The app sends the whole thread every
-            # time, and message ids are not stable across an edit or a branch,
-            # so "delete and rewrite" is both simpler and more correct here.
+            # Replace rather than diff: the app sends the whole thread every
+            # time, and message ids are not stable across an edit or a branch.
             thread.messages.all().delete()
             Message.objects.bulk_create(
                 [
@@ -253,9 +230,8 @@ class ThreadDetailView(APIView):
                 ]
             )
 
-            # get_or_create already set updated_at on insert, but an update to
-            # an existing thread has not touched the row itself — save it so the
-            # sidebar's ordering reflects the new activity.
+            # Rewriting messages does not touch the thread row, so auto_now
+            # would not fire and the sidebar's ordering would go stale.
             thread.save(update_fields=["updated_at"])
 
         thread.refresh_from_db()
@@ -266,8 +242,8 @@ class ThreadDetailView(APIView):
     def delete(self, request: Request, thread_id: str) -> Response:
         session_id = _session_id(request)
 
-        # Filtered by session as well as id, so a guessed thread id from another
-        # session deletes nothing rather than someone else's conversation.
+        # Filtered by session as well as id, so a guessed thread id deletes
+        # nothing rather than someone else's conversation.
         deleted, _ = Thread.objects.filter(
             session_id=session_id, client_id=thread_id
         ).delete()

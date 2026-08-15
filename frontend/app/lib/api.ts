@@ -1,8 +1,6 @@
 /**
- * The one place that talks to the Django backend.
- *
- * Every screen should call these functions instead of using fetch() directly,
- * so there is a single place to add auth headers, logging, or error handling.
+ * The one place that talks to the Django backend — screens call these instead
+ * of fetch(), so auth headers and error handling live in a single place.
  */
 
 import { getSessionId } from './session'
@@ -16,14 +14,9 @@ import type {
 } from './types'
 
 /**
- * Where the backend lives.
- *
- * Expo inlines any env var starting with EXPO_PUBLIC_ at build time, so this
- * works on phone and web. Set it in frontend/app/.env (NOT the repo-root .env —
- * Expo only reads .env from this folder).
- *
- * On a physical phone, "localhost" means the phone itself, so you must set this
- * to your laptop's LAN IP, e.g. http://192.168.1.20:8000
+ * Set in frontend/app/.env, not the repo-root .env — Expo only reads this
+ * folder's. On a physical phone "localhost" is the phone itself, so it has to
+ * be the laptop's LAN IP, e.g. http://192.168.1.20:8000
  */
 export const API_URL = process.env.EXPO_PUBLIC_API_URL ?? 'http://localhost:8000'
 
@@ -48,12 +41,9 @@ type RequestOptions = {
 }
 
 /**
- * Every call to the backend goes through here.
- *
- * Two things happen for free as a result: the anonymous session id is attached
- * to each request (see lib/session.ts — it is a bearer token, so it rides in a
- * header, never the URL), and the backend's `{error: {code, message}}` shape is
- * unwrapped into a thrown ApiError carrying that code.
+ * Every call goes through here, so two things are guaranteed: the session id
+ * rides in a header rather than the URL (it is a bearer token — see
+ * lib/session.ts), and `{error: {code, message}}` becomes a thrown ApiError.
  */
 async function request<T>(path: string, { method = 'GET', body }: RequestOptions = {}): Promise<T> {
   const controller = new AbortController()
@@ -76,7 +66,7 @@ async function request<T>(path: string, { method = 'GET', body }: RequestOptions
       throw await toApiError(response)
     }
 
-    // 204 No Content (a thread delete) has no body to parse.
+    // 204 No Content (a thread delete) has no body.
     if (response.status === 204) return undefined as T
 
     return (await response.json()) as T
@@ -95,7 +85,6 @@ async function request<T>(path: string, { method = 'GET', body }: RequestOptions
   }
 }
 
-/** Turns a failed response into the most specific ApiError we can manage. */
 async function toApiError(response: Response): Promise<ApiError> {
   const raw = await response.text().catch(() => '')
 
@@ -105,8 +94,8 @@ async function toApiError(response: Response): Promise<ApiError> {
       return new ApiError(parsed.error.message, parsed.error.code ?? 'error', response.status)
     }
   } catch (e) {
-    // Not JSON — a proxy error page or a Django debug traceback. Fall through
-    // to the generic message rather than showing the user raw HTML.
+    // Not JSON — a proxy error page or a Django traceback. Fall through rather
+    // than showing the user raw HTML.
   }
 
   return new ApiError(
@@ -116,22 +105,14 @@ async function toApiError(response: Response): Promise<ApiError> {
   )
 }
 
-/**
- * What actually comes back over the wire. `AskResponse` is what the rest of
- * the app is allowed to assume; this is the looser version we get before
- * `normalizeCitation` has filled in whatever the backend left out.
- */
+/** The looser wire shape, before `normalizeCitation` fills in the gaps. */
 type RawAskResponse = Omit<AskResponse, 'citations'> & {
   citations?: Partial<Citation>[]
 }
 
 /**
- * Fills in a citation's missing fields and reports mock sources.
- *
- * Mock data is announced on the console instead of being badged in the UI.
- * NOTE: PRD §9 and tasklist §F2/§4 both require a *visible* mock label, so
- * this is a deliberate deviation — the badge markup still lives in git
- * history if that requirement comes back before submission.
+ * Fills in whatever the backend omitted, so components never have to.
+ * Mock sources are logged rather than badged — see the note in CitationCard.
  */
 function normalizeCitation(raw: Partial<Citation>): Citation {
   const citation: Citation = {
@@ -152,10 +133,9 @@ function normalizeCitation(raw: Partial<Citation>): Citation {
 
 /** Ask Scotty a question. Backed by POST /api/ask/ */
 export async function ask(query: string, sources?: string[]): Promise<AskResponse> {
-  // The session goes in the *body* here, not just the header `request` adds.
-  // /api/ask/ reads it from the body (AskSerializer.session_id), and that is
-  // what decides whether the planner may use this person's connected sources —
-  // so omitting it would silently drop every personal tool from the request.
+  // /api/ask/ reads the session from the *body* (AskSerializer.session_id), not
+  // the header `request` adds, and that is what lets the planner use this
+  // person's connected sources. Omitting it silently drops every personal tool.
   const body: AskRequest & { sources?: string[] } = {
     query,
     session_id: await getSessionId(),
@@ -168,9 +148,9 @@ export async function ask(query: string, sources?: string[]): Promise<AskRespons
 
 // --- Chat history -------------------------------------------------------------
 //
-// Threads live in our own Postgres rather than assistant-ui's hosted Cloud —
-// see backend/apps/core/models.py for that decision. All three calls are scoped
-// to this device's session by the header `request` adds.
+// Threads live in our own Postgres rather than assistant-ui's hosted Cloud (see
+// backend/apps/core/models.py). All three calls are scoped to this device's
+// session by the header `request` adds.
 
 /** Every saved thread for this session, newest first. */
 export async function fetchThreads(): Promise<StoredThread[]> {
@@ -179,12 +159,9 @@ export async function fetchThreads(): Promise<StoredThread[]> {
 }
 
 /**
- * Save a thread, creating it if the server has not seen this id before.
- *
- * The whole message list goes up on every save rather than just the new turn.
- * That mirrors how the screen already works — it snapshots the live thread on
- * every change — and it means an edited or branched thread cannot drift from
- * what is stored.
+ * Save a thread, creating it if the server has not seen this id before. The
+ * whole message list goes up every time, not just the new turn, so an edited
+ * or branched thread cannot drift from what is stored.
  */
 export function saveThread(id: string, messages: StoredThread['messages']): Promise<StoredThread> {
   return request<StoredThread>(`/api/threads/${encodeURIComponent(id)}/`, {

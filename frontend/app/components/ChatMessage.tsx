@@ -1,9 +1,6 @@
 /**
- * One row in the thread — a user bubble or a Scotty-avatar assistant card.
- *
- * Rendered once per message by Thread.MessagesFlatList (see app/index.tsx).
- * MessagePrimitive components read the current message from ambient
- * context, so this component doesn't need the message passed in as a prop.
+ * One row in the thread. MessagePrimitive reads the current message from
+ * ambient context, so nothing has to be passed in as a prop.
  */
 
 import { Image, StyleSheet, Text, View } from 'react-native'
@@ -68,9 +65,8 @@ const styles = StyleSheet.create({
     alignItems: 'flex-start',
     gap: spacing.md,
   },
-  // No marginTop here on purpose — both the avatar and assistantCard are
-  // top-aligned flex children of the same row, so a 0 offset is what makes
-  // the avatar's top edge land exactly on the card's top edge.
+  // No marginTop on purpose: avatar and card are top-aligned children of the
+  // same row, so a 0 offset is what lines their top edges up.
   avatar: {
     width: 36,
     height: 36,

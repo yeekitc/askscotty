@@ -1,16 +1,14 @@
 /**
- * Shared colours and spacing.
- *
- * Change a value here and it updates on phone AND web. Prefer adding a token
- * here over hardcoding a hex code in a component.
+ * Shared colours and spacing. Add a token here rather than hardcoding a value
+ * in a component.
  */
 
 export const colors = {
   background: '#eef3f7',
   surface: 'rgba(255, 255, 255, 0.85)',
   border: '#9bb0bf',
-  // A softer, lower-contrast line for dividers that don't need to read as a
-  // hard edge — used once hierarchy comes from spacing/shadow instead of color.
+  // For dividers that shouldn't read as a hard edge, where hierarchy already
+  // comes from spacing and shadow.
   borderSoft: '#e1e8ee',
   text: '#12202b',
   textMuted: '#4a6273',
@@ -19,11 +17,11 @@ export const colors = {
   accentText: '#f7fafc',
   error: '#8a1f1f',
   mockBadge: '#8a5a1f',
-  // Slightly lighter than `background` so the sidebar reads as its own
-  // surface without needing a hard border to separate it.
+  // Lighter than `background` so the sidebar reads as its own surface without
+  // needing a border.
   sidebar: '#f9fafb',
   sidebarHover: '#eef1f4',
-  // Backdrop behind the sidebar when it opens as an overlay on narrow screens.
+  // Backdrop behind the sidebar when it opens as a drawer on narrow screens.
   overlay: 'rgba(12, 20, 28, 0.35)',
 }
 
@@ -43,11 +41,7 @@ export const radius = {
   pill: 999,
 }
 
-/**
- * Cross-platform "soft ambient shadow" — iOS/web read the shadow* props,
- * Android reads `elevation`. Both need to be set for the same effect on
- * every platform this app runs on.
- */
+/** iOS and web read the shadow* props, Android reads `elevation`. Set both. */
 export const shadows = {
   soft: {
     shadowColor: '#0f1a24',

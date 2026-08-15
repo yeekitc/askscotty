@@ -80,6 +80,10 @@ These are non-negotiable; see PRD.md §9 and §10.
 
 ## Style
 
-Match the surrounding code. The existing code is commented more heavily than usual
-on purpose — several teammates are non-technical, so explain *why* rather than
-restating what a line does. Keep that up in new code.
+Match the surrounding code. **Keep comments lean.**
+
+Comment only when the reason isn't visible from the code — a constraint, a
+trade-off, a bug being avoided, a rule from the PRD. Never restate what a line
+does, and don't write tutorial prose.
+
+If a comment could be deleted without losing information, delete it.
