@@ -33,6 +33,9 @@ INSTALLED_APPS = [
     "corsheaders",
     "rest_framework",
     "apps.core",
+    # Before apps.tools, same as apps.personal: ToolsConfig.ready() imports
+    # apps.rag.tools, so rag's models must be loaded first.
+    "apps.rag",
     # Before apps.tools: ToolsConfig.ready() imports the personal tool modules,
     # and app configs load in order, so personal's models must be ready first.
     "apps.personal",
