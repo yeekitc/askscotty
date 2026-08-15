@@ -155,6 +155,7 @@ docker compose exec backend python manage.py migrate
 |--------|------|---------|
 | `GET` | `/api/health/` | health check — is the API alive? |
 | `POST` | `/api/ask/` | the main endpoint (`{"query", "session_id"?, "history"?}`) |
+| `POST` | `/api/ask/stream/` | the same answer as SSE progress events — see below |
 | `GET` | `/api/sources/` | what AskScotty draws on, and how fresh each source is |
 | `GET` | `/api/threads/` | this session's saved conversations |
 | `PUT` | `/api/threads/{id}/` | save a conversation (creates it if new) |
@@ -175,9 +176,11 @@ Open http://localhost:8000/api/ask/ in a browser for a clickable form to test th
   "answer": "string",
   "citations": [
     {
+      "id": "S1",
       "title": "string",
       "url": "string",
       "source": "string",
+      "snippet": "string",
       "indexed_at": "ISO-8601 or null",
       "verified_at": "ISO-8601 or null",
       "is_mock": false
@@ -190,7 +193,40 @@ Open http://localhost:8000/api/ask/ in a browser for a clickable form to test th
 
 Errors — any status — come back as `{"error": {"code": "...", "message": "..."}}`, so the app can show a useful message instead of guessing at the body.
 
-**`/api/ask/` currently returns a stub answer.** The contract, the tool registry and the per-session toolset are real; the planner that fills the answer in is not written yet (tasklist B4). It goes in `backend/apps/core/views.py`.
+### Watching an answer come together
+
+`POST /api/ask/stream/` takes the same body and streams Server-Sent Events while
+the planner works:
+
+| Event | Data | Means |
+|---|---|---|
+| `mode_start` | `{mode, tool}` | a lane started — light up its chip |
+| `mode_end` | `{mode, tool, ok}` | it finished, or failed |
+| `text_delta` | `{text}` | answer text as the model writes it |
+| `done` | the full `AskResponse` | the validated answer |
+| `error` | `{code, message}` | it failed after the response had started |
+
+`done` carries **the same validated answer** `/api/ask/` returns, so nothing is
+lost by ignoring the rest — the plain endpoint stays a fallback.
+
+Two things about `text_delta`. It is **provisional**: text written before a
+`mode_start` was the model talking itself into a lookup, so drop what you have
+when a lane starts, and let `done` replace it at the end (markers are validated
+by then, deltas are raw). And it is **chunky, not a typewriter** — the API
+batches its own output, in practice a handful of pieces that get longer as
+generation speeds up.
+
+```bash
+curl -N -X POST http://localhost:8000/api/ask/stream/ \
+  -H 'Content-Type: application/json' \
+  -d '{"query": "what is open near Wean right now?"}'
+```
+
+**The answer is real, but the sources are not there yet.** The planner runs
+(tasklist B4) — it routes, calls tools, cites what they return and degrades when
+one fails. What it has to work with is still thin: every registered tool raises
+`ToolError` until B1–B3 land, so most answers come back saying they could not
+check a live campus source.
 
 The shapes are defined in three places that must stay in sync:
 - `tasklist.md` §2 — where the contract is agreed

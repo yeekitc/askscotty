@@ -40,6 +40,9 @@ INSTALLED_APPS = [
     # and app configs load in order, so personal's models must be ready first.
     "apps.personal",
     "apps.tools",
+    # After apps.tools: the planner reads the registry rather than owning any of
+    # it, so every tool must be registered before a request reaches the loop.
+    "apps.planner",
 ]
 
 MIDDLEWARE = [
@@ -112,6 +115,23 @@ STORAGES = {
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
+# Django's default config only wires up the `django` logger, so everything our
+# own code logs at INFO — the per-tool-call line in tools/registry.py, the
+# planner's cache counters — went nowhere at all without this.
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "formatters": {"apps": {"format": "%(levelname)s %(name)s %(message)s"}},
+    "handlers": {"console": {"class": "logging.StreamHandler", "formatter": "apps"}},
+    "loggers": {
+        "apps": {
+            "handlers": ["console"],
+            "level": os.getenv("LOG_LEVEL") or "INFO",
+            "propagate": False,
+        }
+    },
+}
+
 CORS_ALLOWED_ORIGINS = [
     origin.strip()
     for origin in os.getenv("CORS_ALLOWED_ORIGINS", "").split(",")
@@ -164,6 +184,34 @@ ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 # state of a freshly copied .env, and should mean "use the default" rather than
 # "use the empty string". Same below.
 PLANNER_MODEL = os.getenv("PLANNER_MODEL") or "claude-sonnet-5"
+
+# How hard the model thinks before answering. The default is `high`; for tool
+# routing `medium` is plenty and it is the main latency lever we have.
+# Note what is *not* here: temperature, top_p and top_k are a 400 on this model
+# at any non-default value, so the planner never sends them.
+PLANNER_EFFORT = os.getenv("PLANNER_EFFORT") or "medium"
+
+# Keep at or below 16000: above that the SDK refuses non-streaming calls, and the
+# contract is one JSON answer.
+PLANNER_MAX_TOKENS = int(os.getenv("PLANNER_MAX_TOKENS") or 8000)
+
+# Three independent brakes, all ending the same way — one last call with tools
+# switched off, so a slow or looping turn costs detail rather than the answer.
+PLANNER_MAX_ITERATIONS = int(os.getenv("PLANNER_MAX_ITERATIONS") or 8)
+PLANNER_MAX_PAUSE_RESUMES = int(os.getenv("PLANNER_MAX_PAUSE_RESUMES") or 3)
+# The deadline plus one forced call has to fit inside the app's ~2min backstop
+# (frontend/app/lib/api.ts), so these two are set together.
+PLANNER_DEADLINE_SECONDS = float(os.getenv("PLANNER_DEADLINE_SECONDS") or 60)
+PLANNER_REQUEST_TIMEOUT = float(os.getenv("PLANNER_REQUEST_TIMEOUT") or 45)
+PLANNER_MAX_RETRIES = int(os.getenv("PLANNER_MAX_RETRIES") or 1)
+
+# Off until the app can render an [S1] marker as a citation chip (tasklist F2) —
+# with no renderer the user just sees a literal "[S1]" in the prose.
+PLANNER_CITATION_MARKERS = os.getenv("PLANNER_CITATION_MARKERS", "").lower() in {
+    "1",
+    "true",
+    "yes",
+}
 
 # Embeddings for the vector half of hybrid retrieval. A separate provider by
 # necessity: Anthropic has no embeddings endpoint (tasklist §1).

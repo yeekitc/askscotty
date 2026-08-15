@@ -4,7 +4,7 @@
  */
 
 import { Image, StyleSheet, Text, View } from 'react-native'
-import { MessagePrimitive as Message } from '@assistant-ui/react-native'
+import { MessagePrimitive as Message, useAuiState } from '@assistant-ui/react-native'
 
 import { colors, radius, spacing } from '../lib/theme'
 import { sourcePartToCitation } from '../lib/assistantAdapter'
@@ -13,6 +13,17 @@ import { CitationCard } from './CitationCard'
 const MASCOT = require('../assets/mascot.png')
 
 export function ChatMessage() {
+  // The runtime creates the assistant message as soon as a run starts, and an
+  // empty card sitting above the typing indicator reads as a broken answer.
+  // TypingIndicator holds this slot until there is something to put in it.
+  const isBlank = useAuiState(
+    (state) =>
+      state.message.role === 'assistant' &&
+      !state.message.content.some((part) => part.type !== 'text' || part.text.length > 0),
+  )
+
+  if (isBlank) return null
+
   return (
     <Message.Root style={styles.root}>
       <Message.If user>

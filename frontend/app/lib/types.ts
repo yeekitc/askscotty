@@ -10,11 +10,19 @@
  * fills the gaps first, so components never write `citation.source ?? '…'`.
  */
 export type Citation = {
+  /**
+   * The planner's handle for this source ("S1") — the only thing the model ever
+   * writes about it, and what an inline `[S1]` marker resolves to. Explicit
+   * rather than positional so filtering the list cannot rebind the markers.
+   */
+  id: string
   title: string
   /** Empty string when the source has no public URL. */
   url: string
   /** e.g. "Courses", "CMU Eats", "TartanConnect". */
   source: string
+  /** The supporting excerpt for a citation preview. '' when there isn't one. */
+  snippet: string
   /** Both timestamps must be surfaced in the UI (PRD §9). */
   indexed_at: string | null
   verified_at: string | null
@@ -60,6 +68,23 @@ export type AskResponse = {
   /** A caveat to show above the answer, or null when there is nothing to flag. */
   note: string | null
 }
+
+/**
+ * What POST /api/ask/stream/ pushes while an answer is being built. Additive:
+ * `done` carries the same AskResponse the non-streaming endpoint returns, so a
+ * caller that ignores everything else loses nothing but the progress.
+ */
+export type AskEvent =
+  | { type: 'mode_start'; data: { mode: Mode; tool: string } }
+  | { type: 'mode_end'; data: { mode: Mode; tool: string; ok: boolean } }
+  /**
+   * Answer text as the model writes it. Append, but treat it as provisional:
+   * text written before a lane starts was the model talking itself into a
+   * lookup, and `done` is the only authoritative answer.
+   */
+  | { type: 'text_delta'; data: { text: string } }
+  | { type: 'done'; data: AskResponse }
+  | { type: 'error'; data: { code: string; message: string } }
 
 /** One row of GET /api/sources/ — the credits and freshness list. */
 export type Source = {

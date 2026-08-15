@@ -59,11 +59,21 @@ class CitationSerializer(serializers.Serializer):
     than defaulted — a citation that forgot it would claim to be real data.
     """
 
+    # The planner's stable handle for this source ("S1"), and the only thing the
+    # model ever writes about it — so it can neither invent a source nor relabel
+    # a mock as live. Explicit rather than positional, so filtering the list
+    # later cannot silently rebind every marker.
+    id = serializers.CharField(allow_blank=True, default="")
+
     title = serializers.CharField()
 
     # Not URLField: mock sources legitimately have no link, and a deep link is
     # not always http(s). Empty string means "no link".
     url = serializers.CharField(allow_blank=True, default="")
+
+    # The supporting excerpt, for a tap-to-open preview. "" when the tool has
+    # nothing to quote — a preview showing only the title is pointless.
+    snippet = serializers.CharField(allow_blank=True, default="")
 
     # Human-readable ("CMU Eats"), not the internal tool name — it goes on the
     # citation card.
