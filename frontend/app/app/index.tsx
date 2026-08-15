@@ -23,6 +23,7 @@ import {
   AssistantRuntimeProvider,
   ThreadPrimitive as Thread,
   generateId,
+  useAuiState,
   useLocalRuntime,
   type ThreadMessageLike,
 } from '@assistant-ui/react-native'
@@ -384,16 +385,25 @@ export default function AskScreen() {
 }
 
 /**
- * `Thread.If running` is assistant-ui's own loading primitive — the runtime
- * sets `isRunning` while the adapter's run() is pending, so nothing here tracks
- * requests. /api/ask/ is non-streaming, so this stays up for the round trip.
+ * Dots until the answer starts arriving, then nothing.
+ *
+ * Not `Thread.If running`, which is what this used to be: `isRunning` stays true
+ * for the whole turn, so once the answer streams you get dots *underneath* text
+ * that is already being written. The handoff is the first chunk, not the end of
+ * the run.
  */
 function RunningIndicator() {
-  return (
-    <Thread.If running>
-      <TypingIndicator />
-    </Thread.If>
-  )
+  const waiting = useAuiState((state) => {
+    if (!state.thread.isRunning) return false
+
+    // The runtime creates the assistant message the moment the run starts, so
+    // its existence says nothing about whether there is anything to read yet.
+    const last = state.thread.messages[state.thread.messages.length - 1]
+    if (!last || last.role !== 'assistant') return true
+    return !last.content.some((part) => part.type !== 'text' || part.text.length > 0)
+  })
+
+  return waiting ? <TypingIndicator /> : null
 }
 
 const styles = StyleSheet.create({
