@@ -125,6 +125,11 @@ export type StoredMessage = {
 export type StoredThread = {
   id: string
   messages: StoredMessage[]
+  /**
+   * Set only by an explicit rename. Empty means the app derives the title from
+   * the first user message, so an untouched thread still names itself.
+   */
+  title: string
   /** Server-side last-write time, ISO 8601. Orders the sidebar. */
   updated_at: string
 }

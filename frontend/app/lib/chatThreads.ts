@@ -16,11 +16,13 @@ import type { StoredMessage } from './types'
 export type ChatThread = {
   id: string
   messages: ThreadMessageLike[]
+  /** Empty until somebody renames it; `threadTitle` falls back to the first message. */
+  title: string
   updatedAt: number
 }
 
 export function createEmptyThread(id: string): ChatThread {
-  return { id, messages: [], updatedAt: Date.now() }
+  return { id, messages: [], title: '', updatedAt: Date.now() }
 }
 
 // --- Persistence --------------------------------------------------------------
@@ -60,12 +62,14 @@ export async function loadThreads(): Promise<ChatThread[]> {
   return stored.map((thread) => ({
     id: thread.id,
     messages: fromStored(thread.messages),
+    // Tolerated as missing so an app build newer than the backend still loads.
+    title: thread.title ?? '',
     updatedAt: Date.parse(thread.updated_at) || Date.now(),
   }))
 }
 
 export async function persistThread(thread: ChatThread): Promise<void> {
-  await saveThread(thread.id, toStored(thread))
+  await saveThread(thread.id, toStored(thread), thread.title)
 }
 
 /**
@@ -81,8 +85,13 @@ export async function removeThread(id: string): Promise<void> {
   }
 }
 
-/** Derived from the first user message — there is no stored title to keep in sync. */
+/**
+ * An explicit rename wins; otherwise the title is derived from the first user
+ * message, so a thread nobody has renamed keeps naming itself as it grows.
+ */
 export function threadTitle(thread: ChatThread): string {
+  if (thread.title) return thread.title
+
   const firstUser = thread.messages.find((m) => m.role === 'user')
   if (!firstUser) return 'New chat'
 

@@ -165,6 +165,11 @@ class ThreadSerializer(serializers.Serializer):
 
     id = serializers.CharField(max_length=64)
     messages = MessageSerializer(many=True)
+    # Optional on write, and with no default, so an omitted key stays out of
+    # `validated_data` entirely: a body that does not mention the title leaves
+    # an existing rename alone rather than silently clearing it. Sending `""`
+    # is still how you clear one.
+    title = serializers.CharField(max_length=120, allow_blank=True, required=False)
     updated_at = serializers.DateTimeField(read_only=True)
 
 

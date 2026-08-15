@@ -116,7 +116,7 @@ so a malformed answer fails in the backend rather than rendering wrong in the ap
       unreadable on iOS/Android. XHR works on all three, so it is one code path
       (`askEvents` in `lib/api.ts`).
 - [x] Add `GET /api/sources/` returning the source registry (`name`, `tier`, `access`, `indexed_at`, plus `implemented` and `note`) — powers the credits/freshness UI
-- [x] **Chat history endpoints.** `GET /api/threads/` → `{threads: [{id, messages, updated_at}]}` · `PUT /api/threads/{id}/` (upsert, body `{messages}`) · `DELETE /api/threads/{id}/`. A message is `{role, content}` where `content` is assistant-ui's *parts* array, not a string — that is what keeps citations alive across a reload. Scoped by an **`X-Session-Id` header**, not the body: it is a bearer token and query strings end up in server logs. Missing header → `validation_error`.
+- [x] **Chat history endpoints.** `GET /api/threads/` → `{threads: [{id, title, messages, updated_at}]}` · `PUT /api/threads/{id}/` (upsert, body `{messages, title?}`) · `DELETE /api/threads/{id}/`. `title` is set only by an explicit rename — blank means the app derives it from the first message — and it is **optional on PUT**, where an omitted key leaves a stored rename alone and `""` clears it. A message is `{role, content}` where `content` is assistant-ui's *parts* array, not a string — that is what keeps citations alive across a reload. Scoped by an **`X-Session-Id` header**, not the body: it is a bearer token and query strings end up in server logs. Missing header → `validation_error`.
 - [x] Update the API table in [README.md](./README.md) when this changes
 
 ---
@@ -344,7 +344,8 @@ surfaces at once. See [CLAUDE.md](./CLAUDE.md) for the component rules (`<View>`
 ## F1. Ask flow — P0
 
 - [x] Split the screen into components (`CitationCard`, `Credits` in `frontend/app/components/`) — partially done, add the rest below
-- [ ] Loading state that shows *which mode is running* (not just "Asking…") — this is the demo's wow moment. **The data is already arriving:** `askEvents()` in `lib/api.ts` yields `mode_start` / `mode_end` and `createHttpAdapter` consumes them; what it renders is a placeholder line of text where this box wants chips
+- [x] Loading state that shows *which mode is running* (not just "Asking…") — shipped as the thinking indicator in `components/TypingIndicator.tsx`: the running lanes by name, plus elapsed seconds. Progress moved off the message channel into `lib/progress.ts`, because it used to be yielded as assistant *text* — a debounced save firing mid-run could persist "Checking Dining…" as somebody's answer. **Still a line, not chips** — see the next box. It matters more than it did: Managed Agents pushed time-to-first-token to ~28s, so this is what fills the wait
+- [ ] Upgrade that line to labelled chips, reusing whatever `modes_used` renders
 - [ ] Render `modes_used` as labelled chips (RAG · Courses · Dining · Events · Maps · Web verify · Personal)
 - [ ] Error state: network failure, 4xx, 5xx, timeout — each with a distinct message
 - [ ] Empty state before the first question, with 3–4 clickable example queries from PRD §8
@@ -364,6 +365,15 @@ Freshness and honesty are the product's differentiator (PRD §3, §9). Don't cut
 - [ ] Numbered inline markers in the answer body that link down to the citation list
 - [ ] Credits footer with the exact PRD §9 wording, including "**We are not affiliated with ScottyLabs.**"
 - [ ] Footer is present on every screen, including mobile
+
+**Markdown now renders** (`lib/markdown.ts` + `components/AnswerText.tsx`). The
+model writes bold, bullets and numbered lists and nothing was rendering them —
+assistant-ui's markdown package is React DOM, and `@assistant-ui/react-native`
+ships no renderer, so the asterisks were reaching the screen. No new dependency;
+[dependencies.md](./docs/dependencies.md) records why the three RN markdown
+libraries were all rejected. **The seam for the box above is `renderSpanText` in
+`AnswerText.tsx`** — every leaf string passes through it, so inline `[S1]` chips
+slot in there without touching block layout.
 
 ## F3. Web — polish — P0/P1
 

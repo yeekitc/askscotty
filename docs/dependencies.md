@@ -129,6 +129,39 @@ source. See [frontend/app/package.json](./frontend/app/package.json).
 | `@react-native-async-storage/async-storage` | Key-value storage that works on **all three** platforms. Holds the anonymous session id ([`lib/session.ts`](./frontend/app/lib/session.ts)) and the source filter. Replaced `localStorage`, which is web-only — on a phone `window` does not exist, so the guards around it meant native builds silently persisted nothing and lost every conversation on restart. |
 | `typescript`, `@types/react` | Types. The API contract in [`lib/types.ts`](./frontend/app/lib/types.ts) is only load-bearing because TypeScript enforces it — keep `npx tsc --noEmit` clean. |
 
+### Markdown rendering: evaluated and hand-rolled
+
+**No package.** `lib/markdown.ts` (~180 lines) parses the subset the planner
+actually writes, and `components/AnswerText.tsx` renders it.
+
+This needed deciding because the model emits Markdown and **nothing in our stack
+renders it** — assistant-ui's markdown support is a separate package,
+`@assistant-ui/react-markdown`, built on `react-markdown` and Radix, so it is
+React DOM only. `@assistant-ui/react-native` exports no markdown renderer at all;
+it hands you `part.text` and expects you to render it. Until this landed, `**bold**`
+reached the screen with the asterisks showing.
+
+Three libraries were checked. All of them cost more than they save here:
+
+| Package | Why not |
+|---|---|
+| `react-native-markdown-display` | Unpublished since 2023, on `markdown-it@10` and `react-native-fit-image` — an unmaintained renderer against RN 0.86 + React 19 is a bet, not a saving |
+| `@ronradtke/react-native-markdown-display` | Maintained, but pulls `@react-native-vector-icons/material-design-icons` **and** `prism-react-renderer` — an icon font needing native linking plus a syntax highlighter, to render three bullets and some bold |
+| `react-native-marked` | Needs `react-native-svg` as a peer dependency — a new native module in an Expo app whose whole selling point is that teammates never open Xcode |
+
+Rules of thumb 1 and 2 below both bite: the standard library really does do it
+(the answers are paragraphs, bullets, bold and the odd link), and every candidate
+adds a native build step for a teammate.
+
+The deciding argument is F2, though. Inline `[S1]` citation chips have to be
+**direct children of the outermost `<Text>`** ([b4-planner.md](./b4-planner.md)),
+and every one of these libraries owns the whole text subtree. `AnswerText`
+funnels each leaf string through one `renderSpanText` seam, which is where the
+chips go.
+
+**Revisit if** answers start containing tables, images, or nested lists — at that
+point the subset stops being a subset and the parser stops being small.
+
 ### `assistant-cloud` — keep it, and why removing it fails
 
 Two separate things share this name, and conflating them wastes an afternoon:

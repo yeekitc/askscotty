@@ -8,6 +8,7 @@ import { MessagePrimitive as Message, useAuiState } from '@assistant-ui/react-na
 
 import { colors, radius, spacing } from '../lib/theme'
 import { sourcePartToCitation } from '../lib/assistantAdapter'
+import { AnswerText } from './AnswerText'
 import { CitationCard } from './CitationCard'
 
 const MASCOT = require('../assets/mascot.png')
@@ -40,8 +41,15 @@ export function ChatMessage() {
         <View style={styles.assistantRow}>
           <Image source={MASCOT} style={styles.avatar} accessibilityLabel="Scotty" />
           <View style={styles.assistantCard}>
+            {/* The model writes Markdown — bold, bullets, the occasional
+                heading — and nothing renders it unless we do: assistant-ui's
+                markdown package is React DOM, and the React Native one ships no
+                renderer at all. Without AnswerText the asterisks show up
+                literally. */}
             <Message.Content
-              renderText={({ part }) => <Text style={styles.assistantText}>{part.text}</Text>}
+              renderText={({ part }) => (
+                <AnswerText text={part.text} style={styles.assistantText} />
+              )}
               renderSource={({ part }) => <CitationCard citation={sourcePartToCitation(part)} />}
             />
           </View>

@@ -331,11 +331,19 @@ export async function fetchThreads(): Promise<StoredThread[]> {
  * Save a thread, creating it if the server has not seen this id before. The
  * whole message list goes up every time, not just the new turn, so an edited
  * or branched thread cannot drift from what is stored.
+ *
+ * `title` is always sent — including as `''` — because the backend treats an
+ * absent key as "leave the stored title alone", which would make clearing a
+ * rename impossible from here.
  */
-export function saveThread(id: string, messages: StoredThread['messages']): Promise<StoredThread> {
+export function saveThread(
+  id: string,
+  messages: StoredThread['messages'],
+  title: string,
+): Promise<StoredThread> {
   return request<StoredThread>(`/api/threads/${encodeURIComponent(id)}/`, {
     method: 'PUT',
-    body: { messages },
+    body: { messages, title },
   })
 }
 

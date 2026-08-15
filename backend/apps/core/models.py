@@ -24,10 +24,21 @@ from django.db import models
 class Thread(models.Model):
     """One conversation in the sidebar.
 
-    The title is not stored: the app derives it from the first user message
-    (`threadTitle` in frontend/app/lib/chatThreads.ts).
+    The title is stored only once somebody renames the thread. Left blank, the
+    app derives it from the first user message (`threadTitle` in
+    frontend/app/lib/chatThreads.ts), so an untouched thread still retitles
+    itself as the conversation starts.
     """
 
+    # Blank rather than null: "no title" and "renamed to nothing" are the same
+    # state, and a single empty-string case is one less thing for the client to
+    # branch on.
+    title = models.CharField(
+        max_length=120,
+        blank=True,
+        default="",
+        help_text="Set by an explicit rename. Blank means derive it from the first message.",
+    )
     # A plain column rather than the primary key, because the app generates
     # these locally before the server has heard of the thread: two sessions can
     # then produce the same string without colliding.

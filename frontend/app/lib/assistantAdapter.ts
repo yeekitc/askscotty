@@ -10,6 +10,7 @@
 
 import type { ChatModelAdapter, SourceMessagePart } from '@assistant-ui/react-native'
 import { askEvents } from './api'
+import { endRun, laneEnded, laneStarted, startRun } from './progress'
 import type { Citation, Mode } from './types'
 
 const PROVIDER_KEY = 'askscotty'
@@ -79,14 +80,25 @@ export const MODE_LABELS: Record<Mode, string> = {
   personal: 'Your accounts',
 }
 
+/** A whole citation marker, or a partial one still being streamed at the end. */
+const STREAMED_MARKER = /\[S\d+\]/g
+const TRAILING_PARTIAL_MARKER = /\[S\d*$/
+
 /**
- * Placeholder for the real progress UI (tasklist F1), which wants mode chips
- * rather than a line of text. The events are what matter here; this only makes
- * them visible in the meantime.
+ * Streamed text, with citation markers held back until the answer is final.
+ *
+ * The agent is provisioned to write `[S1]` markers unconditionally — that is
+ * what lets citations be switched on by an env var rather than a re-provision
+ * (docs/b4-planner.md) — so they are in the token stream whether or not anything
+ * can render them yet. The backend strips or keeps them in the `done` payload;
+ * until then a raw `[S11]` would flash mid-sentence and then vanish.
+ *
+ * Applied to the whole accumulated string rather than each chunk, so a marker
+ * split across two deltas ("[S" then "11]") is still caught. The trailing rule
+ * covers the moment in between, where the text genuinely ends mid-marker.
  */
-function progressText(running: Set<Mode>): string {
-  if (running.size === 0) return 'Working…'
-  return `Checking ${[...running].map((mode) => MODE_LABELS[mode]).join(', ')}…`
+function provisional(streamed: string): string {
+  return streamed.replace(STREAMED_MARKER, '').replace(TRAILING_PARTIAL_MARKER, '')
 }
 
 /**
@@ -112,8 +124,8 @@ export function createHttpAdapter(
         return
       }
 
-      const running = new Set<Mode>()
       let streamed = ''
+      startRun()
 
       try {
         for await (const event of askEvents(text, {
@@ -135,22 +147,25 @@ export function createHttpAdapter(
 
           if (event.type === 'text_delta') {
             streamed += event.data.text
-            yield { content: [{ type: 'text', text: streamed }] }
+            yield { content: [{ type: 'text', text: provisional(streamed) }] }
             continue
           }
 
-          // A lane starting means the model went off to look something up, so
-          // what it had written was preamble to that, not an answer.
+          // Lane events drive the thinking indicator, not the message. They used
+          // to be yielded as assistant text, which meant a debounced save firing
+          // mid-run could persist "Checking Dining…" as somebody's answer.
           if (event.type === 'mode_start') {
-            running.add(event.data.mode)
+            laneStarted(event.data.mode)
+            // The model went off to look something up, so what it had written
+            // was preamble to that, not an answer.
             streamed = ''
+            yield { content: [{ type: 'text', text: '' }] }
           }
-          if (event.type === 'mode_end') running.delete(event.data.mode)
-          yield { content: [{ type: 'text', text: streamed || progressText(running) }] }
+          if (event.type === 'mode_end') laneEnded(event.data.mode)
         }
 
         // Fell out of the loop without a `done` — the connection dropped
-        // mid-answer. Say so, rather than leaving the progress line up forever.
+        // mid-answer. Say so, rather than leaving the indicator up forever.
         // Unless the user stopped it themselves, which needs no explaining.
         if (!abortSignal.aborted) {
           yield {
@@ -160,6 +175,10 @@ export function createHttpAdapter(
       } catch (err) {
         const message = err instanceof Error ? err.message : 'The assistant failed to respond.'
         yield { content: [{ type: 'text', text: message }] }
+      } finally {
+        // Whatever happened — answered, aborted, threw — the lanes are not
+        // running any more, and a stuck indicator outlives the turn.
+        endRun()
       }
     },
   }
