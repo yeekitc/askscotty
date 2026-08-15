@@ -48,6 +48,18 @@ function to decorate.
 Keep `run_tool` refusing a server tool explicitly, with a `ToolError`. It should
 be unreachable; make it loud rather than mysterious if it ever isn't.
 
+**Asked and settled: could the web tools just live outside the registry, leaving
+`Tool` alone?** They could — the planner would append raw dicts to the tools
+array. Don't. Of what the registry does, two things are load-bearing here:
+`modes_for`, which is what puts `web_verify` in `modes_used`, and
+`citation_defaults`, which is the PRD §9 guarantee that `is_mock` derives from
+the producing tool rather than from its result. Bypassing it means hand-wiring
+both somewhere else. And `all_tools()` is sorted for a reason — tools sit
+*before* the system prompt in the cached prefix, so an unstable order silently
+costs a re-cache on every request. A second hand-maintained list is one more
+thing to keep sorted by hand. The exception is ~10 lines; the alternative is
+more code in more places.
+
 ---
 
 ## Build, in phases — each is complete on its own
@@ -167,10 +179,12 @@ prompt and `max_uses` now; verify it the day B1 registers its tool.
   built in, and a second execution environment confuses the model.
 - **`is_mock` still comes from the producing tool**, never from the result.
   PRD §9 is enforced in `citation_defaults`; route web citations through it.
-- **Check the org has web search enabled** before demo day. If an admin disabled
-  it in the Console, *declaring* the tool is a **400** — which means every
-  request fails, not just searching ones. Gate the declaration behind a
-  `WEB_VERIFY_ENABLED` setting so it can be switched off in one env var.
+- **Check the org has web search enabled** before demo day, once. If an admin
+  disabled it in the Console, *declaring* the tool is a **400** — which means
+  every request fails, not just searching ones. No kill switch for this
+  deliberately (decided): it is our own Anthropic org, so the fix is a Console
+  toggle rather than a deploy, and a setting nobody will remember to flip is not
+  insurance. Just confirm it works before it matters.
 
 ---
 
@@ -246,7 +260,7 @@ fails either way.
 - [ ] A search failure degrades to a note, never a 500
 - [ ] Canvas cannot be fetched, and there is a test proving the denylist did it
 - [ ] `max_uses` is capped and the description tells the model to prefer RAG
-- [ ] Web search confirmed enabled for the org, and switchable off in one env var
+- [ ] Web search confirmed enabled for the org
 - [ ] Boxes ticked in `tasklist.md` B3, same commit
 
 ## Style

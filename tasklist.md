@@ -248,7 +248,7 @@ what B4 already handles so it does not get rebuilt.
 - [x] Handle `pause_turn`: a long search turn ends the loop early and looks like a finished answer. Resume it, or the demo silently truncates. — **done in B4**, capped by `PLANNER_MAX_PAUSE_RESUMES`. Don't rebuild it.
 - [ ] `resolve_course_site(course_number)` — static map from Appendix B
 - [ ] Staleness policy: define what `indexed_at` age triggers a verify fetch (`WEB_VERIFY_STALE_AFTER_DAYS`) — the enforcement half of §1's RAG-first decision
-- [ ] Confirm web search is **enabled for the org** before demo day: if an admin disabled it in the Console, *declaring* the tool is a 400, so every request fails rather than just searching ones. Gate the declaration behind one env var
+- [ ] Confirm web search is **enabled for the org** before demo day: if an admin disabled it in the Console, *declaring* the tool is a 400, so every request fails rather than just searching ones. No kill-switch setting for this (decided) — it is our own org, so the fix is a Console toggle, and a flag nobody remembers to flip is not insurance
 - [ ] Enqueue newly discovered URLs into `CrawlSeed` for the next crawl (PRD §6 planner default)
 
 ## B4. Planner — P0 (Days 1–2, then Day 4)
