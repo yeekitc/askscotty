@@ -85,8 +85,9 @@ so a malformed answer fails in the backend rather than rendering wrong in the ap
 - [x] `modes_used` values are fixed strings: `rag` · `courses` · `dining` · `events` · `maps` · `web_verify` · `personal` — validated server-side against `MODES` in `backend/apps/tools/registry.py`
 - [x] **Error shape:** `{"error": {"code", "message"}}` with a real HTTP status, for every failure. Codes: `validation_error` · `unauthenticated` · `forbidden` · `not_found` · `method_not_allowed` · `unsupported_media_type` · `rate_limited` · `upstream_error` · `unavailable` · `timeout` · `error`. See `backend/apps/core/errors.py`.
 - [x] **Streaming: no.** Non-streaming for P0 — one request, one JSON answer. The app reports which modes ran from `modes_used` after the fact. Revisit only if the demo feels slow, and agree SSE here first.
-- [ ] **Amendment (proposed, b4-planner): revisiting the above — this is the "agree
-      SSE here first" step.** Three separate things were being conflated:
+- [ ] **Amendment (AGREED — supersedes the box above): SSE, as progress events.**
+      This was the "agree SSE here first" step, and it's agreed. Three separate
+      things were being conflated:
       **(1) the client's 30s timeout** — a single web-search turn was measured at
       ~26s, so a multi-hop answer cannot land inside it. **Remove it**, keep a ~2min
       backstop. This is a one-line change in `frontend/app/lib/api.ts` and needs no

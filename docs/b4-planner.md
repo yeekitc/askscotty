@@ -570,7 +570,7 @@ separating before anyone builds:
 |---|---|---|
 | 1 | **Client timeout** — request fails at 30s | ✅ decided: remove it |
 | 2 | **Backend ↔ Anthropic** — we call `messages.stream()` internally | 🟢 do it, no contract change, invisible to the app |
-| 3 | **Backend ↔ app** — SSE to the client | 🟡 worth doing, needs agreeing in tasklist §2 |
+| 3 | **Backend ↔ app** — SSE to the client | ✅ **we want this** — build it |
 
 **(2) is free and we should just do it.** Long turns risk HTTP timeouts on the
 non-streaming path, and the SDK refuses large `max_tokens` without streaming.
@@ -605,6 +605,36 @@ anything else.
 
 That keeps SSE strictly additive: the non-streaming endpoint stays as a fallback,
 the serializer keeps validating, and nothing already built has to change.
+
+### Write the loop as a generator from day one
+
+This is the decision that stops streaming being a rewrite. **`run_planner` yields
+events and finishes with the payload** — then both endpoints are thin wrappers
+over one implementation:
+
+```
+run_planner(...)  ──yields──►  mode_start · mode_end · … · done{AskResponse}
+                                   │
+   POST /api/ask/         ─────────┤  drain it, return the last event
+   GET  /api/ask/stream/  ─────────┘  forward each event as SSE
+```
+
+A loop that *returns* a payload has to be rewritten to stream. A loop that
+*yields* doesn't. Cost is the same on day one.
+
+### ⚠️ The likely blocker is React Native, not Django
+
+**`fetch` response-body streaming is not reliably available on RN native.**
+`response.body` / `ReadableStream` works on web, but on iOS/Android RN's fetch
+has historically not exposed it.
+
+**Verify this early — it decides the transport.** If it's unavailable, the
+portable fallback is `XMLHttpRequest` with `onprogress`, reading the growing
+`responseText` and parsing SSE frames by hand. XHR exists on all three platforms,
+so that's one code path rather than a `Platform.select`.
+
+Don't design the frontend half until someone has confirmed which of these works
+on a real device.
 
 ### Known gotchas
 
