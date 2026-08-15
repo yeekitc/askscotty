@@ -25,8 +25,8 @@ Read this if you read nothing else.
 6. **Two new citation fields (`snippet`, `id`) need agreeing now** — see
    [Contract change](#contract-change-snippet-and-id). This blocks nobody but
    gets expensive once B1/B2 write their tools.
-7. **The app's 30-second timeout will fail the demo query.** Not B4's box, but
-   B4 is what makes it bite.
+7. **Drop the app's 30-second timeout** — a single search turn already takes ~26s.
+   Then consider SSE for progress events, which is smaller than it sounds.
 
 ---
 
@@ -532,14 +532,15 @@ same number. Fine for P0 — worth revisiting only if answers get marker-heavy.
 
 Not B4's boxes, but B4 is what makes them hurt.
 
-### 🔴 The app's 30s timeout will fail the demo query
+### ✅ The 30s client timeout is going away
 
 `frontend/app/lib/api.ts` aborts at 30 seconds. Tasklist §1 measured a *single*
-searching turn at ~26 seconds. A four-hop answer with a verify fetch will not
-land inside that.
+searching turn at ~26 seconds, so a four-hop answer never lands inside it.
 
-**Fix:** raise the client timeout to ~90s, or accept that any answer touching
-web verify fails in the app.
+**Decided: remove it.** Keep a much longer backstop (~2 min) so a genuinely hung
+request still fails rather than spinning forever.
+
+That fixes *failing*. It does nothing for *feeling slow* — see below.
 
 ### 🟢 Web tool version strings — checked, tasklist is correct
 
@@ -559,6 +560,60 @@ a **400**, not a graceful in-result error. Worth confirming once before demo day
 rather than discovering it live.
 
 ---
+
+## Streaming
+
+Three things get conflated under "streaming". They're independent and worth
+separating before anyone builds:
+
+| # | Thing | Status |
+|---|---|---|
+| 1 | **Client timeout** — request fails at 30s | ✅ decided: remove it |
+| 2 | **Backend ↔ Anthropic** — we call `messages.stream()` internally | 🟢 do it, no contract change, invisible to the app |
+| 3 | **Backend ↔ app** — SSE to the client | 🟡 worth doing, needs agreeing in tasklist §2 |
+
+**(2) is free and we should just do it.** Long turns risk HTTP timeouts on the
+non-streaming path, and the SDK refuses large `max_tokens` without streaming.
+Nothing about our API contract changes — the loop still returns one payload.
+
+**(3) is the one that needs a decision**, because tasklist §1 froze "Streaming:
+no" for P0 with "revisit only if the demo feels slow, and agree SSE here first."
+
+### Two things make (3) cheaper than it looks
+
+**The frontend is already shaped for it.** `createHttpAdapter` is
+`async *run(...)` — an async *generator* that happens to yield exactly once
+today. Streaming is more yields, not a restructure.
+
+**We probably don't need token streaming.** F1 already wants a loading state
+that shows *which mode is running* and calls it "the demo's wow moment." That
+needs a handful of progress events, not a token feed:
+
+```
+mode_start   { mode: "courses" }     → light up the chip
+mode_end     { mode: "courses" }
+done         { ...AskResponse }      → the payload we already send
+```
+
+Answer-text deltas can be added later as another event type without changing
+anything else.
+
+### The guideline worth committing to now
+
+> **The final `done` event carries the same validated `AskResponse` we send
+> today.**
+
+That keeps SSE strictly additive: the non-streaming endpoint stays as a fallback,
+the serializer keeps validating, and nothing already built has to change.
+
+### Known gotchas
+
+- **Gunicorn sync workers hold one worker per open SSE connection.** Fine at demo
+  scale; worth knowing before anyone deploys it.
+- **Thread persistence saves on change, debounced ~600ms.** Streaming produces far
+  more changes — check that doesn't thrash `PUT /api/threads/`.
+- Streaming and artifacts compose: an artifact becoming ready is just another
+  event type. See [artifact-plan.md](./artifact-plan.md).
 
 ## Build order
 

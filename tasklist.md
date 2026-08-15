@@ -70,9 +70,36 @@ so a malformed answer fails in the backend rather than rendering wrong in the ap
       return a one-line rendering of the row they matched, web verify returns the
       excerpt the API already gives us. `domain` is *not* stored — derive it from
       `url` at render time. See [docs/b4-planner.md](./docs/b4-planner.md).
+- [ ] **Amendment (proposed, b4-planner): add `artifacts: []` to the response — the
+      empty seam only.** Some answers want to be more than prose: a campus map with
+      a route, a study plan you can tick off, a schedule grid. Adding the (always
+      empty) array and its discriminated-union type now costs nothing and means the
+      first real artifact is an additive change rather than a contract
+      renegotiation during demo week. **No artifact types are being proposed here** —
+      only the channel. Two rules travel with it because the PRD forces them:
+      an unknown `type` must never crash an older client (so every artifact carries
+      `fallback_text`), and anything derived from a personal tool is session-scoped
+      like everything else user-scoped (PRD §7). See
+      [docs/artifact-plan.md](./docs/artifact-plan.md) — that doc is explicitly a
+      draft and marks what is fixed vs. still open.
 - [x] `modes_used` values are fixed strings: `rag` · `courses` · `dining` · `events` · `maps` · `web_verify` · `personal` — validated server-side against `MODES` in `backend/apps/tools/registry.py`
 - [x] **Error shape:** `{"error": {"code", "message"}}` with a real HTTP status, for every failure. Codes: `validation_error` · `unauthenticated` · `forbidden` · `not_found` · `method_not_allowed` · `unsupported_media_type` · `rate_limited` · `upstream_error` · `unavailable` · `timeout` · `error`. See `backend/apps/core/errors.py`.
 - [x] **Streaming: no.** Non-streaming for P0 — one request, one JSON answer. The app reports which modes ran from `modes_used` after the fact. Revisit only if the demo feels slow, and agree SSE here first.
+- [ ] **Amendment (proposed, b4-planner): revisiting the above — this is the "agree
+      SSE here first" step.** Three separate things were being conflated:
+      **(1) the client's 30s timeout** — a single web-search turn was measured at
+      ~26s, so a multi-hop answer cannot land inside it. **Remove it**, keep a ~2min
+      backstop. This is a one-line change in `frontend/app/lib/api.ts` and needs no
+      contract change. **(2) backend ↔ Anthropic streaming** — use `messages.stream()`
+      internally for long turns. Invisible to the app, no contract change, just do it.
+      **(3) backend ↔ app SSE** — the actual amendment. Proposed as *progress events,
+      not token streaming*: `mode_start` / `mode_end` to drive the mode chips (F1
+      already calls that the demo's wow moment), then a final `done` event carrying
+      **the same validated `AskResponse` we send today**. That keeps SSE strictly
+      additive — the non-streaming path stays as a fallback and the serializer keeps
+      validating. Answer-text deltas can be added later as another event type.
+      Note `createHttpAdapter` is already an async generator, so the frontend is
+      shaped for this already. See [docs/b4-planner.md](./docs/b4-planner.md).
 - [x] Add `GET /api/sources/` returning the source registry (`name`, `tier`, `access`, `indexed_at`, plus `implemented` and `note`) — powers the credits/freshness UI
 - [x] **Chat history endpoints.** `GET /api/threads/` → `{threads: [{id, messages, updated_at}]}` · `PUT /api/threads/{id}/` (upsert, body `{messages}`) · `DELETE /api/threads/{id}/`. A message is `{role, content}` where `content` is assistant-ui's *parts* array, not a string — that is what keeps citations alive across a reload. Scoped by an **`X-Session-Id` header**, not the body: it is a bearer token and query strings end up in server logs. Missing header → `validation_error`.
 - [x] Update the API table in [README.md](./README.md) when this changes
@@ -256,6 +283,7 @@ surfaces at once. See [CLAUDE.md](./CLAUDE.md) for the component rules (`<View>`
 - [x] Add `is_mock` to the `Citation` type — done
 - [x] Bring citation fields (`url`, `indexed_at`, `verified_at`) to parity — done, single codebase so parity is automatic now
 - [x] Centralize `API_URL` handling and surface a clear error when the backend is unreachable — done in `lib/api.ts` (includes a 30s timeout)
+- [ ] **Drop that 30s timeout** (~2min backstop instead) — one search turn alone was measured at ~26s, so multi-hop answers fail today. One line in `lib/api.ts`; see §2 streaming amendment
 - [ ] Keep `npx tsc --noEmit` clean
 
 ## F1. Ask flow — P0
