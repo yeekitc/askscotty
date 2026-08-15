@@ -1,8 +1,12 @@
 /**
  * Renders one citation.
  *
- * The PRD requires that we show indexed_at / verified_at and that mock data is
- * clearly labelled — so this component always surfaces them when present.
+ * The PRD requires that we show indexed_at / verified_at, so this component
+ * always surfaces them when present.
+ *
+ * Mock sources are deliberately NOT badged here — `is_mock` is reported to
+ * the console by lib/api.ts instead. See the note there; PRD §9 still asks
+ * for a visible label, so this is a knowing deviation.
  */
 
 import { Linking, Pressable, StyleSheet, Text, View } from 'react-native'
@@ -11,7 +15,7 @@ import { colors, radius, spacing } from '../lib/theme'
 import type { Citation } from '../lib/types'
 
 /** "2026-08-12T14:03:00Z" -> "Aug 12, 2:03 PM". Falls back to raw text. */
-function formatTimestamp(value?: string): string | null {
+function formatTimestamp(value: string | null): string | null {
   if (!value) return null
   const parsed = new Date(value)
   if (Number.isNaN(parsed.getTime())) return value
@@ -32,11 +36,6 @@ export function CitationCard({ citation }: { citation: Citation }) {
     <View style={styles.card}>
       <View style={styles.titleRow}>
         <Text style={[styles.title, hasLink && styles.titleLink]}>{citation.title}</Text>
-        {citation.is_mock ? (
-          <Text style={styles.mockBadge} accessibilityLabel="Mock data">
-            MOCK
-          </Text>
-        ) : null}
       </View>
 
       <Text style={styles.source}>{citation.source}</Text>
@@ -61,7 +60,7 @@ export function CitationCard({ citation }: { citation: Citation }) {
 
   return (
     <Pressable
-      onPress={() => Linking.openURL(citation.url as string)}
+      onPress={() => Linking.openURL(citation.url)}
       accessibilityRole="link"
       accessibilityLabel={`Open source: ${citation.title}`}
     >
@@ -93,17 +92,6 @@ const styles = StyleSheet.create({
   },
   titleLink: {
     textDecorationLine: 'underline',
-  },
-  mockBadge: {
-    fontSize: 10,
-    fontWeight: '700',
-    letterSpacing: 1,
-    color: colors.mockBadge,
-    borderWidth: 1,
-    borderColor: colors.mockBadge,
-    borderRadius: radius.pill,
-    paddingHorizontal: spacing.sm,
-    paddingVertical: 1,
   },
   source: {
     fontSize: 13,

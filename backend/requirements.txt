@@ -8,3 +8,22 @@ psycopg2-binary==2.9.12
 python-dotenv==1.2.2
 gunicorn==26.0.0
 whitenoise==6.12.0
+
+# --- Planner, retrieval and connectors (tasklist §1 decisions) ---
+# Anything added below needs `docker compose up -d --build`, not just a restart.
+
+# Planner LLM (Claude, tool-calling agentic loop).
+anthropic==0.121.0
+# Embeddings for the vector half of hybrid retrieval — Anthropic has no
+# embeddings endpoint, so this is a second provider for one narrow job.
+openai==3.0.0
+# Web search for the verify lane.
+# Vector column + index types for Django/psycopg. The Postgres extension itself
+# still has to be enabled on the database (tasklist B0).
+pgvector==0.5.0
+# Encrypts personal credentials at rest (PRD §9). Also an indirect dependency of
+# the SDKs above; pinned here because we depend on it directly.
+cryptography==50.0.0
+# HTTP client for crawling and the live tool APIs: timeouts and connection reuse
+# without hand-rolling either.
+httpx==0.28.1

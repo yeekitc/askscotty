@@ -46,6 +46,16 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-askscotty}
       POSTGRES_HOST: db
       POSTGRES_PORT: 5432
+      # External services. Blank is fine — the backend boots without them and
+      # only complains when you use a feature that needs one. Set real values in
+      # the root .env (see .env.example).
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      PLANNER_MODEL: ${PLANNER_MODEL:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-}
+      EMBEDDING_DIMENSIONS: ${EMBEDDING_DIMENSIONS:-}
+      CONNECTOR_ENCRYPTION_KEY: ${CONNECTOR_ENCRYPTION_KEY:-}
+      CRAWLER_USER_AGENT: ${CRAWLER_USER_AGENT:-}
     volumes:
       # Your local backend/ folder is live-mounted, so editing Python files
       # reloads the server automatically — no rebuild needed.

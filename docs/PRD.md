@@ -100,9 +100,9 @@ Complements the index — does not replace it.
 | Tier | Capability | Why | Hackathon accessibility |
 |------|------------|-----|-------------------------|
 | **Must** | `fetch_url` | Re-fetch a cited page when stale or user asks “is this current?” | **Live** — allowlist public hosts |
-| **Must** | `web_search` | Index miss; discover new course homes → next crawl | **Live** — Brave/Serper/Tavily (or similar) |
+| **Must** | `web_search` | Index miss; discover new course homes → next crawl | **Live** — Claude server-side `web_search` (no separate provider) |
 | **Must** | `resolve_course_site` | Map `15-213` → seeded homepage | **Live** — static map (Appendix B) |
-| **Should** | Site-filtered search (`site:cs.cmu.edu`) | Find unmapped course pages | **Live** via search provider |
+| **Should** | Site-filtered search (`site:cs.cmu.edu`) | Find unmapped course pages | **Live** — `allowed_domains` on the same tool |
 | **Skip** | Fetching Canvas/SIO behind login | Auth walls | Use Personal connectors instead |
 
 **Planner default:** index hit → cite → optional verify fetch. Unmapped/stale → search/fetch → enqueue for re-index.

@@ -1,6 +1,6 @@
 # AskScotty — Build Checklist
 
-Working checklist derived from [PRD.md](./PRD.md). Tick boxes as you go.
+Working checklist derived from [PRD.md](./docs/PRD.md). Tick boxes as you go.
 
 **How to use**
 
@@ -21,40 +21,47 @@ Legend for source access (PRD §3): `Live` = public API now · `Crawl` = we inde
 - [ ] Run `cd frontend/app && npx expo start`, press `w`, confirm the app loads at http://localhost:8081
 - [ ] Confirm http://localhost:8000/api/health/ returns `{"status": "ok", ...}`
 - [ ] Confirm `POST /api/ask/` returns the stub answer (use the app, or the form at http://localhost:8000/api/ask/)
-- [ ] Read [PRD.md](./PRD.md) §2 (signature query) and §9 (P0 scope) end to end
+- [ ] Read [PRD.md](./docs/PRD.md) §2 (signature query) and §9 (P0 scope) end to end
 - [ ] Read [CLAUDE.md](./CLAUDE.md) — how the repo is laid out and the rules AI assistants must follow
 - [ ] Skim `backend/apps/core/views.py` and `frontend/app/app/index.tsx` — that's the whole app today
 - [ ] Pick a lane below and put your name on the tasks
 
 ---
 
-## 1. Shared decisions — settle these before parallel work starts
+## 1. Shared decisions — settled ✅
 
-These block both sides. Decide in one sitting, write the answer in this file.
+These blocked both sides. **Decided — do not re-litigate without editing this section.**
 
-- [ ] **Freeze the `/api/ask/` response contract** (see §2 below). Frontend codes against it; backend fills it in.
-- [ ] **Pick the LLM + model** for the planner. Default: Anthropic `claude-opus-5` (best tool-use / multi-hop reasoning, $5/$25 per MTok). Cheaper fallback for high-volume or simple routing: `claude-sonnet-5` ($3/$15, intro $2/$10 through 2026-08-31) or `claude-haiku-4-5` ($1/$5).
-- [ ] **Pick an embeddings provider** for the vector half of hybrid retrieval — Anthropic has no embeddings endpoint, so this is a separate choice (hosted provider, or a local `sentence-transformers` model in the backend container).
-- [ ] **Pick a web-search provider** for `web_search` (Brave / Serper / Tavily — PRD §6). Whoever picks it adds the key to `.env.example`.
-- [ ] **Decide the vector store**: `pgvector` in the existing Postgres (fewer moving parts) vs. a separate service. Recommend pgvector.
-- [ ] **Decide auth scope for the demo**: anonymous session ID vs. real Django user accounts. Personal connectors (§7) need *something* to scope tokens to.
-- [ ] Add every new key to `.env.example` (never `.env`) and post it in the team chat
+- [x] **Freeze the `/api/ask/` response contract** (see §2 below). Frontend codes against it; backend fills it in.
+- [x] **LLM + model:** Anthropic **`claude-sonnet-5`** (`PLANNER_MODEL` in `.env`). The planner is mostly routing and tool selection rather than deep reasoning, and Sonnet is roughly half Opus's cost per token. Switch the env var to `claude-opus-5` if multi-hop answers come out weak — no code change needed.
+- [x] **Embeddings:** OpenAI **`text-embedding-3-small`**, 1536 dimensions (`OPENAI_API_KEY`, `EMBEDDING_MODEL`). Anthropic has no embeddings endpoint, so this is a second provider for one narrow job. Dimensions must match the pgvector column, so changing the model means a migration *and* a full re-index.
+- [x] **Web search: none — use Claude's built-in `web_search` / `web_fetch`.** *(Reversed 2026-08-15; was Tavily.)* These are **server-side** tools: declare them in the `tools` array and they run on Anthropic's infrastructure under `ANTHROPIC_API_KEY`. No second provider, no second key, no client to write. Verified live on `claude-sonnet-5` — `allowed_domains` gives B3's site-filtered search with zero off-domain leaks, and `blocked_domains` refuses Canvas with a distinct `url_not_allowed` (vs `url_not_accessible` when the denylist doesn't cover it), which is PRD §6's denylist enforced by the API. **Budget for it:** one searching query cost ~35.9k input tokens / ~26s. Use `max_uses` and `max_content_tokens`, and only verify when the index is actually stale.
+- [x] **Vector store:** **pgvector** in the existing Postgres. Fewer moving parts, and `docker compose down -v && ./setup.sh` still has to work on a teammate's laptop. *(The extension still needs enabling on the DB — tasklist B0.)*
+- [x] **Auth scope:** **anonymous session id**, passed as `session_id` in the request body. The app generates one and keeps it on the device; no login screen to build. Trade-off, stated plainly: anyone who learns a session id can read that session's connected data. It is a bearer token, not an identity — real accounts are the upgrade path if this outlives the hackathon.
+- [x] Add every new key to `.env.example` (never `.env`) and post it in the team chat
+
+**How the toolset is assembled** (`backend/apps/tools/registry.py`): tools register themselves with `@register_tool(name, description, json_schema, mode, is_mock=False, requires_connector=None)`. `tools_for_session(session_id)` returns the public tools plus any personal ones that session has actually connected — so a tool the planner is never told about is a tool it cannot call. Public tools never receive `session_id`, which is the mechanical version of PRD §3's "personal data never enters a shared-index call".
 
 ---
 
-## 2. The API contract (owned by both sides)
+## 2. The API contract (owned by both sides) — frozen ✅
 
 Frontend and backend both code against this. Change it only by editing this section and telling everyone.
 
-- [ ] `POST /api/ask/` request grows from `{query}` to `{query, session_id?, history?}`
-- [ ] Response keeps `answer`, `citations[]`, `modes_used[]`, `note` — already in `backend/apps/core/serializers.py`
-- [ ] Each citation carries `title`, `url`, `source`, `indexed_at`, `verified_at` (PRD §3 — every answer shows freshness)
-- [ ] Add `is_mock: bool` to each citation so the UI can badge mock sources
-- [ ] `modes_used` values are fixed strings: `rag` · `courses` · `dining` · `events` · `maps` · `web_verify` · `personal`
-- [ ] Decide error shape: `{error: {code, message}}` with a real HTTP status
-- [ ] Decide streaming or not. Non-streaming is fine for P0 — if streaming, agree on SSE before frontend builds the renderer.
-- [ ] Add `GET /api/sources/` returning the source registry (name, tier, access, `indexed_at`) — powers the credits/freshness UI
-- [ ] Update the API table in [README.md](./README.md) when this changes
+Defined in `backend/apps/core/serializers.py` and `frontend/app/lib/types.ts`. The
+backend validates its own responses against the serializers before returning them,
+so a malformed answer fails in the backend rather than rendering wrong in the app.
+
+- [x] `POST /api/ask/` request grows from `{query}` to `{query, session_id?, history?}` — `history` is `[{role: "user"|"assistant", content}]`, oldest first, max 40 turns
+- [x] Response keeps `answer`, `citations[]`, `modes_used[]`, `note` (`note` is nullable)
+- [x] Each citation carries `title`, `url`, `source`, `indexed_at`, `verified_at` (PRD §3 — every answer shows freshness)
+- [x] Add `is_mock: bool` to each citation so the UI can badge mock sources
+- [x] `modes_used` values are fixed strings: `rag` · `courses` · `dining` · `events` · `maps` · `web_verify` · `personal` — validated server-side against `MODES` in `backend/apps/tools/registry.py`
+- [x] **Error shape:** `{"error": {"code", "message"}}` with a real HTTP status, for every failure. Codes: `validation_error` · `unauthenticated` · `forbidden` · `not_found` · `method_not_allowed` · `unsupported_media_type` · `rate_limited` · `upstream_error` · `unavailable` · `timeout` · `error`. See `backend/apps/core/errors.py`.
+- [x] **Streaming: no.** Non-streaming for P0 — one request, one JSON answer. The app reports which modes ran from `modes_used` after the fact. Revisit only if the demo feels slow, and agree SSE here first.
+- [x] Add `GET /api/sources/` returning the source registry (`name`, `tier`, `access`, `indexed_at`, plus `implemented` and `note`) — powers the credits/freshness UI
+- [x] **Chat history endpoints.** `GET /api/threads/` → `{threads: [{id, messages, updated_at}]}` · `PUT /api/threads/{id}/` (upsert, body `{messages}`) · `DELETE /api/threads/{id}/`. A message is `{role, content}` where `content` is assistant-ui's *parts* array, not a string — that is what keeps citations alive across a reload. Scoped by an **`X-Session-Id` header**, not the body: it is a bearer token and query strings end up in server logs. Missing header → `validation_error`.
+- [x] Update the API table in [README.md](./README.md) when this changes
 
 ---
 
@@ -64,18 +71,18 @@ Django 5.1 + DRF + Postgres. Everything lives under `backend/`. Code is bind-mou
 
 ## B0. Foundations — P0
 
-- [ ] Add planner/RAG deps to `backend/requirements.txt` (LLM SDK, HTTP client, crawler, embeddings, `pgvector`)
-- [ ] Rebuild the backend image after changing requirements: `docker compose build backend`
+- [x] Add planner/RAG deps to `backend/requirements.txt` (LLM SDK, HTTP client, crawler, embeddings, `pgvector`)
+- [x] Rebuild the backend image after changing requirements: `docker compose build backend`
 - [ ] Enable the `pgvector` extension on the Postgres container (migration or init SQL)
 - [ ] Create `backend/apps/rag/` app (crawler, chunker, index, `campus_search`)
-- [ ] Create `backend/apps/tools/` app (live tools + mocks + web verify)
+- [x] Create `backend/apps/tools/` app (live tools + mocks + web verify) — registry + source registry done; the tools themselves are B2
 - [ ] Create `backend/apps/planner/` app (orchestration)
-- [ ] Create `backend/apps/personal/` app (user-scoped connectors)
-- [ ] Register new apps in `backend/config/settings.py` `INSTALLED_APPS`
-- [ ] Add a settings block for external API keys, read from env with safe defaults
+- [x] Create `backend/apps/personal/` app (user-scoped connectors)
+- [x] Register new apps in `backend/config/settings.py` `INSTALLED_APPS`
+- [x] Add a settings block for external API keys, read from env with safe defaults
 - [ ] Add a shared HTTP client helper: timeout, retry, identifying User-Agent, per-host rate limit
 - [ ] Add a response cache (per-tool TTL) so demo reloads don't hammer public APIs
-- [ ] Add structured logging for every tool call: tool name, args, latency, cache hit/miss
+- [ ] Add structured logging for every tool call: tool name, args, latency, cache hit/miss — name/mode/latency/outcome done in `tools/registry.py:run_tool`; cache fields pending the cache. **Args are deliberately not logged** (a personal tool's args can identify a student).
 
 ## B1. Campus index / RAG — P0 (Days 1–2)
 
@@ -164,11 +171,18 @@ Django 5.1 + DRF + Postgres. Everything lives under `backend/`. Code is bind-mou
 
 ## B3. Web verify — P0 (Day 3)
 
-- [ ] `fetch_url(url)` with an **allowlist** of public hosts
-- [ ] Explicit denylist so Canvas / SIO / Stellic can never be fetched here (PRD §6)
-- [ ] Return `verified_at` on every fetch
-- [ ] `web_search(query, site?)` against the chosen provider
-- [ ] Site-filtered search helper (`site:cs.cmu.edu`)
+**No search provider to integrate.** Claude's server-side `web_search_20260318` /
+`web_fetch_20260318` do this lane — the work here is wrapping them as tools in our
+registry with the right domain lists, not writing an HTTP client. Both take
+`allowed_domains`, `blocked_domains`, `max_uses`, `max_content_tokens`.
+
+- [ ] `fetch_url(url)` — wrap `web_fetch` with an **allowlist** of public hosts (`allowed_domains`)
+- [ ] Explicit denylist so Canvas / SIO / Stellic can never be fetched here (`blocked_domains`, PRD §6) — assert on `url_not_allowed` in a test
+- [ ] Return `verified_at` on every fetch — ours to stamp; the API doesn't supply it
+- [ ] `web_search(query, site?)` — wrap `web_search`; `site` maps to `allowed_domains`
+- [ ] Cap cost/latency per call (`max_uses`, `max_content_tokens`) — one search measured ~35.9k input tokens / ~26s
+- [ ] Do **not** declare `code_execution` alongside these — dynamic filtering is built in, and a second execution environment confuses the model
+- [ ] Handle `pause_turn`: a long search turn ends the loop early and looks like a finished answer. Resume it, or the demo silently truncates.
 - [ ] `resolve_course_site(course_number)` — static map from Appendix B
 - [ ] Staleness policy: define what `indexed_at` age triggers a verify fetch
 - [ ] Enqueue newly discovered URLs into `CrawlSeed` for the next crawl (PRD §6 planner default)
@@ -235,7 +249,8 @@ surfaces at once. See [CLAUDE.md](./CLAUDE.md) for the component rules (`<View>`
 - [ ] Error state: network failure, 4xx, 5xx, timeout — each with a distinct message
 - [ ] Empty state before the first question, with 3–4 clickable example queries from PRD §8
 - [ ] Pre-fill the signature query as the default (already done — keep it)
-- [ ] Multi-turn: keep a question/answer history in the page
+- [x] Multi-turn: keep a question/answer history in the page — threads persist to `GET/PUT/DELETE /api/threads/`, scoped to the device's anonymous session (`lib/session.ts`). Saves are debounced ~600ms and skip empty threads, so "New Chat" doesn't create a row for a conversation that never happened. **Still open:** the adapter does not yet send `history` on `/api/ask/`, so the *planner* has no memory across turns even though the UI does — see the next box.
+- [ ] Send prior turns as `history` in the ask request so follow-ups ("what about Friday?") work — backend already accepts it (max 40 turns); `createHttpAdapter` currently forwards only the latest user message
 - [ ] Cmd/Ctrl+Enter submits
 
 ## F2. Web — citations & trust — P0

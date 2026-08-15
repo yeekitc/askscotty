@@ -3,6 +3,7 @@
 from pathlib import Path
 import os
 
+from corsheaders.defaults import default_headers
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -32,6 +33,11 @@ INSTALLED_APPS = [
     "corsheaders",
     "rest_framework",
     "apps.core",
+    # apps.personal is listed before apps.tools because ToolsConfig.ready()
+    # imports the personal tool modules; Django loads app configs in order, so
+    # personal's models are ready by the time that import runs.
+    "apps.personal",
+    "apps.tools",
 ]
 
 MIDDLEWARE = [
@@ -118,6 +124,13 @@ CORS_ALLOW_ALL_ORIGINS = DEBUG and not CORS_ALLOWED_ORIGINS
 
 CORS_ALLOW_CREDENTIALS = True
 
+# The app identifies its anonymous session with an X-Session-Id header (see
+# apps/core/views._session_id). It is not one of the headers browsers allow
+# cross-origin by default, so without this every /api/threads/ request fails
+# its CORS preflight — and the failure looks like a network error, not a
+# permissions one, which is a miserable thing to debug.
+CORS_ALLOW_HEADERS = (*default_headers, "x-session-id")
+
 REST_FRAMEWORK = {
     "DEFAULT_RENDERER_CLASSES": [
         "rest_framework.renderers.JSONRenderer",
@@ -131,4 +144,51 @@ REST_FRAMEWORK = {
         "rest_framework.parsers.FormParser",
         "rest_framework.parsers.MultiPartParser",
     ],
+    # One error shape for every failure: {"error": {"code", "message"}}.
+    # See apps/core/errors.py for why DRF's default isn't good enough here.
+    "EXCEPTION_HANDLER": "apps.core.errors.api_exception_handler",
 }
+
+# --- External services --------------------------------------------------------
+#
+# Read from the environment with empty defaults, so the backend still boots
+# without any of them — you get a clear error when a feature that needs a key is
+# actually used, rather than a crash at startup that blocks the whole team.
+# Every key here must also appear in .env.example (never .env, which is
+# gitignored), so a teammate cloning the repo can see what exists.
+
+# Planner LLM. Anthropic tool-use drives the multi-hop answer (PRD §6).
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
+# Claude Sonnet 5 — the cost/quality middle of the current generation, and the
+# cheaper-fallback option named in tasklist §1. Override to claude-opus-5 if
+# multi-hop routing needs the extra headroom.
+# `or` rather than a getenv default: an env var that is present but blank is the
+# normal state of a freshly copied .env, and it should mean "use the default"
+# rather than "use the empty string". Same below.
+PLANNER_MODEL = os.getenv("PLANNER_MODEL") or "claude-sonnet-5"
+
+# Embeddings for the vector half of hybrid retrieval. Anthropic has no
+# embeddings endpoint, so this is a separate provider by necessity (tasklist §1).
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL") or "text-embedding-3-small"
+# 1536 for text-embedding-3-small. Must match the pgvector column width, so
+# changing the model means a migration, not just an env var.
+EMBEDDING_DIMENSIONS = int(os.getenv("EMBEDDING_DIMENSIONS") or 1536)
+
+# No web-search key here on purpose. The verify lane (PRD §6) uses Claude's
+# *server-side* web_search / web_fetch tools, which run on Anthropic's
+# infrastructure under ANTHROPIC_API_KEY — there is no second provider and no
+# second key. Domain allow/deny lists are passed per tool call, not configured
+# here; see apps/tools/ for the verify tools.
+
+# Encrypts personal access tokens at rest (PRD §9). Falls back to a key derived
+# from DJANGO_SECRET_KEY while DEBUG is on; required once DEBUG is off — see
+# apps/personal/crypto.py.
+CONNECTOR_ENCRYPTION_KEY = os.getenv("CONNECTOR_ENCRYPTION_KEY", "")
+
+# Identifies our crawler to the sites we index. PRD §3 requires that we say who
+# we are and honour robots.txt.
+CRAWLER_USER_AGENT = (
+    os.getenv("CRAWLER_USER_AGENT")
+    or "AskScottyBot/0.1 (CMU student project; +https://github.com/askscotty)"
+)

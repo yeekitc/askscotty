@@ -4,7 +4,9 @@ Ask Scotty anything about CMU (and *your* CMU) — get a cited, multi-hop answer
 
 Named for Scotty, CMU's mascot — **not** affiliated with ScottyLabs or other campus "Scotty*" products.
 
-**Product requirements:** see [PRD.md](./PRD.md). Read this before building anything — it defines what we're making and what we're explicitly *not* making.
+**Product requirements:** see [PRD.md](./docs/PRD.md). Read this before building anything — it defines what we're making and what we're explicitly *not* making.
+
+**Dependencies:** see [dependencies.md](./docs/dependencies.md) — what every package and API key is for, and why it was picked over the alternatives. Add a row there in the same commit that adds a dependency.
 
 Hackathon: [Stellic Pathfinders Challenge](https://www.stellic.com/pathfinders).
 
@@ -68,16 +70,26 @@ docker compose down
 
 ```
 .
-├── PRD.md                 # product requirements — the source of truth
+├── docs/PRD.md            # product requirements — the source of truth
+├── tasklist.md            # the build checklist, and where the API contract is agreed
+├── docs/dependencies.md  # every dependency and why it's there — read before adding one
 ├── setup.sh               # one-command setup
 ├── docker-compose.yml     # database + API containers
 ├── .env.example           # backend settings (setup.sh copies to .env)
 ├── backend/               # Django REST API
 │   ├── config/settings.py # Django configuration
-│   └── apps/core/         # ← the API lives here
-│       ├── views.py       #   endpoints
-│       ├── serializers.py #   request/response shapes
-│       └── models.py      #   database tables (currently empty)
+│   └── apps/
+│       ├── core/          # ← the API lives here
+│       │   ├── views.py       #   endpoints
+│       │   ├── serializers.py #   request/response shapes
+│       │   ├── models.py      #   saved chat threads + messages
+│       │   └── errors.py      #   the one error shape
+│       ├── tools/         # what the planner can do
+│       │   ├── registry.py    #   @register_tool + the per-session toolset
+│       │   └── sources.py     #   the source registry behind /api/sources/
+│       └── personal/      # user-scoped connectors (Canvas, Ed)
+│           ├── models.py      #   one encrypted credential per session
+│           └── context.py     #   "what has this session connected?"
 └── frontend/
     └── app/               # ← the app lives here (iOS + Android + web)
         ├── app/           #   screens (each file = one screen)
@@ -85,6 +97,9 @@ docker compose down
         │   └── index.tsx  #   the ask screen
         ├── components/    #   reusable pieces
         └── lib/           #   API client, types, theme
+            ├── api.ts        #   the only place that calls the backend
+            ├── session.ts    #   the anonymous session id (treat as a password)
+            └── chatThreads.ts#   saved conversations, loaded from the API
 ```
 
 ### One frontend, three platforms
@@ -113,9 +128,9 @@ This works because the app is written in **React Native**, which uses its own co
 |-----------|-----------|
 | Anything in `frontend/app/` | Nothing — it reloads instantly |
 | A Python file in `backend/` | Nothing — the API reloads itself |
-| `backend/requirements.txt` | `docker compose up -d --build` |
+| `backend/requirements.txt` | `docker compose up -d --build`, and add a row to [dependencies.md](./docs/dependencies.md) |
 | `frontend/app/package.json` | `cd frontend/app && npm install`, restart Expo |
-| `backend/apps/core/models.py` | See *Database changes* below |
+| Any `models.py` under `backend/apps/` | See *Database changes* below |
 
 ### Watching the API logs
 
@@ -139,14 +154,46 @@ docker compose exec backend python manage.py migrate
 | Method | Path | Purpose |
 |--------|------|---------|
 | `GET` | `/api/health/` | health check — is the API alive? |
-| `POST` | `/api/ask/` | the main endpoint (`{"query": "..."}`) |
+| `POST` | `/api/ask/` | the main endpoint (`{"query", "session_id"?, "history"?}`) |
+| `GET` | `/api/sources/` | what AskScotty draws on, and how fresh each source is |
+| `GET` | `/api/threads/` | this session's saved conversations |
+| `PUT` | `/api/threads/{id}/` | save a conversation (creates it if new) |
+| `DELETE` | `/api/threads/{id}/` | delete a conversation and its messages |
 | — | `/admin/` | Django admin (needs a superuser, see below) |
+
+The `/api/threads/` endpoints identify the user with an **`X-Session-Id`** header —
+an anonymous id the app generates on first run and keeps on the device. There is
+no login. Treat that id like a password: anyone who has it can read that
+session's conversations, which is why it travels in a header rather than the URL.
 
 Open http://localhost:8000/api/ask/ in a browser for a clickable form to test the endpoint — no code needed.
 
-**`/api/ask/` currently returns a hardcoded stub.** Nothing from the PRD is implemented yet. The real planner (RAG → live tools → web verify) goes in `backend/apps/core/views.py`.
+`/api/ask/` answers:
 
-The response shape is defined in two places that must stay in sync:
+```json
+{
+  "answer": "string",
+  "citations": [
+    {
+      "title": "string",
+      "url": "string",
+      "source": "string",
+      "indexed_at": "ISO-8601 or null",
+      "verified_at": "ISO-8601 or null",
+      "is_mock": false
+    }
+  ],
+  "modes_used": ["rag", "courses", "dining", "events", "maps", "web_verify", "personal"],
+  "note": "string or null"
+}
+```
+
+Errors — any status — come back as `{"error": {"code": "...", "message": "..."}}`, so the app can show a useful message instead of guessing at the body.
+
+**`/api/ask/` currently returns a stub answer.** The contract, the tool registry and the per-session toolset are real; the planner that fills the answer in is not written yet (tasklist B4). It goes in `backend/apps/core/views.py`.
+
+The shapes are defined in three places that must stay in sync:
+- `tasklist.md` §2 — where the contract is agreed
 - `backend/apps/core/serializers.py` (backend)
 - `frontend/app/lib/types.ts` (frontend)
 
@@ -174,6 +221,14 @@ Common changes:
 - `EXPO_PUBLIC_API_URL` (in `frontend/app/.env`) — where the app looks for the API
 - `BACKEND_PORT` (in `.env`) — change if port 8000 is taken; update `EXPO_PUBLIC_API_URL` to match
 - `DJANGO_SECRET_KEY` — must be changed before any real deployment
+
+### API keys
+
+`.env` also holds keys for the planner, embeddings and web search. The backend
+starts fine without them — a feature that needs a missing key fails with a clear
+message when you use it, not at startup — so you only need the ones for the lane
+you're working on. What each is for, and where to get it:
+[dependencies.md § External services](./docs/dependencies.md#external-services).
 
 While `DJANGO_DEBUG=true`, the API accepts requests from any origin, so you won't hit CORS errors during development.
 

@@ -1,13 +1,18 @@
 # Working in this repo
 
 Guidance for AI assistants (and humans) making changes to AskScotty.
-Read [PRD.md](./PRD.md) before implementing features — it is the source of truth.
+Read [PRD.md](./docs/PRD.md) before implementing features — it is the source of truth.
 
 ## Layout
 
-- `backend/` — Django REST API. All app code is in `backend/apps/core/`.
+- `backend/` — Django REST API. Endpoints live in `backend/apps/core/`; the
+  planner's toolset in `backend/apps/tools/`; user-scoped connectors in
+  `backend/apps/personal/`.
 - `frontend/app/` — **one** Expo/React Native codebase that runs on iOS, Android, and web.
 - `PRD.md` — product requirements.
+- `dependencies.md` — every dependency and why it's there. Adding a package to
+  `requirements.txt` or `package.json` means adding a row here in the same
+  commit, with the reasoning — not just the version.
 
 ## The frontend is React Native, not HTML
 

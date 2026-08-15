@@ -18,7 +18,6 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
-  ActivityIndicator,
   KeyboardAvoidingView,
   Platform,
   Pressable,
@@ -29,6 +28,7 @@ import {
   useWindowDimensions,
 } from 'react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
+import AsyncStorage from '@react-native-async-storage/async-storage'
 import {
   AssistantRuntimeProvider,
   ThreadPrimitive as Thread,
@@ -40,8 +40,15 @@ import {
 import { AskComposer } from '../components/AskComposer'
 import { ChatMessage } from '../components/ChatMessage'
 import { HoverPressable } from '../components/HoverPressable'
+import { TypingIndicator } from '../components/TypingIndicator'
 import { createHttpAdapter } from '../lib/assistantAdapter'
-import { type ChatThread, createEmptyThread, threadTitle } from '../lib/chatThreads'
+import {
+  type ChatThread,
+  createEmptyThread,
+  loadThreads,
+  persistThread,
+  threadTitle,
+} from '../lib/chatThreads'
 import { colors, radius, shadows, spacing } from '../lib/theme'
 import { useCurrentUser } from '../lib/user'
 
@@ -50,44 +57,33 @@ const DEMO_QUERY =
   'I get out of 15-213 at 4:20 tomorrow. Find somewhere nearby to eat and then ' +
   'an interesting startup or AI event before 8.'
 
-const THREADS_KEY = 'askscotty.threads'
 const SOURCES_KEY = 'askscotty.sources'
 const DEFAULT_SOURCES = ['Course Catalog', 'Directory', 'Piazza', 'Canvas']
 const SIDEBAR_WIDTH = 280
 const WIDE_BREAKPOINT = 900
 
-// Thread history and the source filter are per-device UI state, not app
-// data, so plain localStorage is fine — but it only exists on web, hence
-// the Platform guard (see CLAUDE.md: never touch browser-only APIs on native).
-const canPersist = Platform.OS === 'web' && typeof window !== 'undefined' && !!window.localStorage
+/** How long to wait after the last change before saving a thread. */
+const SAVE_DEBOUNCE_MS = 600
 
-function loadPersisted<T>(key: string, fallback: T): T {
-  if (!canPersist) return fallback
+// The source filter is per-device UI state, so it stays on the device — but in
+// AsyncStorage, not localStorage, because `window` does not exist on a phone
+// (CLAUDE.md). Conversations themselves are *not* stored here: they live in the
+// backend now, scoped to this session (see lib/chatThreads.ts).
+async function loadSources(): Promise<string[]> {
   try {
-    const raw = window.localStorage.getItem(key)
-    return raw ? JSON.parse(raw) : fallback
+    const raw = await AsyncStorage.getItem(SOURCES_KEY)
+    return raw ? (JSON.parse(raw) as string[]) : DEFAULT_SOURCES
   } catch (e) {
-    return fallback
+    return DEFAULT_SOURCES
   }
 }
 
-function savePersisted(key: string, value: unknown) {
-  if (!canPersist) return
+async function saveSources(sources: string[]): Promise<void> {
   try {
-    window.localStorage.setItem(key, JSON.stringify(value))
+    await AsyncStorage.setItem(SOURCES_KEY, JSON.stringify(sources))
   } catch (e) {
-    // ignore storage errors (private browsing, quota, etc.)
+    // Storage full or unavailable — a forgotten filter is not worth an error.
   }
-}
-
-function loadInitialThreads(): { threads: ChatThread[]; activeThreadId: string } {
-  const stored = loadPersisted<{ threads: ChatThread[]; activeThreadId: string } | null>(
-    THREADS_KEY,
-    null,
-  )
-  if (stored && stored.threads.length) return stored
-  const first = createEmptyThread(generateId())
-  return { threads: [first], activeThreadId: first.id }
 }
 
 export default function AskScreen() {
@@ -96,11 +92,24 @@ export default function AskScreen() {
   const isWide = width >= WIDE_BREAKPOINT
   const user = useCurrentUser()
 
-  const [sources, setSources] = useState<string[]>(() => loadPersisted(SOURCES_KEY, DEFAULT_SOURCES))
-  useEffect(() => savePersisted(SOURCES_KEY, sources), [sources])
+  const [sources, setSources] = useState<string[]>(DEFAULT_SOURCES)
   const sourcesRef = useRef(sources)
   useEffect(() => {
     sourcesRef.current = sources
+  }, [sources])
+
+  // Read the saved filter once, then write on every later change. Without the
+  // flag, the write effect would immediately save back whatever the read just
+  // returned — harmless, but it makes the storage log confusing to follow.
+  const sourcesLoaded = useRef(false)
+  useEffect(() => {
+    loadSources().then((stored) => {
+      sourcesLoaded.current = true
+      setSources(stored)
+    })
+  }, [])
+  useEffect(() => {
+    if (sourcesLoaded.current) void saveSources(sources)
   }, [sources])
 
   // `null` means "no explicit choice yet" — follow the width-based default
@@ -110,20 +119,89 @@ export default function AskScreen() {
   const sidebarEffectiveOpen = sidebarOpen ?? isWide
   const [searchQuery, setSearchQuery] = useState('')
 
-  const initial = useMemo(loadInitialThreads, [])
-  const [threads, setThreads] = useState<ChatThread[]>(initial.threads)
-  const [activeThreadId, setActiveThreadId] = useState(initial.activeThreadId)
+  // The app opens on a fresh chat, every time. Saved conversations arrive from
+  // the backend a moment later and fill the sidebar — they do not yank the
+  // runtime out from under someone who has already started typing.
+  const firstThread = useMemo(() => createEmptyThread(generateId()), [])
+  const [threads, setThreads] = useState<ChatThread[]>([firstThread])
+  const [activeThreadId, setActiveThreadId] = useState(firstThread.id)
   const activeThreadIdRef = useRef(activeThreadId)
 
-  useEffect(() => {
-    savePersisted(THREADS_KEY, { threads, activeThreadId })
-  }, [threads, activeThreadId])
-
-  const initialActiveThread =
-    initial.threads.find((t) => t.id === initial.activeThreadId) ?? initial.threads[0]
-
   const adapter = useMemo(() => createHttpAdapter(() => sourcesRef.current), [])
-  const runtime = useLocalRuntime(adapter, { initialMessages: initialActiveThread.messages })
+  const runtime = useLocalRuntime(adapter, { initialMessages: [] })
+
+  // Saving is debounced because the runtime fires its subscription on every
+  // status change, not just on a finished turn — an unthrottled save would PUT
+  // the whole thread several times per answer.
+  //
+  // Pending threads are held in a map rather than a single slot so switching
+  // conversations mid-debounce cannot drop the one being left behind.
+  const pendingSaves = useRef(new Map<string, ChatThread>())
+  const lastSaved = useRef(new Map<string, string>())
+  const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  const flushSaves = useCallback(() => {
+    const batch = [...pendingSaves.current.values()]
+    pendingSaves.current.clear()
+
+    for (const thread of batch) {
+      const fingerprint = JSON.stringify(thread.messages)
+      lastSaved.current.set(thread.id, fingerprint)
+      persistThread(thread).catch(() => {
+        // Drop the fingerprint so the next change retries this thread. A failed
+        // save should not cost the user their conversation, and a red banner
+        // mid-demo over a transient network blip is worse than a silent retry.
+        lastSaved.current.delete(thread.id)
+      })
+    }
+  }, [])
+
+  const schedulePersist = useCallback(
+    (thread: ChatThread) => {
+      // Never persist an empty thread: tapping "New Chat" would otherwise
+      // create a server row for a conversation that never happened.
+      if (thread.messages.length === 0) return
+      if (lastSaved.current.get(thread.id) === JSON.stringify(thread.messages)) return
+
+      pendingSaves.current.set(thread.id, thread)
+      if (saveTimer.current) clearTimeout(saveTimer.current)
+      saveTimer.current = setTimeout(flushSaves, SAVE_DEBOUNCE_MS)
+    },
+    [flushSaves],
+  )
+
+  // Closing the tab mid-debounce should still save.
+  useEffect(() => {
+    return () => {
+      if (saveTimer.current) clearTimeout(saveTimer.current)
+      flushSaves()
+    }
+  }, [flushSaves])
+
+  // Pull this session's saved conversations into the sidebar.
+  useEffect(() => {
+    let cancelled = false
+
+    loadThreads()
+      .then((saved) => {
+        if (cancelled || saved.length === 0) return
+        setThreads((prev) => {
+          // Keep the chat we opened with only while it is still untouched;
+          // otherwise the user would lose whatever they typed during the load.
+          const current = prev.find((t) => t.id === activeThreadIdRef.current)
+          const keepCurrent = current && current.messages.length === 0 ? [current] : []
+          return [...keepCurrent, ...saved]
+        })
+      })
+      .catch(() => {
+        // No history is a usable app; a blocked one is not. The fresh chat the
+        // screen already mounted with stays, and the next save will retry.
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   // Whether to show the empty-state hero or the thread. Driven by our own
   // state (set from the same subscription that mirrors messages below)
@@ -132,7 +210,7 @@ export default function AskScreen() {
   // internal item list shrink to zero out from under it via thread.reset()
   // raced its FlatList's index bookkeeping and crashed. One state value
   // driving one conditional makes the empty/active swap atomic.
-  const [isEmpty, setIsEmpty] = useState(initialActiveThread.messages.length === 0)
+  const [isEmpty, setIsEmpty] = useState(true)
 
   // Mirrors the live thread's messages back into whichever thread is
   // currently active, so switching away and back doesn't lose anything.
@@ -143,13 +221,17 @@ export default function AskScreen() {
       const messages = runtime.thread.getState().messages
       setIsEmpty(messages.length === 0)
       const snapshot: ThreadMessageLike[] = messages.map((m) => ({ role: m.role, content: m.content }))
+      const id = activeThreadIdRef.current
+      const updatedAt = Date.now()
+
       setThreads((prev) =>
-        prev.map((t) =>
-          t.id === activeThreadIdRef.current ? { ...t, messages: snapshot, updatedAt: Date.now() } : t,
-        ),
+        prev.map((t) => (t.id === id ? { ...t, messages: snapshot, updatedAt } : t)),
       )
+      // Queued outside the state updater on purpose: React may run an updater
+      // more than once, and a save is a side effect that should happen once.
+      schedulePersist({ id, messages: snapshot, updatedAt })
     })
-  }, [runtime])
+  }, [runtime, schedulePersist])
 
   useEffect(() => {
     runtime.thread.composer.setText(DEMO_QUERY)
@@ -324,14 +406,18 @@ export default function AskScreen() {
   )
 }
 
-/** "Scotty is thinking…" — shown while a request is in flight. */
+/**
+ * Bouncing dots at the foot of the thread while a request is in flight.
+ *
+ * `Thread.If running` is assistant-ui's own loading primitive — the runtime
+ * sets `isRunning` for as long as the adapter's run() is pending, so we never
+ * track "is a request open?" ourselves. /api/ask/ is non-streaming, which
+ * means this stays up for the whole round trip.
+ */
 function RunningIndicator() {
   return (
     <Thread.If running>
-      <View style={styles.thinkingRow}>
-        <ActivityIndicator color={colors.textMuted} />
-        <Text style={styles.thinkingText}>Scotty is thinking…</Text>
-      </View>
+      <TypingIndicator />
     </Thread.If>
   )
 }
@@ -493,15 +579,5 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.xl,
     paddingTop: spacing.sm,
     backgroundColor: colors.background,
-  },
-  thinkingRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: spacing.sm,
-    paddingVertical: spacing.sm,
-  },
-  thinkingText: {
-    color: colors.textMuted,
-    fontSize: 14,
   },
 })

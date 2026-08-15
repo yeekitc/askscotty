@@ -21,9 +21,9 @@ function citationToSourcePart(citation: Citation, index: number): SourceMessageP
   const providerMetadata = {
     [PROVIDER_KEY]: {
       source: citation.source,
-      indexed_at: citation.indexed_at ?? null,
-      verified_at: citation.verified_at ?? null,
-      is_mock: citation.is_mock ?? false,
+      indexed_at: citation.indexed_at,
+      verified_at: citation.verified_at,
+      is_mock: citation.is_mock,
     },
   }
 
@@ -55,10 +55,13 @@ export function sourcePartToCitation(part: SourceMessagePart): Citation {
   const meta = part.providerMetadata?.[PROVIDER_KEY] ?? {}
   return {
     title: part.title || 'Source',
-    url: part.url,
+    // Document-variant parts carry no url, and a thread reloaded from the
+    // backend has been through JSON both ways — so every field gets a default
+    // that matches the Citation contract in types.ts.
+    url: typeof part.url === 'string' ? part.url : '',
     source: typeof meta.source === 'string' ? meta.source : 'Unknown',
-    indexed_at: typeof meta.indexed_at === 'string' ? meta.indexed_at : undefined,
-    verified_at: typeof meta.verified_at === 'string' ? meta.verified_at : undefined,
+    indexed_at: typeof meta.indexed_at === 'string' ? meta.indexed_at : null,
+    verified_at: typeof meta.verified_at === 'string' ? meta.verified_at : null,
     is_mock: Boolean(meta.is_mock),
   }
 }
