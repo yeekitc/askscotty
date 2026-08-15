@@ -64,18 +64,23 @@ data. Change one, change the other.
 
 ## Registering a tool
 
-Two lines, both in the tools app. The planner needs no change — it reads the
-registry rather than naming tools, which is why the lanes can be built in any
-order.
+The planner needs no change — it reads the registry rather than naming tools,
+which is why the lanes can be built in any order.
 
-1. `backend/config/settings.py` — list your app **before** `apps.tools` in
+**Tools in a new app** (B1's `apps.rag`, B5's `apps.personal`) — two lines:
+
+1. `backend/config/settings.py` — list the app **before** `apps.tools` in
    `INSTALLED_APPS`. App configs load in order, and `ToolsConfig.ready()` imports
    your tool module, so your models must be ready by then.
 2. `backend/apps/tools/apps.py` — import that module inside `ready()`, so the
    `@register_tool` decorators actually run.
 
-Miss either and the tool silently never registers. The planner is never told it
-exists, so it looks like the model chose not to use it.
+**Tools inside `apps.tools`** (B2's live tools, B3's web verify) — only step 2,
+written `from . import <module>`. There is no new app to create; `apps.tools` is
+scoped to hold these.
+
+Miss the import and the tool silently never registers. The planner is never told
+it exists, so it looks like the model chose not to use it.
 
 ## Hard rules from the PRD
 
