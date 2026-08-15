@@ -182,23 +182,30 @@ connection that would eventually die with nothing to show for it. A session
 outlives the connection — a slow answer is *resumable* rather than lost, which is
 strictly better than truncated prose. `PLANNER_DEADLINE_SECONDS` goes away.
 
-> ⚠️ **Corrected after the migration: resumable is a property of the platform, not
-> of this app.** Nothing reattaches to an in-flight turn. When the app's 120s
-> backstop fires, the session keeps running and billing on Anthropic's side, and
-> the answer it eventually produces is never shown to anyone. `Thread.cma_session_id`
-> means the *next* question reuses that session's memory; it does not recover the
-> turn that timed out.
->
-> **So today nothing bounds wall-clock at all.** A session `budget` bounds
-> *spend*, and at $5.00 a thread that is hundreds of model calls — a single
-> 120-second turn costs a few cents, so the budget cannot fire inside one and was
-> never going to. Two different axes: the budget stops a loop that runs for ever,
-> not an answer that is merely slow.
->
-> Closing this needs one of: raise `TIMEOUT_MS`, or implement reattach — on a
-> request for a thread whose session is still `running`, drain the existing turn
-> instead of sending a new message. The second is the one the design implies, and
-> it is the piece that makes the durability argument true rather than available.
+**Reaffirmed after the migration: no deadline, and none is coming back.** A
+server-side deadline is the thing this decision removed, and without
+`tool_choice: none` it could only ever truncate an answer rather than wrap one
+up — strictly worse than letting a slow turn finish.
+
+Two clarifications that follow from it, both learned by measuring:
+
+- **The `budget` is not a latency control.** It bounds *spend*, and at $5.00 a
+  thread that is hundreds of model calls — a single two-minute turn costs a few
+  cents, so it cannot fire inside one and was never meant to. It stops a loop
+  that runs for ever, not an answer that is merely slow. Nothing bounds
+  wall-clock, by design; the app's 120s backstop is the only clock left.
+- **Resumability is a property of the platform, not yet of this app.** Nothing
+  reattaches to an in-flight turn: when the backstop fires the session keeps
+  running and billing on Anthropic's side, and the answer it eventually produces
+  is never shown. `Thread.cma_session_id` gives the *next* question that
+  session's memory; it does not recover the turn that timed out.
+
+So the piece still owed is **reattach** — on a request for a thread whose session
+is still `running`, drain the turn in flight instead of sending a new message.
+That is what makes "a slow answer is resumable rather than lost" true rather than
+merely available, and it is the follow-through on this decision rather than a
+retreat from it. Raising `TIMEOUT_MS` buys time in the meantime; it fixes
+nothing.
 
 Two consequences worth stating out loud:
 
