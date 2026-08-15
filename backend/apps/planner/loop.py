@@ -23,6 +23,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from typing import Any, Iterable, Iterator
 
+from anthropic.types import Message
 from apps.core.serializers import AskResponseSerializer
 from apps.tools.registry import Tool, ToolError, modes_for, run_tool, tools_for_session
 from django.conf import settings
@@ -31,7 +32,7 @@ from django.utils import timezone
 
 from . import prompt
 from .citations import CitationLedger, validate_markers
-from .client import create_message
+from .client import stream_message
 from .errors import PlannerError
 
 logger = logging.getLogger(__name__)
@@ -68,7 +69,7 @@ def run_planner(
 
     while True:
         forced = _forced_reason(iterations, pauses, deadline)
-        message = create_message(**_request(messages, tools, forced=bool(forced)))
+        message = yield from _turn(_request(messages, tools, forced=bool(forced)))
         iterations += 1
 
         if forced:
@@ -140,6 +141,21 @@ def drain(events: Iterator[dict[str, Any]]) -> dict[str, Any]:
 
 
 # --- The model call -----------------------------------------------------------
+
+
+def _turn(request: dict[str, Any]) -> Iterator[dict[str, Any]]:
+    """One model turn, forwarding its text as it arrives. Returns the Message.
+
+    Text from a turn that then calls tools is preamble, not answer — the app
+    drops it when the next lane starts. Only `done` is authoritative.
+    """
+    message = None
+    for item in stream_message(**request):
+        if isinstance(item, Message):
+            message = item
+        else:
+            yield _event("text_delta", {"text": item})
+    return message
 
 
 def _request(

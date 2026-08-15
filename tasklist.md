@@ -101,7 +101,11 @@ so a malformed answer fails in the backend rather than rendering wrong in the ap
       already calls that the demo's wow moment), then a final `done` event carrying
       **the same validated `AskResponse` we send today**. That keeps SSE strictly
       additive — the non-streaming path stays as a fallback and the serializer keeps
-      validating. Answer-text deltas can be added later as another event type.
+      validating. **`text_delta` was added straight after, and additively, exactly
+      as this predicted** — no other event changed. It is provisional text: drop
+      what has streamed when a `mode_start` arrives (that was preamble to a lookup)
+      and let `done` replace it. Expect a handful of chunks, not a typewriter —
+      the API batches its own output.
       Note `createHttpAdapter` is already an async generator, so the frontend is
       shaped for this already. See [docs/b4-planner.md](./docs/b4-planner.md).
       **Shipped as `POST /api/ask/stream/`** — POST, not GET, because the body

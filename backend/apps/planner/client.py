@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import logging
 from functools import lru_cache
-from typing import Any
+from typing import Any, Iterator
 
 import anthropic
 from anthropic.types import Message
@@ -47,18 +47,21 @@ def get_client() -> anthropic.Anthropic:
     )
 
 
-def create_message(**kwargs: Any) -> Message:
-    """One turn of the conversation with the model.
+def stream_message(**kwargs: Any) -> Iterator[str | Message]:
+    """One turn of the conversation, as it arrives.
 
-    Streamed internally and reassembled: a long tool-using turn can outlive an
-    HTTP idle timeout on the non-streaming path, and the SDK refuses large
-    `max_tokens` without it. Nothing about our own API contract changes — this
-    still returns one finished `Message`.
+    Yields the answer text in chunks and finally yields the finished `Message` —
+    the sentinel the caller watches for. Streaming was always how we called the
+    model (a long tool-using turn can outlive an HTTP idle timeout otherwise);
+    this only stops throwing the text away on the way past.
     """
     client = get_client()
 
     try:
         with client.messages.stream(**kwargs) as stream:
+            # text_stream is only the text blocks, so thinking never leaks into
+            # what the user is shown.
+            yield from _coalesce(stream.text_stream)
             message = stream.get_final_message()
     except anthropic.APITimeoutError as exc:
         raise PlannerError(
@@ -100,4 +103,21 @@ def create_message(**kwargs: Any) -> Message:
         getattr(usage, "cache_read_input_tokens", None),
         getattr(usage, "cache_creation_input_tokens", None),
     )
-    return message
+    yield message
+
+
+# Each chunk costs an SSE frame, a re-render, and a full re-serialisation of the
+# thread on the app side. Nobody can see the difference between 20 updates a
+# second and 60, so the small ones the API sends get batched up.
+_CHUNK_CHARS = 24
+
+
+def _coalesce(deltas: Iterator[str]) -> Iterator[str]:
+    buffer = ""
+    for delta in deltas:
+        buffer += delta
+        if len(buffer) >= _CHUNK_CHARS:
+            yield buffer
+            buffer = ""
+    if buffer:
+        yield buffer

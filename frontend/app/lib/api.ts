@@ -302,7 +302,7 @@ function parseFrame(frame: string): AskEvent | null {
   if (name === 'done') {
     return { type: 'done', data: normalizeAskResponse(payload as RawAskResponse) }
   }
-  if (name === 'mode_start' || name === 'mode_end' || name === 'error') {
+  if (name === 'mode_start' || name === 'mode_end' || name === 'text_delta' || name === 'error') {
     return { type: name, data: payload } as AskEvent
   }
   // Unknown event types are ignored on purpose: that is what keeps the backend

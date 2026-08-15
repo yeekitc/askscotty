@@ -53,19 +53,30 @@ def reply(*content, stop_reason: str = "end_turn") -> Message:
 
 
 class FakeModel:
-    """Stands in for `create_message`: scripted replies, recorded requests.
+    """Stands in for `stream_message`: scripted replies, recorded requests.
 
-    The last reply repeats, so a test that wants the loop to run into a cap does
-    not have to script every turn.
+    Yields text chunks then the Message, the same shape the real one has. The
+    last reply repeats, so a test that wants the loop to run into a cap does not
+    have to script every turn.
     """
 
-    def __init__(self, *replies: Message) -> None:
+    def __init__(self, *replies: Message, stream_text: bool = False) -> None:
         self.replies = list(replies)
+        self.stream_text = stream_text
         self.calls: list[dict] = []
 
-    def __call__(self, **kwargs) -> Message:
+    def __call__(self, **kwargs):
         self.calls.append(kwargs)
-        return self.replies.pop(0) if len(self.replies) > 1 else self.replies[0]
+        message = self.replies.pop(0) if len(self.replies) > 1 else self.replies[0]
+
+        if self.stream_text:
+            for block in message.content:
+                if block.type == "text":
+                    # Two chunks, so a test can tell appending from replacing.
+                    yield block.text[:4]
+                    yield block.text[4:]
+
+        yield message
 
 
 class FakeToolsMixin:
@@ -106,7 +117,7 @@ class PlannerLoopTests(FakeToolsMixin, TestCase):
         self.register("fake_events", mode="events")
 
     def run_planner(self, model: FakeModel, query: str = "where can I eat?", **kwargs):
-        with mock.patch("apps.planner.loop.create_message", model):
+        with mock.patch("apps.planner.loop.stream_message", model):
             return list(run_planner(query, **kwargs))
 
     # --- The success path -----------------------------------------------------
@@ -160,6 +171,26 @@ class PlannerLoopTests(FakeToolsMixin, TestCase):
         )
         self.assertEqual(events[0]["data"], {"mode": "dining", "tool": "fake_dining"})
         self.assertEqual(events[1]["data"]["ok"], True)
+
+    def test_answer_text_is_forwarded_as_it_arrives(self) -> None:
+        self.behaviour["fake_dining"] = lambda args: {"open_now": []}
+
+        model = FakeModel(
+            reply(text("Looking…"), tool_use("fake_dining"), stop_reason="tool_use"),
+            reply(text("Rohr Café is open.")),
+            stream_text=True,
+        )
+        events = self.run_planner(model)
+
+        self.assertEqual(
+            [event["type"] for event in events],
+            # Preamble, the lane, then the answer. The app drops what came before
+            # a mode_start, so the "Look"/"ing…" pair never reaches the reader.
+            ["text_delta", "text_delta", "mode_start", "mode_end", "text_delta", "text_delta", "done"],
+        )
+        streamed = "".join(e["data"]["text"] for e in events if e["type"] == "text_delta")
+        self.assertEqual(streamed, "Looking…Rohr Café is open.")
+        self.assertEqual(events[-1]["data"]["answer"], "Rohr Café is open.")
 
     def test_parallel_results_go_back_in_one_user_message(self) -> None:
         self.behaviour["fake_dining"] = lambda args: {"open_now": ["Rohr"]}
@@ -394,7 +425,7 @@ class AskEndpointTests(FakeToolsMixin, TestCase):
         )
 
     def post(self, path: str, model: FakeModel):
-        with mock.patch("apps.planner.loop.create_message", model):
+        with mock.patch("apps.planner.loop.stream_message", model):
             return self.client.post(path, self.body, content_type="application/json")
 
     def stream(self, model: FakeModel) -> tuple:
@@ -403,7 +434,7 @@ class AskEndpointTests(FakeToolsMixin, TestCase):
         The body has to be consumed inside the patch: a StreamingHttpResponse is
         lazy, so the planner does not run until something iterates the response.
         """
-        with mock.patch("apps.planner.loop.create_message", model):
+        with mock.patch("apps.planner.loop.stream_message", model):
             response = self.client.post(
                 "/api/ask/stream/", self.body, content_type="application/json"
             )

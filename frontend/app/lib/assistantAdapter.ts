@@ -106,6 +106,7 @@ export function createHttpAdapter(getSources: () => string[] | undefined): ChatM
       }
 
       const running = new Set<Mode>()
+      let streamed = ''
 
       try {
         for await (const event of askEvents(text, {
@@ -113,6 +114,8 @@ export function createHttpAdapter(getSources: () => string[] | undefined): ChatM
           signal: abortSignal,
         })) {
           if (event.type === 'done') {
+            // The validated answer, which supersedes whatever streamed: markers
+            // have been checked and unissued ones stripped by now.
             yield {
               content: [
                 { type: 'text', text: event.data.answer },
@@ -122,9 +125,20 @@ export function createHttpAdapter(getSources: () => string[] | undefined): ChatM
             return
           }
 
-          if (event.type === 'mode_start') running.add(event.data.mode)
+          if (event.type === 'text_delta') {
+            streamed += event.data.text
+            yield { content: [{ type: 'text', text: streamed }] }
+            continue
+          }
+
+          // A lane starting means the model went off to look something up, so
+          // what it had written was preamble to that, not an answer.
+          if (event.type === 'mode_start') {
+            running.add(event.data.mode)
+            streamed = ''
+          }
           if (event.type === 'mode_end') running.delete(event.data.mode)
-          yield { content: [{ type: 'text', text: progressText(running) }] }
+          yield { content: [{ type: 'text', text: streamed || progressText(running) }] }
         }
 
         // Fell out of the loop without a `done` — the connection dropped

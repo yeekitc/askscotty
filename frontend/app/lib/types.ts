@@ -77,6 +77,12 @@ export type AskResponse = {
 export type AskEvent =
   | { type: 'mode_start'; data: { mode: Mode; tool: string } }
   | { type: 'mode_end'; data: { mode: Mode; tool: string; ok: boolean } }
+  /**
+   * Answer text as the model writes it. Append, but treat it as provisional:
+   * text written before a lane starts was the model talking itself into a
+   * lookup, and `done` is the only authoritative answer.
+   */
+  | { type: 'text_delta'; data: { text: string } }
   | { type: 'done'; data: AskResponse }
   | { type: 'error'; data: { code: string; message: string } }
 

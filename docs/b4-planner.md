@@ -598,6 +598,23 @@ done         { ...AskResponse }      → the payload we already send
 Answer-text deltas can be added later as another event type without changing
 anything else.
 
+### Added since: `text_delta`, and it cost nothing else
+
+The prediction held — adding it changed no other event, no serializer and no
+endpoint. `stream_message` yields text as it arrives and finally yields the
+`Message`; the loop forwards each chunk as an event. Two things learned:
+
+- **Text before a `mode_start` is preamble, not answer.** The model narrates
+  itself into a lookup ("let me check dining hours"), and that text is discarded
+  from the final answer. The app clears what it has when a lane starts, so one
+  rule handles it with no extra event.
+- **It is chunky, not a typewriter.** Measured on a short answer: the API sent 8
+  pieces, 15/16/19/13/17/**205/163/74** chars — small at first, then lumpier as
+  generation speeds up. Coalescing tiny deltas server-side is still worth it
+  (each one costs an SSE frame, a re-render, and a full re-serialisation of the
+  thread in `index.tsx`'s save path), but nothing makes the API's own batching
+  finer. If a smooth typewriter is ever wanted, it has to be faked client-side.
+
 ### The guideline worth committing to now
 
 > **The final `done` event carries the same validated `AskResponse` we send

@@ -196,9 +196,25 @@ Errors — any status — come back as `{"error": {"code": "...", "message": "..
 ### Watching an answer come together
 
 `POST /api/ask/stream/` takes the same body and streams Server-Sent Events while
-the planner works: `mode_start` and `mode_end` as each lane runs, then `done`
-carrying **the same validated answer** `/api/ask/` returns. Nothing is lost by
-ignoring it — the plain endpoint stays a fallback.
+the planner works:
+
+| Event | Data | Means |
+|---|---|---|
+| `mode_start` | `{mode, tool}` | a lane started — light up its chip |
+| `mode_end` | `{mode, tool, ok}` | it finished, or failed |
+| `text_delta` | `{text}` | answer text as the model writes it |
+| `done` | the full `AskResponse` | the validated answer |
+| `error` | `{code, message}` | it failed after the response had started |
+
+`done` carries **the same validated answer** `/api/ask/` returns, so nothing is
+lost by ignoring the rest — the plain endpoint stays a fallback.
+
+Two things about `text_delta`. It is **provisional**: text written before a
+`mode_start` was the model talking itself into a lookup, so drop what you have
+when a lane starts, and let `done` replace it at the end (markers are validated
+by then, deltas are raw). And it is **chunky, not a typewriter** — the API
+batches its own output, in practice a handful of pieces that get longer as
+generation speeds up.
 
 ```bash
 curl -N -X POST http://localhost:8000/api/ask/stream/ \
