@@ -4,6 +4,16 @@
 **Categories:** Overcoming Obstacles + Degree Planning (Campus Connection / College to Career secondary)  
 **Name:** **AskScotty** — named for Scotty, CMU’s Scottish Terrier mascot. Not affiliated with ScottyLabs (or any other “Scotty*” campus product). We are unaffiliated consumers of ScottyLabs’ public/open APIs (and TartanConnect’s public event feed). Credit in app + submission; do not imply partnership.
 
+**This doc owns product scope** — what we're building and why. Implementation
+detail has moved to its own pages, one source of truth per topic:
+
+| Doc | Owns |
+|---|---|
+| [architecture.md](./architecture.md) | how the pieces fit · the safety invariants · what's built |
+| [b4-planner.md](./b4-planner.md) | the planner loop · citations · streaming · inline-citation UI |
+| [artifact-plan.md](./artifact-plan.md) | maps, plan graphs, schedules — *draft, mostly open* |
+| [../tasklist.md](../tasklist.md) | the frozen API contract (§2) and every task |
+
 ---
 
 ## 1. Problem
@@ -42,6 +52,8 @@ Query → Planner
 ```
 
 Do **not** dump volatile structured APIs into the vector DB. Shared index = public pages only.
+
+→ **[architecture.md](./architecture.md)** for the rendered version, what's actually built, and the five invariants that enforce the rules below in code rather than by convention.
 
 | Include in crawl | Exclude from crawl |
 |------------------|--------------------|
@@ -154,6 +166,9 @@ Never mixed into the shared campus index. Disconnect deletes synced data.
 **P1:** Re-index job (even manual) for pitch · Ed · Stellic mock · Handshake mocks  
 
 **P2:** Discord/Slack · Andrew SSO · live Maps/25Live via future partnership  
+
+→ Build detail: **[b4-planner.md](./b4-planner.md)** (planner loop, citations, streaming) · **[artifact-plan.md](./artifact-plan.md)** (interactive answers — draft) · **[../tasklist.md](../tasklist.md)** (every task, with owners)
+
 
 | Days | Slice |
 |------|-------|
