@@ -56,6 +56,20 @@ so a malformed answer fails in the backend rather than rendering wrong in the ap
 - [x] Response keeps `answer`, `citations[]`, `modes_used[]`, `note` (`note` is nullable)
 - [x] Each citation carries `title`, `url`, `source`, `indexed_at`, `verified_at` (PRD §3 — every answer shows freshness)
 - [x] Add `is_mock: bool` to each citation so the UI can badge mock sources
+- [ ] **Amendment (proposed, b4-planner): add `id` and `snippet` to each citation.**
+      Needed for inline citations — a tap-to-open preview that shows only the title
+      is pointless, and `title` is all a citation carries today. `id` is the stable
+      handle the planner issues (`"S1"`, `"S2"`, …) and the *only* thing the model
+      ever writes about a source, so it can neither invent one nor relabel a mock as
+      live (PRD §9 by construction). It is explicit rather than positional so that
+      filtering the citation list later cannot silently rebind every marker.
+      `snippet` is the supporting excerpt, `""` when there isn't one.
+      **This is cheap now and expensive later** — every tool has to populate
+      `snippet`, so B1/B2/B3 should know before they write their return shapes:
+      `campus_search` returns the matched chunk (it has it for free), the live tools
+      return a one-line rendering of the row they matched, web verify returns the
+      excerpt the API already gives us. `domain` is *not* stored — derive it from
+      `url` at render time. See [docs/b4-planner.md](./docs/b4-planner.md).
 - [x] `modes_used` values are fixed strings: `rag` · `courses` · `dining` · `events` · `maps` · `web_verify` · `personal` — validated server-side against `MODES` in `backend/apps/tools/registry.py`
 - [x] **Error shape:** `{"error": {"code", "message"}}` with a real HTTP status, for every failure. Codes: `validation_error` · `unauthenticated` · `forbidden` · `not_found` · `method_not_allowed` · `unsupported_media_type` · `rate_limited` · `upstream_error` · `unavailable` · `timeout` · `error`. See `backend/apps/core/errors.py`.
 - [x] **Streaming: no.** Non-streaming for P0 — one request, one JSON answer. The app reports which modes ran from `modes_used` after the fact. Revisit only if the demo feels slow, and agree SSE here first.
@@ -96,7 +110,10 @@ Django 5.1 + DRF + Postgres. Everything lives under `backend/`. Code is bind-mou
 **Crawler**
 
 - [ ] Seed loader for Appendix B course sites (all 10 URLs from the PRD)
-- [ ] Seed loader for public `cmu.edu` sections: HUB, colleges, Student Affairs, CPDC
+- [ ] Seed loader for public `cmu.edu` sections: HUB, colleges, Student Affairs, CPDC, Housing, Health Services, `/about`, `/academics`
+- [ ] Seed loader for Computing Services + public KB (`computing.cmu.edu`) — the "how do I connect to the VPN" lane
+- [ ] Seed loader for the course catalog (`coursecatalog.cmu.edu`) — degree requirements, our only public substitute for Stellic
+- [ ] Seed loader for the non-SCS college sites (`cit`, `dietrich`, `tepper`, `cfa`, `mcs`, `heinz`) — Appendix B only covers SCS
 - [ ] Seed loader for [cmu.guide](https://cmu.guide/) (site + GitHub Markdown)
 - [ ] `robots.txt` fetch + honor (PRD §3 — non-negotiable)
 - [ ] Per-host rate limiting and identifying crawler User-Agent

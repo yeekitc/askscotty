@@ -64,8 +64,14 @@ Scheduled crawl → chunk → hybrid BM25 + vectors. Tool: `campus_search`. Cite
 | **Must** | Public `cmu.edu` (HUB, colleges, Student Affairs, CPDC, …) | Policies, advising, “how do I…” | **Crawl** — pre-index for demo; pitch nightly/weekly re-index |
 | **Must** | Seeded SCS course sites (Appendix B) | Syllabi, textbooks, course policies | **Crawl** seeds; enqueue new URLs from web verify |
 | **Must** | [cmu.guide](https://cmu.guide/) | Student lore (housing, getting around) | **Crawl** (site + GitHub Markdown) |
+| **Must** | Computing Services + KB (`computing.cmu.edu`) | “Connect to the VPN / campus wifi / printing” — pure how-do-I, and nothing else we index covers it | **Crawl** public KB articles |
+| **Must** | Course catalog (`coursecatalog.cmu.edu`) | Degree **requirements**. The Courses API gives schedules and prereqs but not what a major needs; Stellic is a mock, so this is our only public route to “on track for a CS minor?” | **Crawl** — static pages, safe to index |
+| **Should** | Non-SCS college sites (`cit`, `dietrich`, `tepper`, `cfa`, `mcs`, `heinz`) | Appendix B is SCS-only; these carry the advising and policy pages for everyone else | **Crawl** public sections |
+| **Should** | `cmu.edu/health-services` | Common “how do I…” (appointments, insurance, counselling) with no coverage today | **Crawl** |
+| **Should** | `cmu.edu/housing` | Official housing policy. cmu.guide has the lore, not the rules | **Crawl** |
 | **Should** | HKN ECE/CS Guide | Peer course tips | **Crawl** public GitHub Pages |
 | **Should** | LibGuides | Research / subject help | **Crawl** public guides (or API if key appears) |
+| **Could** | `cmu.edu/about`, `cmu.edu/academics` | Small and cheap; grounds “what/where is X” and gives the colleges list a real page | **Crawl** |
 | **Could** | Lost & Found posts, ResearchStarter listings | Niche campus Qs | **Mock** (no stable public consumer API) |
 | **Skip** | Auth-walled pages (SIO, Canvas, Stellic) | Not public | Never in shared index |
 
