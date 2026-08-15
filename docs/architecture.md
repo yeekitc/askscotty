@@ -71,6 +71,7 @@ Every safety rule is enforced **by construction**, not by convention.
 |---|---|
 | [PRD.md](./PRD.md) | product, scope, sources, non-goals |
 | [b4-planner.md](./b4-planner.md) | planner loop, citations, streaming, inline-citation UI |
+| [b3-web-verify.md](./b3-web-verify.md) | web verify — implementation prompt, ready to hand over |
 | [artifact-plan.md](./artifact-plan.md) | maps / plan graphs / schedules — draft |
 | [../tasklist.md](../tasklist.md) | the API contract (§2) and every task |
 | [runbook.md](./runbook.md) | running it |

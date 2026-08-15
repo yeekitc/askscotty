@@ -36,6 +36,7 @@ These blocked both sides. **Decided — do not re-litigate without editing this 
 - [x] **LLM + model:** Anthropic **`claude-sonnet-5`** (`PLANNER_MODEL` in `.env`). The planner is mostly routing and tool selection rather than deep reasoning, and Sonnet is roughly half Opus's cost per token. Switch the env var to `claude-opus-5` if multi-hop answers come out weak — no code change needed.
 - [x] **Embeddings:** OpenAI **`text-embedding-3-small`**, 1536 dimensions (`OPENAI_API_KEY`, `EMBEDDING_MODEL`). Anthropic has no embeddings endpoint, so this is a second provider for one narrow job. Dimensions must match the pgvector column, so changing the model means a migration *and* a full re-index.
 - [x] **Web search: none — use Claude's built-in `web_search` / `web_fetch`.** *(Reversed 2026-08-15; was Tavily.)* These are **server-side** tools: declare them in the `tools` array and they run on Anthropic's infrastructure under `ANTHROPIC_API_KEY`. No second provider, no second key, no client to write. Verified live on `claude-sonnet-5` — `allowed_domains` gives B3's site-filtered search with zero off-domain leaks, and `blocked_domains` refuses Canvas with a distinct `url_not_allowed` (vs `url_not_accessible` when the denylist doesn't cover it), which is PRD §6's denylist enforced by the API. **Budget for it:** one searching query cost ~35.9k input tokens / ~26s. Use `max_uses` and `max_content_tokens`, and only verify when the index is actually stale.
+- [x] **RAG takes precedence over web search.** The index is the default; web verify is the fallback, not the reflex. This is a cost decision with a measured number behind it: one searching query is **~35.9k input tokens and ~26 seconds**, and those results then sit in the message list and are re-sent as input on *every* subsequent call in that turn — our cache breakpoint is on the system block, so nothing in message position is ever cached. A four-hop answer that searched once pays for it four times. Enforced in three places, weakest to strongest: the tool description (which is what actually decides whether the model picks it), the lane ordering in the system prompt, and `max_uses` as the only hard cap. Search when the index has nothing or the page is genuinely stale — see [docs/b3-web-verify.md](./docs/b3-web-verify.md).
 - [x] **Vector store:** **pgvector** in the existing Postgres. Fewer moving parts, and `docker compose down -v && ./setup.sh` still has to work on a teammate's laptop. *(The extension still needs enabling on the DB — tasklist B0.)*
 - [x] **Auth scope:** **anonymous session id**, passed as `session_id` in the request body. The app generates one and keeps it on the device; no login screen to build. Trade-off, stated plainly: anyone who learns a session id can read that session's connected data. It is a bearer token, not an identity — real accounts are the upgrade path if this outlives the hackathon.
 - [x] Add every new key to `.env.example` (never `.env`) and post it in the team chat
@@ -234,15 +235,20 @@ Django 5.1 + DRF + Postgres. Everything lives under `backend/`. Code is bind-mou
 registry with the right domain lists, not writing an HTTP client. Both take
 `allowed_domains`, `blocked_domains`, `max_uses`, `max_content_tokens`.
 
+📋 **Implementation prompt: [docs/b3-web-verify.md](./docs/b3-web-verify.md)** —
+phases, the registry change a server tool forces, the result blocks to parse, and
+what B4 already handles so it does not get rebuilt.
+
 - [ ] `fetch_url(url)` — wrap `web_fetch` with an **allowlist** of public hosts (`allowed_domains`)
 - [ ] Explicit denylist so Canvas / SIO / Stellic can never be fetched here (`blocked_domains`, PRD §6) — assert on `url_not_allowed` in a test
 - [ ] Return `verified_at` on every fetch — ours to stamp; the API doesn't supply it
 - [ ] `web_search(query, site?)` — wrap `web_search`; `site` maps to `allowed_domains`
 - [ ] Cap cost/latency per call (`max_uses`, `max_content_tokens`) — one search measured ~35.9k input tokens / ~26s
 - [ ] Do **not** declare `code_execution` alongside these — dynamic filtering is built in, and a second execution environment confuses the model
-- [ ] Handle `pause_turn`: a long search turn ends the loop early and looks like a finished answer. Resume it, or the demo silently truncates.
+- [x] Handle `pause_turn`: a long search turn ends the loop early and looks like a finished answer. Resume it, or the demo silently truncates. — **done in B4**, capped by `PLANNER_MAX_PAUSE_RESUMES`. Don't rebuild it.
 - [ ] `resolve_course_site(course_number)` — static map from Appendix B
-- [ ] Staleness policy: define what `indexed_at` age triggers a verify fetch
+- [ ] Staleness policy: define what `indexed_at` age triggers a verify fetch (`WEB_VERIFY_STALE_AFTER_DAYS`) — the enforcement half of §1's RAG-first decision
+- [ ] Confirm web search is **enabled for the org** before demo day: if an admin disabled it in the Console, *declaring* the tool is a 400, so every request fails rather than just searching ones. Gate the declaration behind one env var
 - [ ] Enqueue newly discovered URLs into `CrawlSeed` for the next crawl (PRD §6 planner default)
 
 ## B4. Planner — P0 (Days 1–2, then Day 4)
