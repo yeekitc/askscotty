@@ -46,12 +46,17 @@ PLANNER_DEFAULTS = dict(
 # --- Scripting a session ------------------------------------------------------
 
 
-def agent_message(body: str) -> SimpleNamespace:
-    """The buffered text of one model turn — what the answer is built from."""
+def agent_message(*bodies: str) -> SimpleNamespace:
+    """The buffered text of one model turn — what the answer is built from.
+
+    Takes several bodies because a real one arrives split at citation
+    boundaries: quoted spans are their own blocks, and the sentence around them
+    is in the blocks either side.
+    """
     return SimpleNamespace(
         type="agent.message",
         id=_next_id(),
-        content=[SimpleNamespace(type="text", text=body)],
+        content=[SimpleNamespace(type="text", text=body) for body in bodies],
     )
 
 
@@ -409,6 +414,38 @@ class SessionDriverTests(PlannerTestCase):
         self.assertEqual(events[0]["data"], {"mode": "web_verify", "tool": "web_search"})
         self.assertEqual(events[1]["data"], {"mode": "web_verify", "tool": "web_search", "ok": True})
 
+    def test_a_cited_answer_is_one_piece_of_prose_not_one_paragraph_per_block(self) -> None:
+        """Regression: this shredded every web-verified answer on screen.
+
+        The model splits its text at citation boundaries, so a quote is its own
+        block and the sentence around it is in the blocks either side — with an
+        empty or whitespace block wherever the split lands. Joining those with
+        blank lines turned each quoted span into a free-standing paragraph and
+        left stray empty ones between them.
+        """
+        session = FakeSession(
+            [
+                agent_message(
+                    "Startup Week is a month out, not tomorrow. ",
+                    "Join 2000+ founders, investors and researchers.",
+                    " ",
+                    "It runs September 14–18.",
+                    "",
+                    " So there is nothing on tomorrow.",
+                ),
+                idle(),
+            ]
+        )
+        answer = self.answer(session)["answer"]
+
+        self.assertEqual(
+            answer,
+            "Startup Week is a month out, not tomorrow. "
+            "Join 2000+ founders, investors and researchers. "
+            "It runs September 14–18. So there is nothing on tomorrow.",
+        )
+        self.assertNotIn("\n", answer)
+
     def test_a_terminated_session_still_produces_the_answer(self) -> None:
         session = FakeSession([agent_message("Wean is central."), terminated()])
         self.assertEqual(self.answer(session)["answer"], "Wean is central.")
@@ -733,6 +770,24 @@ class MarkerValidationTests(TestCase):
     def test_an_empty_issue_set_strips_everything(self) -> None:
         cleaned, _ = validate_markers("Open until 5pm [S1][S2].", set())
         self.assertEqual(cleaned, "Open until 5pm.")
+
+    def test_a_marker_carrying_several_ids_is_handled(self) -> None:
+        """Regression: `[S25, S30-4]` reached the screen as a dead marker.
+
+        Asked to cite two sources for one claim, the model writes what a person
+        would rather than the `[S1]` the prompt asks for.
+        """
+        cleaned, _ = validate_markers("Startup Week runs in September [S25, S30-4].", set())
+        self.assertEqual(cleaned, "Startup Week runs in September.")
+
+        kept, uncited = validate_markers("Runs in September [S25, S30-4].", {"S25", "S9"})
+        self.assertEqual(kept, "Runs in September [S25].")
+        self.assertEqual(uncited, {"S9"})
+
+    def test_bracketed_prose_is_left_alone(self) -> None:
+        # The pattern is wide; it must not be wide enough to eat real text.
+        for text in ("See [Section 3] for detail.", "Check [See below].", "Costs [S] nothing."):
+            self.assertEqual(validate_markers(text, set())[0], text)
 
 
 @override_settings(**PLANNER_DEFAULTS)

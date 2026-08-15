@@ -329,7 +329,13 @@ def _handle(turn: _Turn, cma_session_id: str, event: Any) -> Iterator[dict[str, 
         turn.seen.add(event_id)
 
     if kind == "agent.message":
-        turn.answer = "\n\n".join(
+        # Concatenated, *not* joined with blank lines. One message's text blocks
+        # are one continuous piece of prose: the model splits them at citation
+        # boundaries, so a quoted span arrives as its own block with the sentence
+        # around it in the blocks either side. Joining with "\n\n" turns every
+        # quote into a free-standing paragraph and leaves a stray blank one
+        # wherever a block was empty — the answer comes out shredded.
+        turn.answer = "".join(
             block.text for block in event.content if block.type == "text"
         ).strip()
 

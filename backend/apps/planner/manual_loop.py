@@ -196,9 +196,9 @@ def _forced_reason(iterations: int, pauses: int, deadline: float) -> str | None:
 
 
 def _text(message: Any) -> str:
-    return "\n\n".join(
-        block.text for block in message.content if block.type == "text"
-    ).strip()
+    # Concatenated, not joined with blank lines — see the same note in loop.py.
+    # One turn's text blocks are continuous prose split at citation boundaries.
+    return "".join(block.text for block in message.content if block.type == "text").strip()
 
 
 # --- Tool dispatch ------------------------------------------------------------

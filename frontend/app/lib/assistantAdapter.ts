@@ -80,9 +80,15 @@ export const MODE_LABELS: Record<Mode, string> = {
   personal: 'Your accounts',
 }
 
-/** A whole citation marker, or a partial one still being streamed at the end. */
-const STREAMED_MARKER = /\[S\d+\]/g
-const TRAILING_PARTIAL_MARKER = /\[S\d*$/
+/**
+ * A whole citation marker, or a partial one still being streamed at the end.
+ *
+ * Wider than `[S1]` for the same reason the backend's is (see
+ * `apps/planner/citations.py`): told to cite two sources for one claim the model
+ * writes `[S25, S30-4]`, and a narrow pattern leaves that on screen.
+ */
+const STREAMED_MARKER = /\[S\d[\d\s,S-]*\]/g
+const TRAILING_PARTIAL_MARKER = /\[S[\d\s,S-]*$/
 
 /**
  * Streamed text, with citation markers held back until the answer is final.

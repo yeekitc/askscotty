@@ -155,9 +155,16 @@ mitigations as B4 work rather than polish.
 - **Reinstate parallel dispatch** if a real lane is slower than 400 ms. It was
   removed on instruction and is a genuine regression for a parallel batch: three
   400 ms tools now cost 1.2 s instead of 0.4 s.
-- **The fallback stays reachable.** `PLANNER_MANAGED_AGENTS=false` is one env
-  var, and on this evidence it is the safer demo-day setting if the numbers do
-  not improve. Do not delete `manual_loop.py` until they do.
+- **The fallback stays reachable, but it is not a demo-day option today.**
+  `PLANNER_MANAGED_AGENTS=false` is one env var, and the loop behind it is twice
+  as fast — but it builds its `tools` array from the registry alone and never
+  declared `web_search` / `web_fetch`, because under Managed Agents those arrive
+  with the prebuilt toolset and on the old path they were always going to arrive
+  with B3. **With B1–B3 unlanded that means zero tools**: the user turn says
+  nothing can be checked and the answer is uncited general knowledge. Every real
+  answer measured here came from the web lane, which only exists on the Managed
+  Agents path. Keep the fallback for a Managed Agents outage; it becomes the
+  genuine performance option once B1/B2 give it something to call.
 
 ### Decided: no wall-clock deadline
 
@@ -172,8 +179,26 @@ run out of time.
 
 **So we drop it.** The deadline existed because a slow answer held an HTTP
 connection that would eventually die with nothing to show for it. A session
-outlives the connection — a slow answer is resumable rather than lost, which is
+outlives the connection — a slow answer is *resumable* rather than lost, which is
 strictly better than truncated prose. `PLANNER_DEADLINE_SECONDS` goes away.
+
+> ⚠️ **Corrected after the migration: resumable is a property of the platform, not
+> of this app.** Nothing reattaches to an in-flight turn. When the app's 120s
+> backstop fires, the session keeps running and billing on Anthropic's side, and
+> the answer it eventually produces is never shown to anyone. `Thread.cma_session_id`
+> means the *next* question reuses that session's memory; it does not recover the
+> turn that timed out.
+>
+> **So today nothing bounds wall-clock at all.** A session `budget` bounds
+> *spend*, and at $5.00 a thread that is hundreds of model calls — a single
+> 120-second turn costs a few cents, so the budget cannot fire inside one and was
+> never going to. Two different axes: the budget stops a loop that runs for ever,
+> not an answer that is merely slow.
+>
+> Closing this needs one of: raise `TIMEOUT_MS`, or implement reattach — on a
+> request for a thread whose session is still `running`, drain the existing turn
+> instead of sending a new message. The second is the one the design implies, and
+> it is the piece that makes the durability argument true rather than available.
 
 Two consequences worth stating out loud:
 
