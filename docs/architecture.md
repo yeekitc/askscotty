@@ -3,9 +3,9 @@
 ```mermaid
 flowchart TB
     App["Expo app<br/>one codebase → iOS · Android · web"]:::done
-    Ask["POST /api/ask/<br/>validated in, validated out"]:::done
+    Ask["POST /api/ask/ · /api/ask/stream/<br/>validated in, validated out"]:::done
     Gate["tools_for_session()<br/>builds this request's toolset"]:::done
-    Planner["Planner loop<br/>B4"]:::todo
+    Planner["Planner loop<br/>generator: mode events → answer"]:::done
 
     subgraph shared ["🌐 Shared — public data only"]
         direction LR
@@ -59,7 +59,8 @@ Every safety rule is enforced **by construction**, not by convention.
 | `backend/apps/core/` | endpoints, contract, errors, threads |
 | `backend/apps/tools/` | tool registry, source registry |
 | `backend/apps/personal/` | encrypted connectors |
-| `backend/apps/rag/` · `planner/` | not created yet |
+| `backend/apps/planner/` | the agentic loop, prompt, citations |
+| `backend/apps/rag/` | not created yet |
 | `frontend/app/` | the whole app, all three platforms |
 
 ---

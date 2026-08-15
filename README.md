@@ -155,6 +155,7 @@ docker compose exec backend python manage.py migrate
 |--------|------|---------|
 | `GET` | `/api/health/` | health check — is the API alive? |
 | `POST` | `/api/ask/` | the main endpoint (`{"query", "session_id"?, "history"?}`) |
+| `POST` | `/api/ask/stream/` | the same answer as SSE progress events — see below |
 | `GET` | `/api/sources/` | what AskScotty draws on, and how fresh each source is |
 | `GET` | `/api/threads/` | this session's saved conversations |
 | `PUT` | `/api/threads/{id}/` | save a conversation (creates it if new) |
@@ -175,9 +176,11 @@ Open http://localhost:8000/api/ask/ in a browser for a clickable form to test th
   "answer": "string",
   "citations": [
     {
+      "id": "S1",
       "title": "string",
       "url": "string",
       "source": "string",
+      "snippet": "string",
       "indexed_at": "ISO-8601 or null",
       "verified_at": "ISO-8601 or null",
       "is_mock": false
@@ -190,7 +193,24 @@ Open http://localhost:8000/api/ask/ in a browser for a clickable form to test th
 
 Errors — any status — come back as `{"error": {"code": "...", "message": "..."}}`, so the app can show a useful message instead of guessing at the body.
 
-**`/api/ask/` currently returns a stub answer.** The contract, the tool registry and the per-session toolset are real; the planner that fills the answer in is not written yet (tasklist B4). It goes in `backend/apps/core/views.py`.
+### Watching an answer come together
+
+`POST /api/ask/stream/` takes the same body and streams Server-Sent Events while
+the planner works: `mode_start` and `mode_end` as each lane runs, then `done`
+carrying **the same validated answer** `/api/ask/` returns. Nothing is lost by
+ignoring it — the plain endpoint stays a fallback.
+
+```bash
+curl -N -X POST http://localhost:8000/api/ask/stream/ \
+  -H 'Content-Type: application/json' \
+  -d '{"query": "what is open near Wean right now?"}'
+```
+
+**The answer is real, but the sources are not there yet.** The planner runs
+(tasklist B4) — it routes, calls tools, cites what they return and degrades when
+one fails. What it has to work with is still thin: every registered tool raises
+`ToolError` until B1–B3 land, so most answers come back saying they could not
+check a live campus source.
 
 The shapes are defined in three places that must stay in sync:
 - `tasklist.md` §2 — where the contract is agreed

@@ -33,6 +33,15 @@ _CODES = {
 }
 
 
+def code_for_status(status_code: int) -> str:
+    """The `code` that goes with an HTTP status.
+
+    Also used by the SSE endpoint, which cannot raise once the 200 is on the
+    wire and has to put the same shape in an `error` event instead.
+    """
+    return _CODES.get(status_code, "error")
+
+
 def _flatten(detail, path: str = "") -> str:
     """Turn DRF's nested error detail into one human sentence.
 
@@ -72,7 +81,7 @@ def api_exception_handler(exc, context):
         )
         return None
 
-    code = _CODES.get(response.status_code, "error")
+    code = code_for_status(response.status_code)
     message = _flatten(response.data) or "Something went wrong."
 
     return Response({"error": {"code": code, "message": message}}, status=response.status_code)

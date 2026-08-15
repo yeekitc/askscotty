@@ -56,7 +56,7 @@ so a malformed answer fails in the backend rather than rendering wrong in the ap
 - [x] Response keeps `answer`, `citations[]`, `modes_used[]`, `note` (`note` is nullable)
 - [x] Each citation carries `title`, `url`, `source`, `indexed_at`, `verified_at` (PRD §3 — every answer shows freshness)
 - [x] Add `is_mock: bool` to each citation so the UI can badge mock sources
-- [ ] **Amendment (proposed, b4-planner): add `id` and `snippet` to each citation.**
+- [x] **Amendment (AGREED and shipped, b4-planner): add `id` and `snippet` to each citation.**
       Needed for inline citations — a tap-to-open preview that shows only the title
       is pointless, and `title` is all a citation carries today. `id` is the stable
       handle the planner issues (`"S1"`, `"S2"`, …) and the *only* thing the model
@@ -70,6 +70,9 @@ so a malformed answer fails in the backend rather than rendering wrong in the ap
       return a one-line rendering of the row they matched, web verify returns the
       excerpt the API already gives us. `domain` is *not* stored — derive it from
       `url` at render time. See [docs/b4-planner.md](./docs/b4-planner.md).
+      **Both fields are live in the serializer and `types.ts`.** A tool populates
+      them by returning a `citations` list; `id` is assigned by the planner and a
+      tool never sets it. Backward-compatible — both default to `""`.
 - [ ] **Amendment (proposed, b4-planner): add `artifacts: []` to the response — the
       empty seam only.** Some answers want to be more than prose: a campus map with
       a route, a study plan you can tick off, a schedule grid. Adding the (always
@@ -85,7 +88,7 @@ so a malformed answer fails in the backend rather than rendering wrong in the ap
 - [x] `modes_used` values are fixed strings: `rag` · `courses` · `dining` · `events` · `maps` · `web_verify` · `personal` — validated server-side against `MODES` in `backend/apps/tools/registry.py`
 - [x] **Error shape:** `{"error": {"code", "message"}}` with a real HTTP status, for every failure. Codes: `validation_error` · `unauthenticated` · `forbidden` · `not_found` · `method_not_allowed` · `unsupported_media_type` · `rate_limited` · `upstream_error` · `unavailable` · `timeout` · `error`. See `backend/apps/core/errors.py`.
 - [x] **Streaming: no.** Non-streaming for P0 — one request, one JSON answer. The app reports which modes ran from `modes_used` after the fact. Revisit only if the demo feels slow, and agree SSE here first.
-- [ ] **Amendment (AGREED — supersedes the box above): SSE, as progress events.**
+- [x] **Amendment (AGREED and shipped — supersedes the box above): SSE, as progress events.**
       This was the "agree SSE here first" step, and it's agreed. Three separate
       things were being conflated:
       **(1) the client's 30s timeout** — a single web-search turn was measured at
@@ -101,6 +104,12 @@ so a malformed answer fails in the backend rather than rendering wrong in the ap
       validating. Answer-text deltas can be added later as another event type.
       Note `createHttpAdapter` is already an async generator, so the frontend is
       shaped for this already. See [docs/b4-planner.md](./docs/b4-planner.md).
+      **Shipped as `POST /api/ask/stream/`** — POST, not GET, because the body
+      carries `query`/`history` and `EventSource` is GET-only and absent on React
+      Native. Transport is **XMLHttpRequest**, not `fetch`: RN's fetch is the
+      whatwg-fetch polyfill, which exposes no `response.body`, so streaming is
+      unreadable on iOS/Android. XHR works on all three, so it is one code path
+      (`askEvents` in `lib/api.ts`).
 - [x] Add `GET /api/sources/` returning the source registry (`name`, `tier`, `access`, `indexed_at`, plus `implemented` and `note`) — powers the credits/freshness UI
 - [x] **Chat history endpoints.** `GET /api/threads/` → `{threads: [{id, messages, updated_at}]}` · `PUT /api/threads/{id}/` (upsert, body `{messages}`) · `DELETE /api/threads/{id}/`. A message is `{role, content}` where `content` is assistant-ui's *parts* array, not a string — that is what keeps citations alive across a reload. Scoped by an **`X-Session-Id` header**, not the body: it is a bearer token and query strings end up in server logs. Missing header → `validation_error`.
 - [x] Update the API table in [README.md](./README.md) when this changes
@@ -118,13 +127,13 @@ Django 5.1 + DRF + Postgres. Everything lives under `backend/`. Code is bind-mou
 - [ ] Enable the `pgvector` extension on the Postgres container (migration or init SQL)
 - [ ] Create `backend/apps/rag/` app (crawler, chunker, index, `campus_search`)
 - [x] Create `backend/apps/tools/` app (live tools + mocks + web verify) — registry + source registry done; the tools themselves are B2
-- [ ] Create `backend/apps/planner/` app (orchestration)
+- [x] Create `backend/apps/planner/` app (orchestration)
 - [x] Create `backend/apps/personal/` app (user-scoped connectors)
 - [x] Register new apps in `backend/config/settings.py` `INSTALLED_APPS`
 - [x] Add a settings block for external API keys, read from env with safe defaults
 - [ ] Add a shared HTTP client helper: timeout, retry, identifying User-Agent, per-host rate limit
 - [ ] Add a response cache (per-tool TTL) so demo reloads don't hammer public APIs
-- [ ] Add structured logging for every tool call: tool name, args, latency, cache hit/miss — name/mode/latency/outcome done in `tools/registry.py:run_tool`; cache fields pending the cache. **Args are deliberately not logged** (a personal tool's args can identify a student).
+- [ ] Add structured logging for every tool call: tool name, args, latency, cache hit/miss — name/mode/latency/outcome done in `tools/registry.py:run_tool`; cache fields pending the cache. **Args are deliberately not logged** (a personal tool's args can identify a student). *(b4: those lines were being emitted into the void — Django only configures the `django` logger, so `settings.LOGGING` now wires up `apps.*` and they actually appear.)*
 
 ## B1. Campus index / RAG — P0 (Days 1–2)
 
@@ -234,14 +243,26 @@ registry with the right domain lists, not writing an HTTP client. Both take
 
 ## B4. Planner — P0 (Days 1–2, then Day 4)
 
-- [ ] Replace the stub in `backend/apps/core/views.py:25` (`AskView`) with the real planner
-- [ ] Register every tool with the LLM as tool definitions (name, description, JSON schema)
-- [ ] Agentic loop: call tools until the model stops, with a max-iteration cap
-- [ ] System prompt: CMU context, cite everything, label mocks, never invent facts
-- [ ] Collect citations from every tool result into the response
-- [ ] Populate `modes_used` from which tool families actually ran
-- [ ] Timeout + graceful partial answer if one tool hangs
-- [ ] Never let personal data enter a shared-index call (PRD §3)
+Lives in `backend/apps/planner/`. `run_planner` is a **generator** — it yields
+progress events and finishes by yielding the validated `AskResponse`, which is
+why `/api/ask/` and `/api/ask/stream/` are two thin wrappers over one loop.
+Written by hand rather than with the SDK's tool runner, which cannot resume a
+`pause_turn` and fails silently when it hits one.
+
+- [x] Replace the stub in `backend/apps/core/views.py:25` (`AskView`) with the real planner
+- [x] Register every tool with the LLM as tool definitions (name, description, JSON schema)
+- [x] Agentic loop: call tools until the model stops, with a max-iteration cap
+- [x] System prompt: CMU context, cite everything, label mocks, never invent facts
+- [x] Collect citations from every tool result into the response
+- [x] Populate `modes_used` from which tool families actually ran — successful calls only, so a chip never claims a lane that failed
+- [x] Timeout + graceful partial answer if one tool hangs — a deadline, an iteration cap and a `pause_turn` cap, all ending in one final call with `tool_choice: none` rather than a 504
+- [x] Never let personal data enter a shared-index call (PRD §3) — every dispatch goes through `run_tool`, which is what withholds `session_id` from public tools
+- [x] Parallel tool dispatch, with **all** results returned in one user message (splitting them trains the model out of parallel calls)
+- [x] A failed tool comes back as a `tool_result` with `is_error`, never a dropped block
+- [x] Prompt caching: frozen system prompt, `cache_control` on its last block, the clock in the user turn — confirmed live via `cache_read_input_tokens`
+- [x] Loop tests against a scripted model and a tool registered in the test (`apps/planner/tests.py`)
+- [ ] Inline `[S1]` markers — plumbed and tested, gated off behind `PLANNER_CITATION_MARKERS` until F2 can render one as a chip
+- [ ] Server-side web tools (`is_server_tool`, `web_search_tool_result` parsing) — deferred with B3, untestable until it exists
 - [ ] **Signature multi-hop works**: "I get out of 15-213 at 4:20 tomorrow. Find somewhere nearby to eat and then an interesting startup or AI event before 8." → Courses → Maps → Dining → Events
 - [ ] Verify each PRD §8 example query returns something sane
 
@@ -284,13 +305,13 @@ surfaces at once. See [CLAUDE.md](./CLAUDE.md) for the component rules (`<View>`
 - [x] Add `is_mock` to the `Citation` type — done
 - [x] Bring citation fields (`url`, `indexed_at`, `verified_at`) to parity — done, single codebase so parity is automatic now
 - [x] Centralize `API_URL` handling and surface a clear error when the backend is unreachable — done in `lib/api.ts` (includes a 30s timeout)
-- [ ] **Drop that 30s timeout** (~2min backstop instead) — one search turn alone was measured at ~26s, so multi-hop answers fail today. One line in `lib/api.ts`; see §2 streaming amendment
+- [x] **Drop that 30s timeout** (~2min backstop instead) — one search turn alone was measured at ~26s, so multi-hop answers fail today. One line in `lib/api.ts`; see §2 streaming amendment
 - [ ] Keep `npx tsc --noEmit` clean
 
 ## F1. Ask flow — P0
 
 - [x] Split the screen into components (`CitationCard`, `Credits` in `frontend/app/components/`) — partially done, add the rest below
-- [ ] Loading state that shows *which mode is running* (not just "Asking…") — this is the demo's wow moment
+- [ ] Loading state that shows *which mode is running* (not just "Asking…") — this is the demo's wow moment. **The data is already arriving:** `askEvents()` in `lib/api.ts` yields `mode_start` / `mode_end` and `createHttpAdapter` consumes them; what it renders is a placeholder line of text where this box wants chips
 - [ ] Render `modes_used` as labelled chips (RAG · Courses · Dining · Events · Maps · Web verify · Personal)
 - [ ] Error state: network failure, 4xx, 5xx, timeout — each with a distinct message
 - [ ] Empty state before the first question, with 3–4 clickable example queries from PRD §8

@@ -2,25 +2,32 @@
 
 from __future__ import annotations
 
+import json
+import logging
 from datetime import datetime, timezone
+from typing import Iterator
 
-from apps.tools.registry import tools_for_session
+from apps.planner.errors import PlannerError, as_api_exception
+from apps.planner.loop import drain, run_planner
 from apps.tools.sources import all_sources
 from django.db import transaction
+from django.http import StreamingHttpResponse
 from rest_framework import serializers, status
 from rest_framework.exceptions import NotFound
 from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from .errors import code_for_status
 from .models import Message, Thread
 from .serializers import (
-    AskResponseSerializer,
     AskSerializer,
     SourcesResponseSerializer,
     ThreadListResponseSerializer,
     ThreadSerializer,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class HealthView(APIView):
@@ -37,64 +44,91 @@ class HealthView(APIView):
         )
 
 
+def _planner_events(request: Request):
+    """Validate an ask request and start the planner over it.
+
+    Shared by both endpoints so they cannot drift: same request shape, same
+    generator, same validated payload — one drains it, the other forwards it.
+    """
+    serializer = AskSerializer(data=request.data)
+    serializer.is_valid(raise_exception=True)
+
+    return run_planner(
+        serializer.validated_data["query"],
+        session_id=serializer.validated_data["session_id"],
+        history=serializer.validated_data["history"],
+    )
+
+
 class AskView(APIView):
     """POST /api/ask/ — the main endpoint.
 
-    Non-streaming by decision (tasklist §1): one request, one JSON answer, so we
-    do not have to agree an SSE format before the planner exists. The planner is
-    tasklist B4; the contract and the per-session toolset are real already.
+    One request, one validated JSON answer. `POST /api/ask/stream/` returns the
+    identical payload in its `done` event; this stays the fallback for anything
+    that cannot read a stream.
     """
 
     authentication_classes: list = []
     permission_classes: list = []
 
     def post(self, request: Request) -> Response:
-        serializer = AskSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
+        try:
+            payload = drain(_planner_events(request))
+        except PlannerError as exc:
+            raise as_api_exception(exc) from exc
 
-        query = serializer.validated_data["query"]
-        session_id = serializer.validated_data["session_id"]
-        history = serializer.validated_data["history"]
+        return Response(payload, status=status.HTTP_200_OK)
 
-        # Built here rather than inside the planner so the session-scoping
-        # decision lives in one place.
-        tools = tools_for_session(session_id)
-        personal_tools = [tool.name for tool in tools if tool.is_personal]
 
-        answer = (
-            f'Stub response for: "{query}". The API contract is live but the planner '
-            f"is not wired yet (tasklist B4). This request had {len(tools)} tool(s) "
-            "available"
+class AskStreamView(APIView):
+    """POST /api/ask/stream/ — the same answer, plus progress events.
+
+    POST rather than GET because the body carries `query` and `history`, and
+    because `EventSource` is GET-only and does not exist on React Native anyway
+    — the app reads frames off XHR's growing `responseText`.
+
+    Strictly additive (tasklist §2): `mode_start` / `mode_end` drive the mode
+    chips, and `done` carries the same validated `AskResponse` /api/ask/ returns.
+
+    Worth knowing before this is deployed anywhere real: a gunicorn sync worker
+    is held for the whole life of an open stream. Fine at demo scale.
+    """
+
+    authentication_classes: list = []
+    permission_classes: list = []
+
+    def post(self, request: Request) -> StreamingHttpResponse:
+        response = StreamingHttpResponse(
+            _sse(_planner_events(request)),
+            content_type="text/event-stream",
         )
-        if personal_tools:
-            answer += f", including personal: {', '.join(personal_tools)}"
-        answer += "."
-        if history:
-            answer += f" {len(history)} earlier turn(s) received."
+        response["Cache-Control"] = "no-cache"
+        # Proxies buffer by default, which turns progress events into one blob
+        # delivered at the end.
+        response["X-Accel-Buffering"] = "no"
+        return response
 
-        payload = {
-            "answer": answer,
-            "citations": [
-                {
-                    "title": "AskScotty build checklist",
-                    "url": "",
-                    "source": "AskScotty (stub)",
-                    "indexed_at": None,
-                    "verified_at": datetime.now(timezone.utc),
-                    # PRD §9 applies to our own placeholder too.
-                    "is_mock": True,
-                }
-            ],
-            # Nothing ran, so nothing is claimed.
-            "modes_used": [],
-            "note": "Demo stub — the planner is not wired up yet, so this is not live campus data.",
-        }
 
-        # Validated on the way out: a malformed answer fails here rather than
-        # rendering wrong in the app.
-        response = AskResponseSerializer(data=payload)
-        response.is_valid(raise_exception=True)
-        return Response(response.validated_data, status=status.HTTP_200_OK)
+def _sse(events) -> Iterator[str]:
+    """Planner events as SSE frames.
+
+    Every failure becomes an `error` frame rather than an HTTP status: by the
+    time one happens the 200 and its headers are long gone. The body is the same
+    `{"code", "message"}` shape every other endpoint returns, so the app has one
+    error path. A stream that just stops would leave it waiting instead.
+    """
+    try:
+        for event in events:
+            yield _frame(event["type"], event["data"])
+    except PlannerError as exc:
+        yield _frame("error", {"code": code_for_status(exc.status_code), "message": str(exc)})
+    except Exception:
+        logger.exception("Unhandled error while streaming an answer")
+        yield _frame("error", {"code": "error", "message": "Something went wrong."})
+
+
+def _frame(event: str, data: dict) -> str:
+    return f"event: {event}\ndata: {json.dumps(data)}\n\n"
 
 
 class SourcesView(APIView):

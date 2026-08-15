@@ -254,10 +254,10 @@ today. So `Citation` gains two fields:
 
 ### Changes needed
 
-- [ ] `backend/apps/core/serializers.py` → add both fields to `CitationSerializer`
-- [ ] `frontend/app/lib/types.ts` → add both to `Citation`
-- [ ] `tasklist.md` §2 → record the amendment
-- [ ] `README.md` → API table, if it lists citation fields
+- [x] `backend/apps/core/serializers.py` → add both fields to `CitationSerializer`
+- [x] `frontend/app/lib/types.ts` → add both to `Citation`
+- [x] `tasklist.md` §2 → record the amendment
+- [x] `README.md` → API table, if it lists citation fields
 
 ### Bonus: this fixes a known deviation
 
@@ -622,19 +622,27 @@ run_planner(...)  ──yields──►  mode_start · mode_end · … · done{A
 A loop that *returns* a payload has to be rewritten to stream. A loop that
 *yields* doesn't. Cost is the same on day one.
 
-### ⚠️ The likely blocker is React Native, not Django
+### ✅ Answered: the transport is XHR, not fetch
 
-**`fetch` response-body streaming is not reliably available on RN native.**
-`response.body` / `ReadableStream` works on web, but on iOS/Android RN's fetch
-has historically not exposed it.
+The suspicion was right. **RN's `fetch` cannot read a streamed response**, and
+it's not a gap that might close in a patch release:
+`react-native/Libraries/Network/fetch.js` is three lines that `require('whatwg-fetch')`
+— the XHR-backed polyfill, version 3.6.20 here. It has **zero** references to
+`ReadableStream` and defines no `body` getter, so `response.body` is `undefined`
+on iOS and Android. On web, react-native-web leaves the browser's real `fetch`
+alone and `response.body` works — which is the trap, because it means the fetch
+approach looks finished in a browser and is dead on a phone.
 
-**Verify this early — it decides the transport.** If it's unavailable, the
-portable fallback is `XMLHttpRequest` with `onprogress`, reading the growing
-`responseText` and parsing SSE frames by hand. XHR exists on all three platforms,
-so that's one code path rather than a `Platform.select`.
+**XHR delivers partial bodies on all three platforms.**
+`XMLHttpRequest.__didReceiveIncrementalData` appends to `_response` and fires a
+LOADING `readystatechange` plus a `progress` event. It is gated, though: RN only
+asks the native layer for incremental delivery when `onreadystatechange` or
+`onprogress` is set **at `send()` time**, or `addEventListener('progress')` was
+called first. Assign the handler before sending or the body arrives in one piece
+at the end.
 
-Don't design the frontend half until someone has confirmed which of these works
-on a real device.
+So: one code path, `askEvents()` in `lib/api.ts`, no `Platform.select`. Read the
+growing `responseText` from a saved offset and split on `\n\n`.
 
 ### Known gotchas
 
@@ -651,18 +659,27 @@ on a real device.
 `ToolError`, which is the same path a real outage takes — so the degrade logic
 gets exercised from day one.
 
-- [ ] `client.py` — Anthropic client, config from env
-- [ ] `prompt.py` — system prompt + user-turn preamble
-- [ ] `loop.py` — the loop, ending at `end_turn`, with the iteration cap
-- [ ] Wire `AskView` to it; delete the stub
-- [ ] `citations.py` — harvest from tool results, assign `S1`… ids
-- [ ] Marker validation
-- [ ] `pause_turn` resume
-- [ ] Deadline → forced-text final turn
-- [ ] Server-tool support (`is_server_tool`, result-block parsing)
-- [ ] Parallel dispatch (`ThreadPoolExecutor`)
+- [x] `client.py` — Anthropic client, config from env
+- [x] `prompt.py` — system prompt + user-turn preamble
+- [x] `loop.py` — the loop, ending at `end_turn`, with the iteration cap
+- [x] Wire `AskView` to it; delete the stub
+- [x] `citations.py` — harvest from tool results, assign `S1`… ids
+- [x] Marker validation
+- [x] `pause_turn` resume
+- [x] Deadline → forced-text final turn
+- [ ] Server-tool support (`is_server_tool`, result-block parsing) — deferred with
+      B3: it cannot be tested before the lane exists
+- [x] Parallel dispatch (`ThreadPoolExecutor`)
+- [x] SSE: `POST /api/ask/stream/`, and `askEvents()` on the app side
 - [ ] Re-test against each real tool as its lane lands
 - [ ] Signature multi-hop, end to end, cold start
+
+**One thing the plan did not anticipate.** With *no* tools registered — today's
+state — a prompt that says "everything factual comes from a tool" makes the model
+try to satisfy it by writing a tool call out as prose. The fix belongs on the
+volatile side: when the toolset is empty the user turn says so and asks for an
+answer that admits it could not check. Keeping that out of the system prompt is
+what keeps the cached prefix frozen.
 
 ### Frontend (inline citations) — separate, and P1
 

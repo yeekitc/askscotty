@@ -40,11 +40,26 @@ tasklist §1 together.
 
 | Package | Why it's here | Alternatives considered |
 |---|---|---|
-| `anthropic` | The planner, **and the web-search lane**. Claude's tool-use API drives the multi-hop loop (Courses → Maps → Dining → Events) that is the demo's whole point. Two things worth knowing so we don't rebuild them: the SDK ships the **agent loop itself** (`client.beta.messages.tool_runner()` — tasklist B4's "call tools until the model stops, with a max-iteration cap" is a parameter, not code we write), and it ships **server-side `web_search` / `web_fetch`**, which is why there is no search provider on this list. Default model `claude-sonnet-5` — the planner mostly does routing and tool selection rather than deep reasoning, and Sonnet is roughly half the cost of Opus per token. Set `PLANNER_MODEL=claude-opus-5` if multi-hop answers come out weak; nothing else changes. | OpenAI function calling — no reason to prefer it, and we would still need Anthropic-quality tool use. |
+| `anthropic` | The planner, **and the web-search lane**. Claude's tool-use API drives the multi-hop loop (Courses → Maps → Dining → Events) that is the demo's whole point. It also ships **server-side `web_search` / `web_fetch`**, which is why there is no search provider on this list. Default model `claude-sonnet-5` — the planner mostly does routing and tool selection rather than deep reasoning, and Sonnet is roughly half the cost of Opus per token. Set `PLANNER_MODEL=claude-opus-5` if multi-hop answers come out weak; nothing else changes. **We use the SDK, not its agent loop** — see below. | OpenAI function calling — no reason to prefer it, and we would still need Anthropic-quality tool use. |
 | `openai` | **Embeddings only** (`text-embedding-3-small`), for the vector half of hybrid retrieval. Anthropic has no embeddings endpoint, so a second provider is unavoidable — this is the one narrow job it does. | A local `sentence-transformers` model: no API key and no per-call cost, but it adds ~2GB to the image and slows the container start enough to hurt a five-minute setup. Revisit if API budget becomes the binding constraint. |
 | `pgvector` | Vector column and index types for Postgres. Keeping vectors in the Postgres we already run means one database to start, back up and ship a demo fixture from — no second service in `docker-compose.yml`. The Postgres **extension** still has to be enabled separately (tasklist B0); this package is only the Django/psycopg integration. | Chroma, Qdrant, Pinecone — all add a moving part to a setup that has to work first try on a teammate's laptop. |
 | `cryptography` | Fernet encryption for personal access tokens at rest (PRD §9). Also an indirect dependency of the SDKs above, but pinned here because [`apps/personal/crypto.py`](./backend/apps/personal/crypto.py) imports it directly — a direct import deserves a direct pin. | Rolling our own with `hashlib` — no. Fernet is authenticated, so a tampered ciphertext fails loudly instead of decrypting to garbage. |
 | `httpx` | HTTP client for the crawler and the live-tool clients. Gives us timeouts, connection reuse and a shared retry policy without hand-rolling them; also the client both SDKs above already use, so it is in the image regardless. | `requests` — no timeout by default, which is exactly the failure mode that hangs a demo. |
+
+### Not used: the SDK's `tool_runner` — we write the loop ourselves
+
+`client.beta.messages.tool_runner()` drives an agentic loop for you, and an
+earlier version of this file said B4's loop was therefore "a parameter, not code
+we write". **That was wrong, and the reason is worth keeping.** The Python runner
+does not resume a `pause_turn` — a long web-search turn ends early and the runner
+hands the paused turn back as if it had finished, with no error. The demo would
+silently truncate. Resuming it is four lines in a loop we own.
+
+Three smaller reasons behind that one: the runner wants `@beta_tool`-decorated
+functions, while our registry is plain functions plus hand-written schemas; it
+keeps its own message list, and we need the transcript to harvest citations and
+to build a partial answer when the deadline trips; and it is beta while the
+manual loop is not. See [b4-planner.md](./b4-planner.md).
 
 ### Removed: `tavily-python` — Claude does web search server-side
 
