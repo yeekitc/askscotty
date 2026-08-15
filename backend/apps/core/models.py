@@ -40,6 +40,21 @@ class Thread(models.Model):
         db_index=True,
         help_text="Anonymous session this thread belongs to. Never a real user id.",
     )
+    # The Managed Agents session this thread's answers run in. Blank until the
+    # first question; after that the same session is reused, which is what lets a
+    # follow-up ("is that still current?") see the previous turn's tool results
+    # instead of searching again from scratch.
+    #
+    # Two stores, deliberately: this row stays authoritative for what the app
+    # renders, and the session is what the model sees. A session that has been
+    # archived or deleted on Anthropic's side leaves this string dangling, so the
+    # planner treats an unusable id as "start a new session" rather than an error.
+    cma_session_id = models.CharField(
+        max_length=64,
+        blank=True,
+        default="",
+        help_text="Managed Agents session id. Blank until the thread's first answer.",
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     # Drives the sidebar's ordering.
     updated_at = models.DateTimeField(auto_now=True, db_index=True)

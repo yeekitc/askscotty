@@ -191,17 +191,32 @@ PLANNER_MODEL = os.getenv("PLANNER_MODEL") or "claude-sonnet-5"
 # at any non-default value, so the planner never sends them.
 PLANNER_EFFORT = os.getenv("PLANNER_EFFORT") or "medium"
 
-# Keep at or below 16000: above that the SDK refuses non-streaming calls, and the
-# contract is one JSON answer.
-PLANNER_MAX_TOKENS = int(os.getenv("PLANNER_MAX_TOKENS") or 8000)
+# Managed Agents config objects, created once by `manage.py provision_planner`
+# and referenced by every session after that. Not secret. Empty until someone
+# provisions; the planner must fail loudly rather than create its own, because a
+# request that provisions orphans one agent per worker boot.
+PLANNER_AGENT_ID = os.getenv("PLANNER_AGENT_ID") or ""
+PLANNER_ENVIRONMENT_ID = os.getenv("PLANNER_ENVIRONMENT_ID") or ""
 
-# Three independent brakes, all ending the same way — one last call with tools
-# switched off, so a slow or looping turn costs detail rather than the answer.
-PLANNER_MAX_ITERATIONS = int(os.getenv("PLANNER_MAX_ITERATIONS") or 8)
-PLANNER_MAX_PAUSE_RESUMES = int(os.getenv("PLANNER_MAX_PAUSE_RESUMES") or 3)
-# The deadline plus one forced call has to fit inside the app's ~2min backstop
-# (frontend/app/lib/api.ts), so these two are set together.
-PLANNER_DEADLINE_SECONDS = float(os.getenv("PLANNER_DEADLINE_SECONDS") or 60)
+# The escape hatch back to the hand-written loop in apps/planner/manual_loop.py.
+# Kept only until the migration is proven end to end; delete the file and this
+# setting together.
+PLANNER_MANAGED_AGENTS = (os.getenv("PLANNER_MANAGED_AGENTS") or "true").lower() in {
+    "1",
+    "true",
+    "yes",
+}
+
+# What bounds a runaway tool loop now that the wall-clock deadline is gone.
+# Dollar-denominated because that is the shape the problem actually has, in
+# minor units (cents) because that is what the API takes. It bounds a whole
+# *conversation*, not one question: the session outlives the turn, and the cap
+# is fixed when the session opens. 0 removes it.
+PLANNER_SESSION_BUDGET_CENTS = int(os.getenv("PLANNER_SESSION_BUDGET_CENTS") or 500)
+
+# Control-plane calls only — open a session, send events, list events. The event
+# stream sets its own, far longer, ceiling; a 45-second read timeout would kill a
+# long answer mid-thought.
 PLANNER_REQUEST_TIMEOUT = float(os.getenv("PLANNER_REQUEST_TIMEOUT") or 45)
 PLANNER_MAX_RETRIES = int(os.getenv("PLANNER_MAX_RETRIES") or 1)
 

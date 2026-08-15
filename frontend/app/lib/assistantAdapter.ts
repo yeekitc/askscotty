@@ -90,11 +90,18 @@ function progressText(running: Set<Mode>): string {
 }
 
 /**
- * `getSources` is read at request time rather than closed over once, so the
- * adapter sees the current Sources filter without being recreated on every
- * change to it.
+ * Both accessors are read at request time rather than closed over once, so the
+ * adapter sees the current Sources filter and the current conversation without
+ * being recreated on every change to either.
+ *
+ * `getThreadId` is what lets a follow-up continue where the last answer left
+ * off: the backend keys the thread's planner session on it, so "is that still
+ * current?" reuses the previous turn's lookups instead of starting over.
  */
-export function createHttpAdapter(getSources: () => string[] | undefined): ChatModelAdapter {
+export function createHttpAdapter(
+  getSources: () => string[] | undefined,
+  getThreadId: () => string | undefined,
+): ChatModelAdapter {
   return {
     async *run({ messages, abortSignal }) {
       const lastUser = [...messages].reverse().find((m) => m.role === 'user')
@@ -111,6 +118,7 @@ export function createHttpAdapter(getSources: () => string[] | undefined): ChatM
       try {
         for await (const event of askEvents(text, {
           sources: getSources(),
+          threadId: getThreadId(),
           signal: abortSignal,
         })) {
           if (event.type === 'done') {

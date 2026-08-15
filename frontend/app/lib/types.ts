@@ -57,6 +57,12 @@ export type AskRequest = {
    * it, the user's connected sources are available to the planner.
    */
   session_id?: string
+  /**
+   * Optional: which conversation this belongs to. The backend keeps one planner
+   * session per thread, so sending it is what lets a follow-up reuse the last
+   * turn's lookups instead of starting the conversation over.
+   */
+  thread_id?: string
   /** Prior turns, oldest first. */
   history?: HistoryMessage[]
 }

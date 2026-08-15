@@ -10,7 +10,7 @@
 
 import type { ThreadMessageLike } from '@assistant-ui/react-native'
 
-import { deleteThread, fetchThreads, saveThread } from './api'
+import { ApiError, deleteThread, fetchThreads, saveThread } from './api'
 import type { StoredMessage } from './types'
 
 export type ChatThread = {
@@ -68,8 +68,17 @@ export async function persistThread(thread: ChatThread): Promise<void> {
   await saveThread(thread.id, toStored(thread))
 }
 
+/**
+ * Deleting a thread nobody ever sent a message in is a no-op rather than a
+ * failure: `persistThread` skips empty threads, so there is no server row and
+ * the backend's not_found is the expected answer.
+ */
 export async function removeThread(id: string): Promise<void> {
-  await deleteThread(id)
+  try {
+    await deleteThread(id)
+  } catch (err) {
+    if (!(err instanceof ApiError) || err.code !== 'not_found') throw err
+  }
 }
 
 /** Derived from the first user message — there is no stored title to keep in sync. */

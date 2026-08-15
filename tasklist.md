@@ -35,7 +35,7 @@ These blocked both sides. **Decided — do not re-litigate without editing this 
 - [x] **Freeze the `/api/ask/` response contract** (see §2 below). Frontend codes against it; backend fills it in.
 - [x] **LLM + model:** Anthropic **`claude-sonnet-5`** (`PLANNER_MODEL` in `.env`). The planner is mostly routing and tool selection rather than deep reasoning, and Sonnet is roughly half Opus's cost per token. Switch the env var to `claude-opus-5` if multi-hop answers come out weak — no code change needed.
 - [x] **Embeddings:** OpenAI **`text-embedding-3-small`**, 1536 dimensions (`OPENAI_API_KEY`, `EMBEDDING_MODEL`). Anthropic has no embeddings endpoint, so this is a second provider for one narrow job. Dimensions must match the pgvector column, so changing the model means a migration *and* a full re-index.
-- [x] **Web search: none — use Claude's built-in `web_search` / `web_fetch`.** *(Reversed 2026-08-15; was Tavily.)* These are **server-side** tools: declare them in the `tools` array and they run on Anthropic's infrastructure under `ANTHROPIC_API_KEY`. No second provider, no second key, no client to write. Verified live on `claude-sonnet-5` — `allowed_domains` gives B3's site-filtered search with zero off-domain leaks, and `blocked_domains` refuses Canvas with a distinct `url_not_allowed` (vs `url_not_accessible` when the denylist doesn't cover it), which is PRD §6's denylist enforced by the API. **Budget for it:** one searching query cost ~35.9k input tokens / ~26s. Use `max_uses` and `max_content_tokens`, and only verify when the index is actually stale.
+- [x] **Web search: none — use Claude's built-in `web_search` / `web_fetch`.** *(Reversed 2026-08-15; was Tavily.)* These are **server-side** tools: declare them in the `tools` array and they run on Anthropic's infrastructure under `ANTHROPIC_API_KEY`. No second provider, no second key, no client to write. **No domain filters** *(decided 2026-08-15, hackathon scope)* — the built-in toolset B4 now runs on is not known to accept `allowed_domains` / `blocked_domains`, and §6 holds without them: `web_fetch` carries no credentials, so Canvas / SIO / Stellic have nothing to give it. Source choice is steered by prompt guidance seeded from Appendix B instead. See [docs/b4-planner.md](./docs/b4-planner.md) §4 for the one risk this accepts. **Budget for it:** one searching query cost ~35.9k input tokens / ~26s. Only verify when the index is actually stale.
 - [x] **RAG takes precedence over web search.** The index is the default; web verify is the fallback, not the reflex. This is a cost decision with a measured number behind it: one searching query is **~35.9k input tokens and ~26 seconds**, and those results then sit in the message list and are re-sent as input on *every* subsequent call in that turn — our cache breakpoint is on the system block, so nothing in message position is ever cached. A four-hop answer that searched once pays for it four times. Enforced in three places, weakest to strongest: the tool description (which is what actually decides whether the model picks it), the lane ordering in the system prompt, and `max_uses` as the only hard cap. Search when the index has nothing or the page is genuinely stale — see [docs/b3-web-verify.md](./docs/b3-web-verify.md).
 - [x] **Vector store:** **pgvector** in the existing Postgres. Fewer moving parts, and `docker compose down -v && ./setup.sh` still has to work on a teammate's laptop. *(The extension still needs enabling on the DB — tasklist B0.)*
 - [x] **Auth scope:** **anonymous session id**, passed as `session_id` in the request body. The app generates one and keeps it on the device; no login screen to build. Trade-off, stated plainly: anyone who learns a session id can read that session's connected data. It is a bearer token, not an identity — real accounts are the upgrade path if this outlives the hackathon.
@@ -88,7 +88,7 @@ so a malformed answer fails in the backend rather than rendering wrong in the ap
       draft and marks what is fixed vs. still open.
 - [x] `modes_used` values are fixed strings: `rag` · `courses` · `dining` · `events` · `maps` · `web_verify` · `personal` — validated server-side against `MODES` in `backend/apps/tools/registry.py`
 - [x] **Error shape:** `{"error": {"code", "message"}}` with a real HTTP status, for every failure. Codes: `validation_error` · `unauthenticated` · `forbidden` · `not_found` · `method_not_allowed` · `unsupported_media_type` · `rate_limited` · `upstream_error` · `unavailable` · `timeout` · `error`. See `backend/apps/core/errors.py`.
-- [x] **Streaming: no.** Non-streaming for P0 — one request, one JSON answer. The app reports which modes ran from `modes_used` after the fact. Revisit only if the demo feels slow, and agree SSE here first.
+- [x] ~~**Streaming: no.**~~ **SUPERSEDED — see the amendment directly below.** *(Original: non-streaming for P0, one request one JSON answer, revisit only if the demo feels slow and agree SSE here first. That revisit happened and SSE shipped; the box is kept because the reasoning still explains why the plain endpoint remains a fallback.)*
 - [x] **Amendment (AGREED and shipped — supersedes the box above): SSE, as progress events.**
       This was the "agree SSE here first" step, and it's agreed. Three separate
       things were being conflated:
@@ -231,21 +231,31 @@ Django 5.1 + DRF + Postgres. Everything lives under `backend/`. Code is bind-mou
 ## B3. Web verify — P0 (Day 3)
 
 **No search provider to integrate.** Claude's server-side `web_search_20260318` /
-`web_fetch_20260318` do this lane — the work here is wrapping them as tools in our
-registry with the right domain lists, not writing an HTTP client. Both take
-`allowed_domains`, `blocked_domains`, `max_uses`, `max_content_tokens`.
+`web_fetch_20260318` do this lane — no HTTP client to write. On the Messages API
+they take `allowed_domains`, `blocked_domains`, `max_uses`,
+`max_content_tokens`; **we use none of them** — see below.
+
+> ⚠️ **B4's move to Managed Agents changes the first bullet only.** The built-in
+> `agent_toolset_20260401` already contains `web_search` / `web_fetch`, so
+> declaring them stops being B3's job. **No domain filters** — `web_fetch` carries
+> no credentials, so Canvas / SIO / Stellic return login pages either way and §6
+> is satisfied by that; source choice is steered by prompt guidance seeded from
+> Appendix B instead of by an allowlist. One thing to check: whether environment
+> `networking.allowed_hosts` gates the built-in tools, which is the anti-
+> exfiltration control, not a quality one. Everything else here — `verified_at`,
+> `resolve_course_site`, the staleness policy, `CrawlSeed` enqueue — is unaffected.
 
 📋 **Implementation prompt: [docs/b3-web-verify.md](./docs/b3-web-verify.md)** —
 phases, the registry change a server tool forces, the result blocks to parse, and
 what B4 already handles so it does not get rebuilt.
 
-- [ ] `fetch_url(url)` — wrap `web_fetch` with an **allowlist** of public hosts (`allowed_domains`)
-- [ ] Explicit denylist so Canvas / SIO / Stellic can never be fetched here (`blocked_domains`, PRD §6) — assert on `url_not_allowed` in a test
+- [ ] ~~`fetch_url(url)` — wrap `web_fetch` with an **allowlist** of public hosts~~ — **dropped**, no domain filters (see the callout above)
+- [ ] ~~Explicit denylist so Canvas / SIO / Stellic can never be fetched here~~ — **dropped**. §6 holds without it: no credentials, nothing behind the wall to reach. Test the *outcome* instead — a Canvas fetch returns no usable content
 - [ ] Return `verified_at` on every fetch — ours to stamp; the API doesn't supply it
-- [ ] `web_search(query, site?)` — wrap `web_search`; `site` maps to `allowed_domains`
+- [ ] `web_search(query, site?)` — wrap `web_search`; `site` becomes a `site:` prefix in the query, not `allowed_domains`
 - [ ] Cap cost/latency per call (`max_uses`, `max_content_tokens`) — one search measured ~35.9k input tokens / ~26s
 - [ ] Do **not** declare `code_execution` alongside these — dynamic filtering is built in, and a second execution environment confuses the model
-- [x] Handle `pause_turn`: a long search turn ends the loop early and looks like a finished answer. Resume it, or the demo silently truncates. — **done in B4**, capped by `PLANNER_MAX_PAUSE_RESUMES`. Don't rebuild it.
+- [x] Handle `pause_turn`: a long search turn ends the loop early and looks like a finished answer. Resume it, or the demo silently truncates. — **done in B4**, capped by `PLANNER_MAX_PAUSE_RESUMES`. Don't rebuild it. *(Disappears once B4 is on Managed Agents — the platform owns the resume.)*
 - [ ] `resolve_course_site(course_number)` — static map from Appendix B
 - [ ] Staleness policy: define what `indexed_at` age triggers a verify fetch (`WEB_VERIFY_STALE_AFTER_DAYS`) — the enforcement half of §1's RAG-first decision
 - [ ] Confirm web search is **enabled for the org** before demo day: if an admin disabled it in the Console, *declaring* the tool is a 400, so every request fails rather than just searching ones. No kill-switch setting for this (decided) — it is our own org, so the fix is a Console toggle, and a flag nobody remembers to flip is not insurance
@@ -256,24 +266,37 @@ what B4 already handles so it does not get rebuilt.
 Lives in `backend/apps/planner/`. `run_planner` is a **generator** — it yields
 progress events and finishes by yielding the validated `AskResponse`, which is
 why `/api/ask/` and `/api/ask/stream/` are two thin wrappers over one loop.
-Written by hand rather than with the SDK's tool runner, which cannot resume a
-`pause_turn` and fails silently when it hits one.
+
+**Decided: the loop runs on Managed Agents** — Anthropic drives it, we execute
+the tools it asks for. **Shipped 2026-08-15.** The hand-written loop lives on in
+`apps/planner/manual_loop.py` behind `PLANNER_MANAGED_AGENTS=false`, and on the
+measured latency it is still the safer demo-day setting — Managed Agents is
+**~2× slower end to end and ~4× slower to first token**. Numbers, the four
+things the build turned up, and the mitigations are in
+[b4-planner.md](./docs/b4-planner.md).
+
+**One amendment to §2, additive:** the ask request gains an optional
+`thread_id`. The backend keeps one planner session per thread, and without it
+there is nothing to key that session on — a follow-up would start the
+conversation over. Omitting it is still valid and answers exactly as before;
+response shapes and every SSE event are unchanged.
 
 - [x] Replace the stub in `backend/apps/core/views.py:25` (`AskView`) with the real planner
 - [x] Register every tool with the LLM as tool definitions (name, description, JSON schema)
-- [x] Agentic loop: call tools until the model stops, with a max-iteration cap
+- [x] Agentic loop: ~~call tools until the model stops, with a max-iteration cap~~ — now a drain loop over the session's event stream. The iteration cap went with the deadline: a session `budget` is the runaway bound
 - [x] System prompt: CMU context, cite everything, label mocks, never invent facts
 - [x] Collect citations from every tool result into the response
 - [x] Populate `modes_used` from which tool families actually ran — successful calls only, so a chip never claims a lane that failed
-- [x] Timeout + graceful partial answer if one tool hangs — a deadline, an iteration cap and a `pause_turn` cap, all ending in one final call with `tool_choice: none` rather than a 504
+- [x] ~~Timeout + graceful partial answer if one tool hangs~~ — built on the manual loop (deadline + iteration cap + `pause_turn` cap, all ending in one `tool_choice: none` call rather than a 504). **Removed by the Managed Agents move:** a session has no `tool_choice`, and a slow answer is resumable rather than lost, so resumability replaces partial prose. A session `budget` bounds the runaway case
 - [x] Never let personal data enter a shared-index call (PRD §3) — every dispatch goes through `run_tool`, which is what withholds `session_id` from public tools
-- [x] Parallel tool dispatch, with **all** results returned in one user message (splitting them trains the model out of parallel calls)
+- [x] ~~Parallel tool dispatch~~, with **all** results returned in one send. The platform batches the *requests* now, but the `ThreadPoolExecutor` that executed them concurrently was removed with the migration — a three-tool batch costs the sum rather than the slowest. Worth reinstating once a real lane is slower than a few hundred ms
 - [x] A failed tool comes back as a `tool_result` with `is_error`, never a dropped block
 - [x] Prompt caching: frozen system prompt, `cache_control` on its last block, the clock in the user turn — confirmed live via `cache_read_input_tokens`
-- [x] Loop tests against a scripted model and a tool registered in the test (`apps/planner/tests.py`)
+- [x] Loop tests against a scripted **event stream** and a tool registered in the test (`apps/planner/tests.py`); the fallback keeps its scripted-model tests in `tests_manual_loop.py`
+- [x] `Thread.cma_session_id` — one planner session per thread, so a follow-up reuses the previous turn's lookups instead of re-searching
 - [ ] Inline `[S1]` markers — plumbed and tested, gated off behind `PLANNER_CITATION_MARKERS` until F2 can render one as a chip
-- [ ] Server-side web tools (`is_server_tool`, `web_search_tool_result` parsing) — deferred with B3, untestable until it exists
-- [ ] **Signature multi-hop works**: "I get out of 15-213 at 4:20 tomorrow. Find somewhere nearby to eat and then an interesting startup or AI event before 8." → Courses → Maps → Dining → Events
+- [ ] Server-side web tools — deferred with B3. Note the shape changed: under Managed Agents there is no `web_search_tool_result` block to parse, the results arrive as an `agent.tool_result` **event**. The `web_verify` chip already works; the citations do not
+- [x] **Signature multi-hop works**: "I get out of 15-213 at 4:20 tomorrow. Find somewhere nearby to eat and then an interesting startup or AI event before 8." → Courses → Maps → Dining → Events. Verified end to end from a cold start with stand-in lanes (B1–B3 have not landed): three lanes dispatched through `run_tool`, three citations, `modes_used` correct. Re-run it against each real lane as it arrives
 - [ ] Verify each PRD §8 example query returns something sane
 
 ## B5. Personal connectors — P0/P1 (Day 5)

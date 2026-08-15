@@ -50,6 +50,18 @@ Every safety rule is enforced **by construction**, not by convention.
 | 4 | A mock can't look live | `is_mock` derives from the producing tool |
 | 5 | A bad answer fails in the backend | response serializers validate on the way out |
 
+**All five survived the move to Managed Agents** (shipped 2026-08-15), because
+every mechanism in the right-hand column is code that runs on our side. Anthropic
+drives the loop; it never executes a tool, so `run_tool` is still the only door.
+
+Invariant 2 changed shape but not substance — the array `tools_for_session()`
+returns is passed per *session* as an `agent_with_overrides` toolset rather than
+per request. A session outlives the turn, so it can be holding a toolset built
+before somebody connected or disconnected a source; the driver re-applies the
+current one on every follow-up. That is tidiness rather than the guarantee:
+`run_tool` re-checks the connector on **every** dispatch, so a stale offer
+returns an error, never someone's data.
+
 ---
 
 ## Where things live
@@ -59,7 +71,7 @@ Every safety rule is enforced **by construction**, not by convention.
 | `backend/apps/core/` | endpoints, contract, errors, threads |
 | `backend/apps/tools/` | tool registry, source registry |
 | `backend/apps/personal/` | encrypted connectors |
-| `backend/apps/planner/` | the agentic loop, prompt, citations |
+| `backend/apps/planner/` | the session driver, prompt, citations. `manual_loop.py` is the pre-migration loop, still reachable via `PLANNER_MANAGED_AGENTS=false` — see [b4-planner.md](./b4-planner.md) |
 | `backend/apps/rag/` | not created yet |
 | `frontend/app/` | the whole app, all three platforms |
 

@@ -56,6 +56,7 @@ def _planner_events(request: Request):
     return run_planner(
         serializer.validated_data["query"],
         session_id=serializer.validated_data["session_id"],
+        thread_id=serializer.validated_data["thread_id"],
         history=serializer.validated_data["history"],
     )
 

@@ -117,13 +117,23 @@ Complements the index — does not replace it.
 
 | Tier | Capability | Why | Hackathon accessibility |
 |------|------------|-----|-------------------------|
-| **Must** | `fetch_url` | Re-fetch a cited page when stale or user asks “is this current?” | **Live** — allowlist public hosts |
+| **Must** | `fetch_url` | Re-fetch a cited page when stale or user asks “is this current?” | **Live** — public hosts |
 | **Must** | `web_search` | Index miss; discover new course homes → next crawl | **Live** — Claude server-side `web_search` (no separate provider) |
 | **Must** | `resolve_course_site` | Map `15-213` → seeded homepage | **Live** — static map (Appendix B) |
-| **Should** | Site-filtered search (`site:cs.cmu.edu`) | Find unmapped course pages | **Live** — `allowed_domains` on the same tool |
+| **Should** | Site-filtered search (`site:cs.cmu.edu`) | Find unmapped course pages | **Live** — `site:` in the query |
 | **Skip** | Fetching Canvas/SIO behind login | Auth walls | Use Personal connectors instead |
 
 **Planner default:** index hit → cite → optional verify fetch. Unmapped/stale → search/fetch → enqueue for re-index.
+
+> **Amended 2026-08-15 — no domain allowlist or denylist.** The rows above once
+> read “allowlist public hosts” and “`allowed_domains` on the same tool.” B4 runs
+> on Managed Agents, whose built-in web toolset is not known to accept those
+> filters. The **Skip** row still holds without them: `web_fetch` carries no
+> credentials, so Canvas / SIO / Stellic return login pages and there is nothing
+> behind the wall for it to reach. Source *preference* moves to prompt guidance
+> seeded from Appendix B. What this gives up is the anti-exfiltration property of
+> an allowlist — accepted for the hackathon, and the first thing to revisit after
+> it. Reasoning: [b4-planner.md](./b4-planner.md) §4.
 
 ---
 

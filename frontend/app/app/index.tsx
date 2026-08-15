@@ -38,6 +38,7 @@ import {
   createEmptyThread,
   loadThreads,
   persistThread,
+  removeThread,
   threadTitle,
 } from '../lib/chatThreads'
 import { colors, radius, shadows, spacing } from '../lib/theme'
@@ -107,6 +108,12 @@ export default function AskScreen() {
   const sidebarEffectiveOpen = sidebarOpen ?? isWide
   const [searchQuery, setSearchQuery] = useState('')
 
+  // Which row is asking "Delete / Cancel". Deleting is two-tap rather than a
+  // confirm dialog because react-native-web's Alert.alert is an empty stub —
+  // a native dialog would silently never appear on web, so the button would
+  // look broken on the one platform the demo runs on.
+  const [confirmingDeleteId, setConfirmingDeleteId] = useState<string | null>(null)
+
   // The app opens on a fresh chat every time. Saved conversations arrive a
   // moment later and fill the sidebar rather than yanking the runtime out from
   // under someone who has already started typing.
@@ -115,7 +122,13 @@ export default function AskScreen() {
   const [activeThreadId, setActiveThreadId] = useState(firstThread.id)
   const activeThreadIdRef = useRef(activeThreadId)
 
-  const adapter = useMemo(() => createHttpAdapter(() => sourcesRef.current), [])
+  // Both read through refs at request time rather than closed over once, so the
+  // adapter sees the current filter and the current conversation without being
+  // rebuilt — which would drop the in-flight answer.
+  const adapter = useMemo(
+    () => createHttpAdapter(() => sourcesRef.current, () => activeThreadIdRef.current),
+    [],
+  )
   const runtime = useLocalRuntime(adapter, { initialMessages: [] })
 
   // Debounced because the runtime fires its subscription on every status change,
@@ -229,8 +242,42 @@ export default function AskScreen() {
     if (!isWide) setSidebarOpen(false)
   }, [threads, runtime, isWide])
 
+  const deleteThreadById = useCallback(
+    (id: string) => {
+      setConfirmingDeleteId(null)
+
+      // Drop the queued save before deleting, or a debounce still in flight
+      // would PUT the thread straight back and recreate the row.
+      pendingSaves.current.delete(id)
+      lastSaved.current.delete(id)
+
+      const remaining = threads.filter((t) => t.id !== id)
+
+      // Deleting the conversation you are reading has to put something else in
+      // the runtime, or the thread area keeps rendering messages that no longer
+      // belong to any thread.
+      if (id === activeThreadIdRef.current) {
+        const mostRecent = [...remaining].sort((a, b) => b.updatedAt - a.updatedAt)[0]
+        const next = mostRecent ?? createEmptyThread(generateId())
+        if (!mostRecent) remaining.push(next) // deleted the last one — fall back to a fresh chat
+        activeThreadIdRef.current = next.id
+        setActiveThreadId(next.id)
+        runtime.thread.reset(next.messages)
+      }
+
+      setThreads(remaining)
+
+      removeThread(id).catch(() => {
+        // The row is already gone locally and there is no undo to offer, so a
+        // failed delete reappears on the next load rather than as a banner.
+      })
+    },
+    [threads, runtime],
+  )
+
   const switchToThread = useCallback(
     (id: string) => {
+      setConfirmingDeleteId(null)
       if (id === activeThreadIdRef.current) {
         if (!isWide) setSidebarOpen(false)
         return
@@ -287,6 +334,7 @@ export default function AskScreen() {
         {visibleThreads.length ? (
           visibleThreads.map((t) => {
             const active = t.id === activeThreadId
+            const confirming = t.id === confirmingDeleteId
             return (
               <HoverPressable
                 key={t.id}
@@ -297,12 +345,61 @@ export default function AskScreen() {
                   (pressed || hovered) && !active && styles.recentItemHovered,
                 ]}
               >
-                <Text
-                  style={[styles.recentItemText, active && styles.recentItemTextActive]}
-                  numberOfLines={1}
-                >
-                  {threadTitle(t)}
-                </Text>
+                {({ hovered }) => (
+                  <>
+                    <Text
+                      style={[styles.recentItemText, active && styles.recentItemTextActive]}
+                      numberOfLines={1}
+                    >
+                      {threadTitle(t)}
+                    </Text>
+
+                    {confirming ? (
+                      <View style={styles.confirmRow}>
+                        {/* stopPropagation because on web the press bubbles to
+                            the row behind it, which would switch threads and
+                            cancel the confirm in the same tap. */}
+                        <Pressable
+                          onPress={(e) => {
+                            e.stopPropagation?.()
+                            deleteThreadById(t.id)
+                          }}
+                          hitSlop={6}
+                          accessibilityRole="button"
+                          accessibilityLabel={`Confirm delete ${threadTitle(t)}`}
+                        >
+                          <Text style={styles.confirmDelete}>Delete</Text>
+                        </Pressable>
+                        <Pressable
+                          onPress={(e) => {
+                            e.stopPropagation?.()
+                            setConfirmingDeleteId(null)
+                          }}
+                          hitSlop={6}
+                          accessibilityRole="button"
+                          accessibilityLabel="Cancel delete"
+                        >
+                          <Text style={styles.confirmCancel}>Cancel</Text>
+                        </Pressable>
+                      </View>
+                    ) : // On touch there is no hover to reveal it, so the
+                    // control is always there; on web it stays out of the way
+                    // until the row is pointed at.
+                    hovered || active || Platform.OS !== 'web' ? (
+                      <Pressable
+                        onPress={(e) => {
+                          e.stopPropagation?.()
+                          setConfirmingDeleteId(t.id)
+                        }}
+                        hitSlop={6}
+                        accessibilityRole="button"
+                        accessibilityLabel={`Delete ${threadTitle(t)}`}
+                      >
+                        <Text style={styles.deleteIcon}>✕</Text>
+                      </Pressable>
+                    ) : null}
+                  </>
+                )}
               </HoverPressable>
             )
           })
@@ -495,9 +592,16 @@ const styles = StyleSheet.create({
     fontStyle: 'italic',
   },
   recentItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: spacing.sm,
     paddingVertical: spacing.sm,
     paddingHorizontal: spacing.sm,
     borderRadius: radius.sm,
+    // Reserve the row height the ✕ needs, so rows don't jump as it appears
+    // and disappears on hover.
+    minHeight: 32,
   },
   recentItemHovered: {
     backgroundColor: colors.sidebarHover,
@@ -506,8 +610,30 @@ const styles = StyleSheet.create({
     backgroundColor: colors.sidebarHover,
   },
   recentItemText: {
+    // Shrinks so a long title truncates rather than pushing the delete
+    // control past the edge of the sidebar.
+    flexShrink: 1,
     fontSize: 13,
     color: colors.textMuted,
+  },
+  deleteIcon: {
+    fontSize: 12,
+    color: colors.textFaint,
+    paddingHorizontal: spacing.xs,
+  },
+  confirmRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+  },
+  confirmDelete: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: colors.error,
+  },
+  confirmCancel: {
+    fontSize: 12,
+    color: colors.textFaint,
   },
   recentItemTextActive: {
     color: colors.text,
