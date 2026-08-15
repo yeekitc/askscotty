@@ -62,6 +62,21 @@ The database and API run in Docker; the frontend runs on the host.
 `backend/apps/core/serializers.py` and `frontend/app/lib/types.ts` describe the same
 data. Change one, change the other.
 
+## Registering a tool
+
+Two lines, both in the tools app. The planner needs no change — it reads the
+registry rather than naming tools, which is why the lanes can be built in any
+order.
+
+1. `backend/config/settings.py` — list your app **before** `apps.tools` in
+   `INSTALLED_APPS`. App configs load in order, and `ToolsConfig.ready()` imports
+   your tool module, so your models must be ready by then.
+2. `backend/apps/tools/apps.py` — import that module inside `ready()`, so the
+   `@register_tool` decorators actually run.
+
+Miss either and the tool silently never registers. The planner is never told it
+exists, so it looks like the model chose not to use it.
+
 ## Hard rules from the PRD
 
 These are non-negotiable; see PRD.md §9 and §10.
