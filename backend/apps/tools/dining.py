@@ -75,7 +75,8 @@ def _time_str_to_minutes(t: str) -> int | None:
 
 def _is_open_at(location: dict, target_minutes: int) -> bool:
     """Return True if any schedule window covers target_minutes on today's weekday."""
-    today = datetime.now(timezone.utc).strftime("%A").lower()[:3]  # "mon", "tue", ...
+    from django.utils import timezone as dj_timezone
+    today = dj_timezone.localtime(dj_timezone.now()).strftime("%A").lower()[:3]  # "mon", "tue", ...
     day_map = {
         "mon": "Monday", "tue": "Tuesday", "wed": "Wednesday",
         "thu": "Thursday", "fri": "Friday", "sat": "Saturday", "sun": "Sunday",
