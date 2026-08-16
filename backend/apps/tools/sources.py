@@ -89,16 +89,29 @@ def all_sources() -> list[Source]:
 # Adding a source here is what puts it in the credits. Flip `implemented` to True
 # in the same commit that wires the tool, not before.
 
+
+def _campus_indexed_at() -> "datetime | None":
+    from django.db.models import Max
+
+    from apps.rag.models import Document
+
+    return Document.objects.aggregate(m=Max("fetched_at"))["m"]
+
+
 register_source(
     "CMU public web (campus index)",
     tier="public",
     access="Crawl",
+    indexed_at_resolver=_campus_indexed_at,
+    implemented=True,
     note="Public cmu.edu pages: HUB, colleges, Student Affairs, CPDC.",
 )
 register_source(
     "Course sites (campus index)",
     tier="public",
     access="Crawl",
+    indexed_at_resolver=_campus_indexed_at,
+    implemented=True,
     note="Seeded public course homepages and syllabi (PRD Appendix B).",
 )
 register_source(

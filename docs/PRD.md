@@ -232,3 +232,44 @@ Never mixed into the shared campus index. Disconnect deletes synced data.
 | Deep Learning | https://deeplearning.cs.cmu.edu/ |
 | 17-313 | https://cmu-313.github.io/ |
 | 15-445/645 | https://15445.courses.cs.cmu.edu/ |
+
+---
+
+## Appendix C — General Crawl Seeds (B1 implementation)
+
+Seeds in addition to the Appendix B course sites. All are **public / Crawl** tier.
+Inserted into `CrawlSeed` by `manage.py load_seeds`; authoritative list in `backend/apps/rag/seed_urls.py`.
+
+| Label | URL | Notes |
+|-------|-----|-------|
+| `cmu-main` | https://www.cmu.edu/ | Root — links to everything else |
+| `cmu-about` | https://www.cmu.edu/about/ | Institutional overview |
+| `cmu-hub` | https://www.cmu.edu/hub/ | HUB registrar: deadlines, policies |
+| `cmu-academics` | https://www.cmu.edu/academics/ | Academic programs |
+| `cmu-student-affairs` | https://www.cmu.edu/student-affairs/ | Student life, resources |
+| `cmu-housing` | https://www.cmu.edu/housing/ | Official housing policy (cmu.guide has the lore, not the rules) |
+| `cmu-dining` | https://www.cmu.edu/dining/ | Dining plans, locations |
+| `cmu-health` | https://www.cmu.edu/health-services/ | Health, counselling, insurance |
+| `cmu-career` | https://www.cmu.edu/career/ | CPDC career services |
+| `cmu-news` | https://www.cmu.edu/news/ | Static institutional news |
+| `cmu-admissions` | https://admission.enrollment.cmu.edu/ | Public admissions info |
+| `scs` | https://scs.cmu.edu/ | School of Computer Science |
+| `cit` | https://www.cit.cmu.edu/ | College of Engineering |
+| `dietrich` | https://www.cmu.edu/dietrich/ | Dietrich College |
+| `tepper` | https://www.tepper.cmu.edu/ | Tepper School of Business |
+| `cfa` | https://www.cfa.cmu.edu/ | College of Fine Arts |
+| `mcs` | https://www.cmu.edu/mcs/ | Mellon College of Science |
+| `heinz` | https://www.heinz.cmu.edu/ | Heinz College |
+| `course-catalog` | https://coursecatalog.cmu.edu/ | Degree requirements; public substitute for Stellic audit |
+| `computing` | https://computing.cmu.edu/ | Computing Services KB — VPN, printing, wifi how-tos |
+| `library` | https://library.cmu.edu/ | LibGuides and research help |
+| `cmu-guide` | https://cmu.guide/ | Student-written campus lore |
+| `student-orgs` | https://studentorgs.cmu.edu/ | Org directory (**Should** — §4). Event listing sub-pages are volatile; the depth=2 cap naturally excludes them. |
+
+**Sources not crawled:**
+
+| URL | Reason |
+|-----|--------|
+| `enr-apps.as.cmu.edu/open/SOC/SOCServlet` | Volatile structured data (same registrar feed ScottyLabs wraps in the Courses API). Covered by the Live Courses tool (B2), not indexed. |
+| `events.cmu.edu` listing pages | Hourly-volatile event data. Static about/info pages are crawlable if reached within depth; event listing pages are excluded by the volatile-data rule. TartanConnect covers CMU events as a Live tool. |
+| `kilthub.cmu.edu` | Research data repository. Low priority for the demo; add as "Could / Crawl" in a post-hackathon pass. |

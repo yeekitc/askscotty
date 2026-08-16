@@ -27,3 +27,6 @@ cryptography==50.0.0
 # HTTP client for crawling and the live tool APIs: timeouts and connection reuse
 # without hand-rolling either.
 httpx==0.28.1
+# HTML → clean text for the campus crawler. Strips nav/footer/script/style and
+# extracts heading hierarchy so the chunker can split on section boundaries.
+beautifulsoup4==4.12.3
