@@ -139,11 +139,14 @@ def find_dining(
     try:
         resp = httpx.get(_URL, timeout=_TIMEOUT)
         resp.raise_for_status()
-        raw_locations: list[dict] = resp.json().get("locations", resp.json())
+        data = resp.json()
+        raw_locations: list[dict] = data.get("locations", []) if isinstance(data, dict) else data
     except httpx.HTTPStatusError as exc:
         raise ToolError(f"CMU Eats API returned {exc.response.status_code}.") from exc
     except httpx.RequestError as exc:
         raise ToolError(f"CMU Eats API unreachable: {exc}") from exc
+    except (ValueError, TypeError) as exc:
+        raise ToolError(f"CMU Eats API returned invalid JSON: {exc}") from exc
 
     locations = [_normalize_location(loc) for loc in raw_locations]
 
