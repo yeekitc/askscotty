@@ -12,5 +12,9 @@ class ToolsConfig(AppConfig):
         # Errors here are deliberately loud: a tool that silently vanishes is
         # harder to debug than a backend that won't boot.
         from . import sources  # noqa: F401
+        from . import courses  # noqa: F401
+        from . import dining  # noqa: F401
+        from . import events  # noqa: F401
+        from . import maps  # noqa: F401
         from apps.personal import tools as personal_tools  # noqa: F401
         from apps.rag import tools as rag_tools  # noqa: F401
