@@ -24,11 +24,11 @@ def _fetch_events() -> list[dict]:
         resp.raise_for_status()
         data = resp.json()
     except httpx.HTTPStatusError as exc:
-        raise ToolError(
-            f"TartanConnect returned {exc.response.status_code}."
-        ) from exc
+        raise ToolError(f"TartanConnect returned {exc.response.status_code}.") from exc
     except httpx.RequestError as exc:
         raise ToolError(f"TartanConnect unreachable: {exc}") from exc
+    except (ValueError, TypeError) as exc:
+        raise ToolError(f"TartanConnect returned invalid JSON: {exc}") from exc
 
     # The feed returns {"event": [...]} or a bare list depending on the version.
     if isinstance(data, list):
