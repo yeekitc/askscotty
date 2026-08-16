@@ -20,6 +20,7 @@ from unittest import mock
 from anthropic.types import Message, TextBlock, ToolUseBlock, Usage
 from apps.tools import registry
 from apps.tools.registry import ToolError, register_tool
+from django.conf import settings
 from django.test import TestCase, override_settings
 
 from . import manual_loop
@@ -329,7 +330,9 @@ class PlannerLoopTests(FakeToolsMixin, TestCase):
         sent = model.calls[0]
         for forbidden in ("temperature", "top_p", "top_k", "thinking"):
             self.assertNotIn(forbidden, sent, f"{forbidden} is a 400 on this model")
-        self.assertEqual(sent["output_config"], {"effort": "medium"})
+        # Whatever the setting says — the point is that effort travels in
+        # output_config rather than as a top-level parameter.
+        self.assertEqual(sent["output_config"], {"effort": settings.PLANNER_EFFORT})
 
     def test_the_system_prompt_carries_the_cache_breakpoint(self) -> None:
         model = FakeModel(reply(text("Hi.")))

@@ -286,12 +286,12 @@ export default function AskScreen() {
       threadEnter.value = 0
       return
     }
-    threadEnter.value = reduceMotion ? 1 : withTiming(1, { duration: durations.base, easing })
+    threadEnter.value = reduceMotion ? 1 : withTiming(1, { duration: durations.entrance, easing })
   }, [isEmpty, reduceMotion, threadEnter])
 
   const threadEnterStyle = useAnimatedStyle(() => ({
     opacity: threadEnter.value,
-    transform: [{ translateY: (1 - threadEnter.value) * 8 }],
+    transform: [{ translateY: (1 - threadEnter.value) * offsets.view }],
   }))
 
   // Mirrors the live thread back into whichever thread is active, so switching
