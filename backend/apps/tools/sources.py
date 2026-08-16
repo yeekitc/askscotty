@@ -124,18 +124,21 @@ register_source(
     "CMU Courses API",
     tier="public",
     access="Live",
+    implemented=True,
     note="Catalog, schedules and prereqs. Unaffiliated consumer of a public API.",
 )
 register_source(
     "CMU Eats",
     tier="public",
     access="Live",
+    implemented=True,
     note="Dining locations and opening hours. Unaffiliated consumer of a public API.",
 )
 register_source(
     "TartanConnect events",
     tier="public",
     access="Live",
+    implemented=True,
     note="Public club and campus event feed.",
 )
 register_source(
@@ -148,6 +151,7 @@ register_source(
     "Campus maps",
     tier="public",
     access="Mock",
+    implemented=True,
     note="Mock landmark coordinates and walking times — no public REST API exists.",
 )
 register_source(
