@@ -10,6 +10,7 @@
 
 import type { ChatModelAdapter, SourceMessagePart } from '@assistant-ui/react-native'
 import { askEvents } from './api'
+import { endRun, laneEnded, laneStarted, startRun } from './progress'
 import type { Citation, Mode } from './types'
 
 const PROVIDER_KEY = 'askscotty'
@@ -80,21 +81,45 @@ export const MODE_LABELS: Record<Mode, string> = {
 }
 
 /**
- * Placeholder for the real progress UI (tasklist F1), which wants mode chips
- * rather than a line of text. The events are what matter here; this only makes
- * them visible in the meantime.
+ * A whole citation marker, or a partial one still being streamed at the end.
+ *
+ * Wider than `[S1]` for the same reason the backend's is (see
+ * `apps/planner/citations.py`): told to cite two sources for one claim the model
+ * writes `[S25, S30-4]`, and a narrow pattern leaves that on screen.
  */
-function progressText(running: Set<Mode>): string {
-  if (running.size === 0) return 'Working…'
-  return `Checking ${[...running].map((mode) => MODE_LABELS[mode]).join(', ')}…`
+const STREAMED_MARKER = /\[S\d[\d\s,S-]*\]/g
+const TRAILING_PARTIAL_MARKER = /\[S[\d\s,S-]*$/
+
+/**
+ * Streamed text, with citation markers held back until the answer is final.
+ *
+ * The agent is provisioned to write `[S1]` markers unconditionally — that is
+ * what lets citations be switched on by an env var rather than a re-provision
+ * (docs/b4-planner.md) — so they are in the token stream whether or not anything
+ * can render them yet. The backend strips or keeps them in the `done` payload;
+ * until then a raw `[S11]` would flash mid-sentence and then vanish.
+ *
+ * Applied to the whole accumulated string rather than each chunk, so a marker
+ * split across two deltas ("[S" then "11]") is still caught. The trailing rule
+ * covers the moment in between, where the text genuinely ends mid-marker.
+ */
+function provisional(streamed: string): string {
+  return streamed.replace(STREAMED_MARKER, '').replace(TRAILING_PARTIAL_MARKER, '')
 }
 
 /**
- * `getSources` is read at request time rather than closed over once, so the
- * adapter sees the current Sources filter without being recreated on every
- * change to it.
+ * Both accessors are read at request time rather than closed over once, so the
+ * adapter sees the current Sources filter and the current conversation without
+ * being recreated on every change to either.
+ *
+ * `getThreadId` is what lets a follow-up continue where the last answer left
+ * off: the backend keys the thread's planner session on it, so "is that still
+ * current?" reuses the previous turn's lookups instead of starting over.
  */
-export function createHttpAdapter(getSources: () => string[] | undefined): ChatModelAdapter {
+export function createHttpAdapter(
+  getSources: () => string[] | undefined,
+  getThreadId: () => string | undefined,
+): ChatModelAdapter {
   return {
     async *run({ messages, abortSignal }) {
       const lastUser = [...messages].reverse().find((m) => m.role === 'user')
@@ -105,12 +130,13 @@ export function createHttpAdapter(getSources: () => string[] | undefined): ChatM
         return
       }
 
-      const running = new Set<Mode>()
       let streamed = ''
+      startRun()
 
       try {
         for await (const event of askEvents(text, {
           sources: getSources(),
+          threadId: getThreadId(),
           signal: abortSignal,
         })) {
           if (event.type === 'done') {
@@ -127,22 +153,25 @@ export function createHttpAdapter(getSources: () => string[] | undefined): ChatM
 
           if (event.type === 'text_delta') {
             streamed += event.data.text
-            yield { content: [{ type: 'text', text: streamed }] }
+            yield { content: [{ type: 'text', text: provisional(streamed) }] }
             continue
           }
 
-          // A lane starting means the model went off to look something up, so
-          // what it had written was preamble to that, not an answer.
+          // Lane events drive the thinking indicator, not the message. They used
+          // to be yielded as assistant text, which meant a debounced save firing
+          // mid-run could persist "Checking Dining…" as somebody's answer.
           if (event.type === 'mode_start') {
-            running.add(event.data.mode)
+            laneStarted(event.data.mode)
+            // The model went off to look something up, so what it had written
+            // was preamble to that, not an answer.
             streamed = ''
+            yield { content: [{ type: 'text', text: '' }] }
           }
-          if (event.type === 'mode_end') running.delete(event.data.mode)
-          yield { content: [{ type: 'text', text: streamed || progressText(running) }] }
+          if (event.type === 'mode_end') laneEnded(event.data.mode)
         }
 
         // Fell out of the loop without a `done` — the connection dropped
-        // mid-answer. Say so, rather than leaving the progress line up forever.
+        // mid-answer. Say so, rather than leaving the indicator up forever.
         // Unless the user stopped it themselves, which needs no explaining.
         if (!abortSignal.aborted) {
           yield {
@@ -152,6 +181,10 @@ export function createHttpAdapter(getSources: () => string[] | undefined): ChatM
       } catch (err) {
         const message = err instanceof Error ? err.message : 'The assistant failed to respond.'
         yield { content: [{ type: 'text', text: message }] }
+      } finally {
+        // Whatever happened — answered, aborted, threw — the lanes are not
+        // running any more, and a stuck indicator outlives the turn.
+        endRun()
       }
     },
   }

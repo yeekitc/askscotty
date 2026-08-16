@@ -24,10 +24,21 @@ from django.db import models
 class Thread(models.Model):
     """One conversation in the sidebar.
 
-    The title is not stored: the app derives it from the first user message
-    (`threadTitle` in frontend/app/lib/chatThreads.ts).
+    The title is stored only once somebody renames the thread. Left blank, the
+    app derives it from the first user message (`threadTitle` in
+    frontend/app/lib/chatThreads.ts), so an untouched thread still retitles
+    itself as the conversation starts.
     """
 
+    # Blank rather than null: "no title" and "renamed to nothing" are the same
+    # state, and a single empty-string case is one less thing for the client to
+    # branch on.
+    title = models.CharField(
+        max_length=120,
+        blank=True,
+        default="",
+        help_text="Set by an explicit rename. Blank means derive it from the first message.",
+    )
     # A plain column rather than the primary key, because the app generates
     # these locally before the server has heard of the thread: two sessions can
     # then produce the same string without colliding.
@@ -39,6 +50,21 @@ class Thread(models.Model):
         max_length=128,
         db_index=True,
         help_text="Anonymous session this thread belongs to. Never a real user id.",
+    )
+    # The Managed Agents session this thread's answers run in. Blank until the
+    # first question; after that the same session is reused, which is what lets a
+    # follow-up ("is that still current?") see the previous turn's tool results
+    # instead of searching again from scratch.
+    #
+    # Two stores, deliberately: this row stays authoritative for what the app
+    # renders, and the session is what the model sees. A session that has been
+    # archived or deleted on Anthropic's side leaves this string dangling, so the
+    # planner treats an unusable id as "start a new session" rather than an error.
+    cma_session_id = models.CharField(
+        max_length=64,
+        blank=True,
+        default="",
+        help_text="Managed Agents session id. Blank until the thread's first answer.",
     )
     created_at = models.DateTimeField(auto_now_add=True)
     # Drives the sidebar's ordering.

@@ -7,10 +7,12 @@
  * Native app cannot use. app/index.tsx owns the show/hide.
  */
 
-import { useEffect, useRef } from 'react'
-import { Animated, Easing, Image, Platform, StyleSheet, View } from 'react-native'
+import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
+import { Animated, Easing, Image, Platform, StyleSheet, Text, View } from 'react-native'
 
-import { colors, radius, spacing } from '../lib/theme'
+import { MODE_LABELS } from '../lib/assistantAdapter'
+import { getIdleProgress, getProgress, subscribeToProgress } from '../lib/progress'
+import { colors, fonts, radius, spacing } from '../lib/theme'
 
 const MASCOT = require('../assets/mascot.png')
 
@@ -73,6 +75,49 @@ function Dot({ delay }: { delay: number }) {
   )
 }
 
+/**
+ * Names the lane that is running, with elapsed seconds beside it.
+ *
+ * The assistant-ui `thinking-indicator` element is the same idea, but it is a
+ * shadcn copy-paste of Tailwind classNames on DOM nodes, so it is a pattern to
+ * port rather than a component to install. The data behind it is ours already:
+ * `mode_start` / `mode_end` have been on the wire since SSE landed.
+ *
+ * It earns its place now rather than being polish. Managed Agents pushed
+ * time-to-first-token to roughly half a minute (docs/b4-planner.md), so without
+ * this the demo is a bouncing dot for 30 seconds with nothing to say for itself.
+ */
+function ThinkingStatus() {
+  const progress = useSyncExternalStore(subscribeToProgress, getProgress, getIdleProgress)
+
+  // Re-render once a second purely to advance the clock. Mounted only while the
+  // indicator is up, so the timer stops when the answer starts.
+  const [, tick] = useState(0)
+  useEffect(() => {
+    if (!progress.startedAt) return
+    const timer = setInterval(() => tick((n) => n + 1), 1000)
+    return () => clearInterval(timer)
+  }, [progress.startedAt])
+
+  if (!progress.startedAt) return null
+
+  const seconds = Math.floor((Date.now() - progress.startedAt) / 1000)
+  const label =
+    progress.running.length > 0
+      ? `Checking ${progress.running.map((mode) => MODE_LABELS[mode]).join(', ')}`
+      : 'Working'
+
+  return (
+    <View style={styles.status}>
+      <Text style={styles.statusLabel} numberOfLines={1}>
+        {label}
+      </Text>
+      {/* Tabular figures, or the line twitches every time the width changes. */}
+      {seconds > 0 ? <Text style={styles.elapsed}>{seconds}s</Text> : null}
+    </View>
+  )
+}
+
 export function TypingIndicator() {
   return (
     <View
@@ -82,10 +127,13 @@ export function TypingIndicator() {
       accessibilityLabel="Scotty is thinking"
     >
       <Image source={MASCOT} style={styles.avatar} accessibilityLabel="Scotty" />
-      <View style={styles.bubble}>
-        {DOT_DELAYS.map((delay) => (
-          <Dot key={delay} delay={delay} />
-        ))}
+      <View style={styles.stack}>
+        <View style={styles.bubble}>
+          {DOT_DELAYS.map((delay) => (
+            <Dot key={delay} delay={delay} />
+          ))}
+        </View>
+        <ThinkingStatus />
       </View>
     </View>
   )
@@ -123,5 +171,28 @@ const styles = StyleSheet.create({
     height: 7,
     borderRadius: radius.pill,
     backgroundColor: colors.textMuted,
+  },
+  // Under the dots rather than beside them: the lane list grows as lanes start,
+  // and on a phone that would push the bubble off the edge.
+  stack: {
+    alignItems: 'flex-start',
+    gap: spacing.xs,
+  },
+  status: {
+    flexDirection: 'row',
+    alignItems: 'baseline',
+    gap: spacing.sm,
+    paddingHorizontal: spacing.xs,
+  },
+  statusLabel: {
+    fontSize: 12,
+    color: colors.textFaint,
+  },
+  elapsed: {
+    fontSize: 11,
+    color: colors.textFaint,
+    fontFamily: fonts.mono,
+    // Or the row twitches every second as the digits change width.
+    fontVariant: ['tabular-nums'],
   },
 })

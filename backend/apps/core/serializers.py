@@ -38,6 +38,18 @@ class AskSerializer(serializers.Serializer):
         default="",
     )
 
+    # Which conversation this question belongs to, so the planner can reuse the
+    # thread's Managed Agents session and the model keeps the previous turn's
+    # tool results. Optional and additive: a client that omits it gets a fresh
+    # session per question and the same answer shape as before, which is exactly
+    # what /api/ask/ did before the migration.
+    thread_id = serializers.CharField(
+        max_length=64,
+        required=False,
+        allow_blank=True,
+        default="",
+    )
+
     # Oldest first. Capped so a runaway client cannot push an unbounded
     # transcript through the planner's context window.
     history = serializers.ListField(
@@ -153,6 +165,11 @@ class ThreadSerializer(serializers.Serializer):
 
     id = serializers.CharField(max_length=64)
     messages = MessageSerializer(many=True)
+    # Optional on write, and with no default, so an omitted key stays out of
+    # `validated_data` entirely: a body that does not mention the title leaves
+    # an existing rename alone rather than silently clearing it. Sending `""`
+    # is still how you clear one.
+    title = serializers.CharField(max_length=120, allow_blank=True, required=False)
     updated_at = serializers.DateTimeField(read_only=True)
 
 

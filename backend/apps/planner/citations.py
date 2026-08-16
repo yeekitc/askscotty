@@ -16,7 +16,17 @@ from typing import Any
 from apps.tools.registry import Tool, citation_defaults
 
 # What the model is asked to write, and the only thing it is trusted to write.
-MARKER = re.compile(r"\[S(\d+)\]")
+#
+# Deliberately wider than the `[S1]` the prompt asks for. Told to cite several
+# sources for one claim, the model writes what a person would — `[S25, S30-4]` —
+# and a pattern that only matched the well-formed case left that on screen as a
+# dead marker, which is the exact failure inline citations are supposed to
+# prevent. So: anything that opens `[S<digit>` and contains nothing but ids,
+# separators and digits. `[Section 3]` and `[See below]` do not match.
+MARKER = re.compile(r"\[S\d[\d\s,S-]*\]")
+
+# The ids inside one marker, however many it carries.
+MARKER_ID = re.compile(r"S(\d+)")
 
 
 class CitationLedger:
@@ -80,15 +90,21 @@ def validate_markers(answer: str, issued_ids: set[str]) -> tuple[str, set[str]]:
     One hallucinated `[S7]` renders as a dead marker in the app, so an id that
     was never handed out is removed rather than shown. Passing an empty
     `issued_ids` strips every marker, which is what the markers-off setting does.
+
+    A marker carrying several ids is rewritten to the ones that survive, in the
+    single-id form the app renders — `[S25, S30-4]` becomes `[S25]` if only S25
+    was issued, and disappears entirely if neither was.
     """
     referenced: set[str] = set()
 
     def keep(match: re.Match[str]) -> str:
-        marker_id = f"S{match.group(1)}"
-        if marker_id in issued_ids:
-            referenced.add(marker_id)
-            return match.group(0)
-        return ""
+        kept = [
+            marker_id
+            for number in MARKER_ID.findall(match.group(0))
+            if (marker_id := f"S{number}") in issued_ids
+        ]
+        referenced.update(kept)
+        return "".join(f"[{marker_id}]" for marker_id in kept)
 
     cleaned = MARKER.sub(keep, answer)
     # Removing a marker can leave " ." or a double space behind it.

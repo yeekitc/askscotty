@@ -3,6 +3,8 @@
  * in a component.
  */
 
+import { Platform } from 'react-native'
+
 export const colors = {
   background: '#eef3f7',
   surface: 'rgba(255, 255, 255, 0.85)',
@@ -23,6 +25,16 @@ export const colors = {
   sidebarHover: '#eef1f4',
   // Backdrop behind the sidebar when it opens as a drawer on narrow screens.
   overlay: 'rgba(12, 20, 28, 0.35)',
+}
+
+/**
+ * There is no cross-platform "monospace" family name: iOS ships Menlo, Android
+ * resolves the literal string "monospace", and the browser has the CSS keyword.
+ * Naming a font Android does not have makes it fall back to the default
+ * proportional face, which quietly loses the alignment monospace was for.
+ */
+export const fonts = {
+  mono: Platform.select({ ios: 'Menlo', android: 'monospace', default: 'monospace' }),
 }
 
 export const spacing = {

@@ -55,10 +55,12 @@ services:
       # the host environment through — a variable missing here cannot be set at
       # all, whatever .env says.
       PLANNER_EFFORT: ${PLANNER_EFFORT:-}
-      PLANNER_MAX_TOKENS: ${PLANNER_MAX_TOKENS:-}
-      PLANNER_MAX_ITERATIONS: ${PLANNER_MAX_ITERATIONS:-}
-      PLANNER_MAX_PAUSE_RESUMES: ${PLANNER_MAX_PAUSE_RESUMES:-}
-      PLANNER_DEADLINE_SECONDS: ${PLANNER_DEADLINE_SECONDS:-}
+      # The two ids `manage.py provision_planner` prints. Without these lines the
+      # planner cannot see them however faithfully they were copied into .env,
+      # and every question fails with "not provisioned".
+      PLANNER_AGENT_ID: ${PLANNER_AGENT_ID:-}
+      PLANNER_ENVIRONMENT_ID: ${PLANNER_ENVIRONMENT_ID:-}
+      PLANNER_SESSION_BUDGET_CENTS: ${PLANNER_SESSION_BUDGET_CENTS:-}
       PLANNER_REQUEST_TIMEOUT: ${PLANNER_REQUEST_TIMEOUT:-}
       PLANNER_MAX_RETRIES: ${PLANNER_MAX_RETRIES:-}
       PLANNER_CITATION_MARKERS: ${PLANNER_CITATION_MARKERS:-}

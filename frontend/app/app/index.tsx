@@ -18,6 +18,7 @@ import {
   useWindowDimensions,
 } from 'react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
+import Animated, { useAnimatedStyle, useSharedValue, withTiming } from 'react-native-reanimated'
 import AsyncStorage from '@react-native-async-storage/async-storage'
 import {
   AssistantRuntimeProvider,
@@ -38,8 +39,10 @@ import {
   createEmptyThread,
   loadThreads,
   persistThread,
+  removeThread,
   threadTitle,
 } from '../lib/chatThreads'
+import { durations, easing, offsets, useReducedMotion } from '../lib/motion'
 import { colors, radius, shadows, spacing } from '../lib/theme'
 import { useCurrentUser } from '../lib/user'
 
@@ -54,6 +57,31 @@ const SIDEBAR_WIDTH = 280
 const WIDE_BREAKPOINT = 900
 
 const SAVE_DEBOUNCE_MS = 600
+
+/** Matches `Thread.title`'s column width in backend/apps/core/models.py. */
+const TITLE_MAX = 120
+
+/**
+ * What counts as "this thread changed" for the save debounce. Covers the title
+ * as well as the messages, or renaming without sending a message would compare
+ * equal to the last save and never persist.
+ */
+function fingerprintOf(thread: ChatThread): string {
+  return JSON.stringify([thread.title, thread.messages])
+}
+
+/**
+ * The sidebar stays mounted when closed so the closing half of the animation
+ * has something to play on, which otherwise leaves it reachable by tab and by
+ * screen reader while it is off-screen.
+ */
+function hiddenWhenClosed(open: boolean) {
+  return {
+    pointerEvents: open ? ('auto' as const) : ('none' as const),
+    accessibilityElementsHidden: !open,
+    importantForAccessibility: open ? ('auto' as const) : ('no-hide-descendants' as const),
+  }
+}
 
 // The source filter is per-device UI state, so it stays on the device — in
 // AsyncStorage, not localStorage, because `window` does not exist on a phone.
@@ -107,6 +135,43 @@ export default function AskScreen() {
   const sidebarEffectiveOpen = sidebarOpen ?? isWide
   const [searchQuery, setSearchQuery] = useState('')
 
+  const reduceMotion = useReducedMotion()
+
+  // One 0→1 value drives both layouts: the track's width when the sidebar is
+  // inline, the panel's offset when it is a drawer.
+  const sidebarProgress = useSharedValue(sidebarEffectiveOpen ? 1 : 0)
+  useEffect(() => {
+    const target = sidebarEffectiveOpen ? 1 : 0
+    sidebarProgress.value = reduceMotion
+      ? target
+      : withTiming(target, { duration: durations.sidebar, easing })
+  }, [sidebarEffectiveOpen, reduceMotion, sidebarProgress])
+
+  // Width rather than a transform, because the main column is flex:1 — animating
+  // the track is what makes the thread area follow the sidebar instead of
+  // snapping across once it lands.
+  const sidebarTrackStyle = useAnimatedStyle(() => ({
+    width: sidebarProgress.value * SIDEBAR_WIDTH,
+  }))
+
+  // The panel keeps its full width and slides, so its contents never reflow
+  // mid-animation. What overhangs is off the left edge of the screen.
+  const sidebarPanelStyle = useAnimatedStyle(() => ({
+    transform: [{ translateX: (sidebarProgress.value - 1) * SIDEBAR_WIDTH }],
+  }))
+
+  const drawerBackdropStyle = useAnimatedStyle(() => ({
+    opacity: sidebarProgress.value,
+  }))
+
+  // Which row's "..." menu is open, and which row is being renamed in place.
+  // Both are hand-rolled: @assistant-ui/react-native ships no menu primitive
+  // (ThreadListItemMorePrimitive is web-only), and its ThreadListItem.Delete
+  // is wired to a local-runtime stub that throws.
+  const [menuThreadId, setMenuThreadId] = useState<string | null>(null)
+  const [renamingId, setRenamingId] = useState<string | null>(null)
+  const [renameDraft, setRenameDraft] = useState('')
+
   // The app opens on a fresh chat every time. Saved conversations arrive a
   // moment later and fill the sidebar rather than yanking the runtime out from
   // under someone who has already started typing.
@@ -115,7 +180,20 @@ export default function AskScreen() {
   const [activeThreadId, setActiveThreadId] = useState(firstThread.id)
   const activeThreadIdRef = useRef(activeThreadId)
 
-  const adapter = useMemo(() => createHttpAdapter(() => sourcesRef.current), [])
+  // The runtime subscription below is set up once, so it needs a ref to read
+  // the current title rather than the one from its first render.
+  const threadsRef = useRef(threads)
+  useEffect(() => {
+    threadsRef.current = threads
+  }, [threads])
+
+  // Both read through refs at request time rather than closed over once, so the
+  // adapter sees the current filter and the current conversation without being
+  // rebuilt — which would drop the in-flight answer.
+  const adapter = useMemo(
+    () => createHttpAdapter(() => sourcesRef.current, () => activeThreadIdRef.current),
+    [],
+  )
   const runtime = useLocalRuntime(adapter, { initialMessages: [] })
 
   // Debounced because the runtime fires its subscription on every status change,
@@ -131,7 +209,7 @@ export default function AskScreen() {
     pendingSaves.current.clear()
 
     for (const thread of batch) {
-      const fingerprint = JSON.stringify(thread.messages)
+      const fingerprint = fingerprintOf(thread)
       lastSaved.current.set(thread.id, fingerprint)
       persistThread(thread).catch(() => {
         // Dropping the fingerprint makes the next change retry this thread. A
@@ -144,9 +222,10 @@ export default function AskScreen() {
   const schedulePersist = useCallback(
     (thread: ChatThread) => {
       // Never persist an empty thread, or "New Chat" would create a server row
-      // for a conversation that never happened.
+      // for a conversation that never happened. Renaming one therefore stays
+      // local until it has a first message, which then carries the title up.
       if (thread.messages.length === 0) return
-      if (lastSaved.current.get(thread.id) === JSON.stringify(thread.messages)) return
+      if (lastSaved.current.get(thread.id) === fingerprintOf(thread)) return
 
       pendingSaves.current.set(thread.id, thread)
       if (saveTimer.current) clearTimeout(saveTimer.current)
@@ -193,6 +272,23 @@ export default function AskScreen() {
   // thread.reset() raced the FlatList's index bookkeeping and crashed.
   const [isEmpty, setIsEmpty] = useState(true)
 
+  // The hero-to-thread swap is a hard cut on the app's most-watched moment, the
+  // first send. Only the arriving side is animated: crossfading would mean two
+  // AskComposers mounted at once, both bound to the same runtime composer.
+  const threadEnter = useSharedValue(0)
+  useEffect(() => {
+    if (isEmpty) {
+      threadEnter.value = 0
+      return
+    }
+    threadEnter.value = reduceMotion ? 1 : withTiming(1, { duration: durations.entrance, easing })
+  }, [isEmpty, reduceMotion, threadEnter])
+
+  const threadEnterStyle = useAnimatedStyle(() => ({
+    opacity: threadEnter.value,
+    transform: [{ translateY: (1 - threadEnter.value) * offsets.view }],
+  }))
+
   // Mirrors the live thread back into whichever thread is active, so switching
   // away and back loses nothing. Reads activeThreadIdRef rather than the state,
   // because this subscription is set up once and a ref is what stays current.
@@ -203,13 +299,16 @@ export default function AskScreen() {
       const snapshot: ThreadMessageLike[] = messages.map((m) => ({ role: m.role, content: m.content }))
       const id = activeThreadIdRef.current
       const updatedAt = Date.now()
+      // Carried through rather than defaulted, or every answer would overwrite
+      // a rename with an empty title.
+      const title = threadsRef.current.find((t) => t.id === id)?.title ?? ''
 
       setThreads((prev) =>
         prev.map((t) => (t.id === id ? { ...t, messages: snapshot, updatedAt } : t)),
       )
       // Outside the state updater on purpose: React may run an updater more
       // than once, and a save is a side effect that should happen once.
-      schedulePersist({ id, messages: snapshot, updatedAt })
+      schedulePersist({ id, messages: snapshot, title, updatedAt })
     })
   }, [runtime, schedulePersist])
 
@@ -219,6 +318,8 @@ export default function AskScreen() {
   }, [])
 
   const startNewChat = useCallback(() => {
+    setMenuThreadId(null)
+    setRenamingId(null)
     const current = threads.find((t) => t.id === activeThreadIdRef.current)
     if (current && current.messages.length === 0) return // already on a fresh chat
     const next = createEmptyThread(generateId())
@@ -229,8 +330,69 @@ export default function AskScreen() {
     if (!isWide) setSidebarOpen(false)
   }, [threads, runtime, isWide])
 
+  const startRename = useCallback((thread: ChatThread) => {
+    setMenuThreadId(null)
+    setRenamingId(thread.id)
+    // Seeded with what the row currently shows, so renaming a never-renamed
+    // thread starts from its derived title rather than an empty box.
+    setRenameDraft(threadTitle(thread))
+  }, [])
+
+  const commitRename = useCallback(
+    (id: string) => {
+      setRenamingId(null)
+
+      const title = renameDraft.trim().slice(0, TITLE_MAX)
+      const current = threadsRef.current.find((t) => t.id === id)
+      // Also the guard that makes a blur-then-submit double fire harmless.
+      if (!current || current.title === title) return
+
+      const renamed = { ...current, title }
+      setThreads((prev) => prev.map((t) => (t.id === id ? renamed : t)))
+      // The runtime subscription only fires on message changes, so a rename
+      // has to schedule its own save.
+      schedulePersist(renamed)
+    },
+    [renameDraft, schedulePersist],
+  )
+
+  const deleteThreadById = useCallback(
+    (id: string) => {
+      setMenuThreadId(null)
+
+      // Drop the queued save before deleting, or a debounce still in flight
+      // would PUT the thread straight back and recreate the row.
+      pendingSaves.current.delete(id)
+      lastSaved.current.delete(id)
+
+      const remaining = threads.filter((t) => t.id !== id)
+
+      // Deleting the conversation you are reading has to put something else in
+      // the runtime, or the thread area keeps rendering messages that no longer
+      // belong to any thread.
+      if (id === activeThreadIdRef.current) {
+        const mostRecent = [...remaining].sort((a, b) => b.updatedAt - a.updatedAt)[0]
+        const next = mostRecent ?? createEmptyThread(generateId())
+        if (!mostRecent) remaining.push(next) // deleted the last one — fall back to a fresh chat
+        activeThreadIdRef.current = next.id
+        setActiveThreadId(next.id)
+        runtime.thread.reset(next.messages)
+      }
+
+      setThreads(remaining)
+
+      removeThread(id).catch(() => {
+        // The row is already gone locally and there is no undo to offer, so a
+        // failed delete reappears on the next load rather than as a banner.
+      })
+    },
+    [threads, runtime],
+  )
+
   const switchToThread = useCallback(
     (id: string) => {
+      setMenuThreadId(null)
+      setRenamingId(null)
       if (id === activeThreadIdRef.current) {
         if (!isWide) setSidebarOpen(false)
         return
@@ -253,6 +415,18 @@ export default function AskScreen() {
 
   const sidebar = (
     <>
+      {/* Dismisses the "..." menu on a tap anywhere in the sidebar that isn't
+          another control. Rendered first so every sibling paints above it:
+          react-native-web gives every View position:relative, so paint order
+          follows source order rather than promoting this above the rows. */}
+      {menuThreadId ? (
+        <Pressable
+          style={StyleSheet.absoluteFill}
+          onPress={() => setMenuThreadId(null)}
+          accessibilityLabel="Close menu"
+        />
+      ) : null}
+
       <View style={styles.sidebarHeader}>
         <Text style={styles.brandSidebar}>AskScotty</Text>
         {!isWide ? (
@@ -287,23 +461,99 @@ export default function AskScreen() {
         {visibleThreads.length ? (
           visibleThreads.map((t) => {
             const active = t.id === activeThreadId
+            const menuOpen = t.id === menuThreadId
+
+            // The row is the menu's anchor, so it owns the positioning context.
             return (
-              <HoverPressable
-                key={t.id}
-                onPress={() => switchToThread(t.id)}
-                style={({ pressed, hovered }) => [
-                  styles.recentItem,
-                  active && styles.recentItemActive,
-                  (pressed || hovered) && !active && styles.recentItemHovered,
-                ]}
-              >
-                <Text
-                  style={[styles.recentItemText, active && styles.recentItemTextActive]}
-                  numberOfLines={1}
-                >
-                  {threadTitle(t)}
-                </Text>
-              </HoverPressable>
+              <View key={t.id} style={[styles.recentRow, menuOpen && styles.recentRowRaised]}>
+                {t.id === renamingId ? (
+                  <TextInput
+                    style={styles.renameInput}
+                    value={renameDraft}
+                    onChangeText={setRenameDraft}
+                    onSubmitEditing={() => commitRename(t.id)}
+                    onBlur={() => commitRename(t.id)}
+                    onKeyPress={(e) => {
+                      // Escape abandons the edit; blur would otherwise commit it.
+                      if (e.nativeEvent.key === 'Escape') setRenamingId(null)
+                    }}
+                    autoFocus
+                    selectTextOnFocus
+                    maxLength={TITLE_MAX}
+                    accessibilityLabel="Thread name"
+                  />
+                ) : (
+                  <HoverPressable
+                    onPress={() => switchToThread(t.id)}
+                    style={({ pressed, hovered }) => [
+                      styles.recentItem,
+                      active && styles.recentItemActive,
+                      (pressed || hovered) && !active && styles.recentItemHovered,
+                    ]}
+                  >
+                    {({ hovered }) => (
+                      <>
+                        <Text
+                          style={[styles.recentItemText, active && styles.recentItemTextActive]}
+                          numberOfLines={1}
+                        >
+                          {threadTitle(t)}
+                        </Text>
+
+                        {/* Always mounted, and only faded — mounting this on
+                            hover instead loses the press, because the pointer
+                            landing on it re-renders the row and the button is
+                            replaced between mousedown and mouseup. Opacity
+                            keeps hit-testing stable; on touch there is no
+                            hover to fade in from, so it just stays visible. */}
+                        <Pressable
+                          onPress={(e) => {
+                            // On web the press bubbles to the row behind it,
+                            // which would switch threads in the same tap.
+                            e.stopPropagation?.()
+                            setMenuThreadId(menuOpen ? null : t.id)
+                          }}
+                          hitSlop={6}
+                          accessibilityRole="button"
+                          accessibilityLabel={`Options for ${threadTitle(t)}`}
+                          style={
+                            hovered || active || menuOpen || Platform.OS !== 'web'
+                              ? undefined
+                              : styles.menuTriggerHidden
+                          }
+                        >
+                          <Text style={styles.menuIcon}>⋯</Text>
+                        </Pressable>
+                      </>
+                    )}
+                  </HoverPressable>
+                )}
+
+                {menuOpen ? (
+                  <View style={styles.menu}>
+                    <HoverPressable
+                      onPress={() => startRename(t)}
+                      style={({ pressed, hovered }) => [
+                        styles.menuItem,
+                        (pressed || hovered) && styles.menuItemActive,
+                      ]}
+                      accessibilityRole="button"
+                    >
+                      <Text style={styles.menuItemText}>Rename</Text>
+                    </HoverPressable>
+                    <HoverPressable
+                      onPress={() => deleteThreadById(t.id)}
+                      style={({ pressed, hovered }) => [
+                        styles.menuItem,
+                        (pressed || hovered) && styles.menuItemActive,
+                      ]}
+                      accessibilityRole="button"
+                    >
+                      <Text style={[styles.menuItemText, styles.menuItemDestructive]}>Delete</Text>
+                    </HoverPressable>
+                  </View>
+                ) : null}
+              </View>
             )
           })
         ) : (
@@ -319,7 +569,14 @@ export default function AskScreen() {
     <AssistantRuntimeProvider runtime={runtime}>
       <View style={[styles.screen, { paddingTop: insets.top }]}>
         <View style={styles.row}>
-          {isWide && sidebarEffectiveOpen ? <View style={styles.sidebar}>{sidebar}</View> : null}
+          {isWide ? (
+            <Animated.View
+              style={[styles.sidebarTrack, sidebarTrackStyle]}
+              {...hiddenWhenClosed(sidebarEffectiveOpen)}
+            >
+              <Animated.View style={[styles.sidebar, sidebarPanelStyle]}>{sidebar}</Animated.View>
+            </Animated.View>
+          ) : null}
 
           <View style={styles.mainColumn}>
             <View style={styles.topBar}>
@@ -347,7 +604,7 @@ export default function AskScreen() {
                   <AskComposer sources={sources} onSourcesChange={setSources} />
                 </View>
               ) : (
-                <View style={styles.activeThread}>
+                <Animated.View style={[styles.activeThread, threadEnterStyle]}>
                   <Thread.MessagesFlatList
                     // Forces a full remount per thread switch: the previous
                     // thread's messages are a different list, not an edit.
@@ -361,22 +618,35 @@ export default function AskScreen() {
                   <View style={[styles.pinnedComposer, { paddingBottom: insets.bottom + spacing.sm }]}>
                     <AskComposer sources={sources} onSourcesChange={setSources} />
                   </View>
-                </View>
+                </Animated.View>
               )}
             </KeyboardAvoidingView>
           </View>
         </View>
 
-        {!isWide && sidebarEffectiveOpen ? (
+        {!isWide ? (
           <>
-            <Pressable
-              style={styles.drawerBackdrop}
-              onPress={() => setSidebarOpen(false)}
-              accessibilityLabel="Close sidebar"
-            />
-            <View style={[styles.sidebar, styles.sidebarDrawer, { paddingTop: insets.top + spacing.md }]}>
+            <Animated.View
+              style={[styles.drawerBackdrop, drawerBackdropStyle]}
+              {...hiddenWhenClosed(sidebarEffectiveOpen)}
+            >
+              <Pressable
+                style={StyleSheet.absoluteFill}
+                onPress={() => setSidebarOpen(false)}
+                accessibilityLabel="Close sidebar"
+              />
+            </Animated.View>
+            <Animated.View
+              style={[
+                styles.sidebar,
+                styles.sidebarDrawer,
+                { paddingTop: insets.top + spacing.md },
+                sidebarPanelStyle,
+              ]}
+              {...hiddenWhenClosed(sidebarEffectiveOpen)}
+            >
               {sidebar}
-            </View>
+            </Animated.View>
           </>
         ) : null}
       </View>
@@ -403,7 +673,44 @@ function RunningIndicator() {
     return !last.content.some((part) => part.type !== 'text' || part.text.length > 0)
   })
 
-  return waiting ? <TypingIndicator /> : null
+  const reduceMotion = useReducedMotion()
+
+  // Outlives `waiting` by the length of the fade, so the dots hand over to the
+  // answer rather than blinking out the frame it arrives. ChatMessage fades the
+  // card in on the same signal, which is what makes the two overlap.
+  const [mounted, setMounted] = useState(waiting)
+  const opacity = useSharedValue(waiting ? 1 : 0)
+
+  useEffect(() => {
+    if (waiting) {
+      setMounted(true)
+      opacity.value = reduceMotion ? 1 : withTiming(1, { duration: durations.fast, easing })
+      return
+    }
+    if (reduceMotion) {
+      opacity.value = 0
+      setMounted(false)
+      return
+    }
+    opacity.value = withTiming(0, { duration: durations.base, easing })
+    // A timer, not withTiming's completion callback. That callback still fires
+    // after a new wait has begun — superseding an animation does not reliably
+    // report `finished: false` — and unmounted the indicator that had just come
+    // back, leaving the dots gone for the whole run. Effect cleanup cancels this
+    // the instant `waiting` flips back.
+    const timer = setTimeout(() => setMounted(false), durations.base)
+    return () => clearTimeout(timer)
+  }, [waiting, reduceMotion, opacity])
+
+  const style = useAnimatedStyle(() => ({ opacity: opacity.value }))
+
+  if (!mounted) return null
+
+  return (
+    <Animated.View style={style}>
+      <TypingIndicator />
+    </Animated.View>
+  )
 }
 
 const styles = StyleSheet.create({
@@ -421,6 +728,15 @@ const styles = StyleSheet.create({
     width: SIDEBAR_WIDTH,
     padding: spacing.lg,
     backgroundColor: colors.sidebar,
+    // Fills the track, which is the flex child that stretches to the row. The
+    // drawer ignores this — absolute children are not flex items — and gets its
+    // height from top/bottom instead.
+    flex: 1,
+  },
+  // The shadow lives on whichever element bounds the visible sidebar. Inline
+  // that is the track, whose width is the animated one; on the panel it would
+  // travel off-screen with the slide.
+  sidebarTrack: {
     ...shadows.sidebar,
   },
   sidebarDrawer: {
@@ -429,6 +745,7 @@ const styles = StyleSheet.create({
     left: 0,
     bottom: 0,
     zIndex: 60,
+    ...shadows.sidebar,
   },
   drawerBackdrop: {
     position: 'absolute',
@@ -495,9 +812,16 @@ const styles = StyleSheet.create({
     fontStyle: 'italic',
   },
   recentItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: spacing.sm,
     paddingVertical: spacing.sm,
     paddingHorizontal: spacing.sm,
     borderRadius: radius.sm,
+    // Reserve the row height the ✕ needs, so rows don't jump as it appears
+    // and disappears on hover.
+    minHeight: 32,
   },
   recentItemHovered: {
     backgroundColor: colors.sidebarHover,
@@ -506,8 +830,69 @@ const styles = StyleSheet.create({
     backgroundColor: colors.sidebarHover,
   },
   recentItemText: {
+    // Shrinks so a long title truncates rather than pushing the delete
+    // control past the edge of the sidebar.
+    flexShrink: 1,
     fontSize: 13,
     color: colors.textMuted,
+  },
+  recentRow: {
+    // The positioning context the "..." menu anchors to.
+    position: 'relative',
+  },
+  recentRowRaised: {
+    // Later rows paint over earlier ones, so the row holding an open menu has
+    // to be lifted or the menu renders behind the next thread down.
+    zIndex: 10,
+  },
+  menuTriggerHidden: {
+    opacity: 0,
+  },
+  menuIcon: {
+    fontSize: 16,
+    lineHeight: 16,
+    color: colors.textFaint,
+    paddingHorizontal: spacing.xs,
+  },
+  menu: {
+    position: 'absolute',
+    top: '100%',
+    right: 0,
+    marginTop: 2,
+    minWidth: 132,
+    paddingVertical: spacing.xs,
+    borderRadius: radius.md,
+    // Against the near-white sidebar a plain fill would not read as a separate
+    // surface, so this leans on the border as much as the shadow.
+    backgroundColor: colors.background,
+    borderWidth: 1,
+    borderColor: colors.borderSoft,
+    ...shadows.soft,
+  },
+  menuItem: {
+    paddingVertical: spacing.sm,
+    paddingHorizontal: spacing.md,
+  },
+  menuItemActive: {
+    backgroundColor: colors.sidebarHover,
+  },
+  menuItemText: {
+    fontSize: 13,
+    color: colors.text,
+  },
+  menuItemDestructive: {
+    color: colors.error,
+  },
+  renameInput: {
+    minHeight: 32,
+    paddingVertical: spacing.sm,
+    paddingHorizontal: spacing.sm,
+    borderRadius: radius.sm,
+    backgroundColor: colors.background,
+    borderWidth: 1,
+    borderColor: colors.border,
+    fontSize: 13,
+    color: colors.text,
   },
   recentItemTextActive: {
     color: colors.text,

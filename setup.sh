@@ -35,7 +35,7 @@ dim "This takes a few minutes the first time. Downloads are slow; that's normal.
 # ---------------------------------------------------------------------------
 # 1. Environment files
 # ---------------------------------------------------------------------------
-step "1/5  Configuration files"
+step "1/6  Configuration files"
 
 if [[ -f .env ]]; then
   ok ".env already exists (leaving your settings alone)"
@@ -67,7 +67,7 @@ API_BASE="http://localhost:${BACKEND_PORT}"
 # ---------------------------------------------------------------------------
 # 2. Docker
 # ---------------------------------------------------------------------------
-step "2/5  Checking Docker"
+step "2/6  Checking Docker"
 
 command -v docker >/dev/null 2>&1 \
   || fail "Docker is not installed.
@@ -86,7 +86,7 @@ ok "Docker Compose is available"
 # ---------------------------------------------------------------------------
 # 3. Database + API
 # ---------------------------------------------------------------------------
-step "3/5  Starting the database and API"
+step "3/6  Starting the database and API"
 dim "Building containers — first run pulls a few hundred MB. Please wait."
 
 if ! docker compose up --build -d; then
@@ -116,9 +116,35 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 4. Node
+# 4. Planner agent
 # ---------------------------------------------------------------------------
-step "4/5  Checking Node.js"
+step "4/6  Provisioning the planner agent"
+
+if grep -qE '^PLANNER_AGENT_ID=.+' .env 2>/dev/null; then
+  ok "Already provisioned — PLANNER_AGENT_ID is set in .env"
+  dim "Re-run by hand after a prompt or model change:"
+  dim "docker compose exec backend python manage.py provision_planner"
+elif ! grep -qE '^ANTHROPIC_API_KEY=.+' .env 2>/dev/null; then
+  warn "Skipped — ANTHROPIC_API_KEY is not set in .env"
+  dim "Add the key, then run:"
+  dim "docker compose exec backend python manage.py provision_planner"
+else
+  # Creates the agent and environment on Anthropic's side and prints two ids.
+  # They are config rather than secrets, which is why .env.example ships real
+  # ones — but a different org needs its own, so this runs on first setup.
+  if docker compose exec -T backend python manage.py provision_planner; then
+    ok "Planner agent provisioned"
+    warn "Copy the two ids above into .env if they are not already there"
+  else
+    warn "Provisioning failed — the app will start but cannot answer"
+    dim "Managed Agents is beta; check the key and that it is enabled for the org"
+  fi
+fi
+
+# ---------------------------------------------------------------------------
+# 5. Node
+# ---------------------------------------------------------------------------
+step "5/6  Checking Node.js"
 
 NODE_OK=""
 if command -v node >/dev/null 2>&1 && command -v npm >/dev/null 2>&1; then
@@ -140,9 +166,9 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 5. Frontend
+# 6. Frontend
 # ---------------------------------------------------------------------------
-step "5/5  Installing the app"
+step "6/6  Installing the app"
 
 if [[ -n "$NODE_OK" ]]; then
   dim "Running npm install in frontend/app — this takes a minute."

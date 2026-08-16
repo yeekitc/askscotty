@@ -107,3 +107,10 @@ trade-off, a bug being avoided, a rule from the PRD. Never restate what a line
 does, and don't write tutorial prose.
 
 If a comment could be deleted without losing information, delete it.
+
+**Write the current state, not the edit history.** Comments and docs describe how
+things are and why; git describes how they got that way. No "removed X", "used to
+be Y", "superseded — see below", "N tests, down from M", or notes crossing out the
+paragraph above — edit the paragraph. The exception is a decision whose *reasoning*
+still binds: record the reason, not the change. Every stale "formerly" is a token
+every future reader pays for.

@@ -10,17 +10,19 @@
 
 import type { ThreadMessageLike } from '@assistant-ui/react-native'
 
-import { deleteThread, fetchThreads, saveThread } from './api'
+import { ApiError, deleteThread, fetchThreads, saveThread } from './api'
 import type { StoredMessage } from './types'
 
 export type ChatThread = {
   id: string
   messages: ThreadMessageLike[]
+  /** Empty until somebody renames it; `threadTitle` falls back to the first message. */
+  title: string
   updatedAt: number
 }
 
 export function createEmptyThread(id: string): ChatThread {
-  return { id, messages: [], updatedAt: Date.now() }
+  return { id, messages: [], title: '', updatedAt: Date.now() }
 }
 
 // --- Persistence --------------------------------------------------------------
@@ -60,20 +62,36 @@ export async function loadThreads(): Promise<ChatThread[]> {
   return stored.map((thread) => ({
     id: thread.id,
     messages: fromStored(thread.messages),
+    // Tolerated as missing so an app build newer than the backend still loads.
+    title: thread.title ?? '',
     updatedAt: Date.parse(thread.updated_at) || Date.now(),
   }))
 }
 
 export async function persistThread(thread: ChatThread): Promise<void> {
-  await saveThread(thread.id, toStored(thread))
+  await saveThread(thread.id, toStored(thread), thread.title)
 }
 
+/**
+ * Deleting a thread nobody ever sent a message in is a no-op rather than a
+ * failure: `persistThread` skips empty threads, so there is no server row and
+ * the backend's not_found is the expected answer.
+ */
 export async function removeThread(id: string): Promise<void> {
-  await deleteThread(id)
+  try {
+    await deleteThread(id)
+  } catch (err) {
+    if (!(err instanceof ApiError) || err.code !== 'not_found') throw err
+  }
 }
 
-/** Derived from the first user message — there is no stored title to keep in sync. */
+/**
+ * An explicit rename wins; otherwise the title is derived from the first user
+ * message, so a thread nobody has renamed keeps naming itself as it grows.
+ */
 export function threadTitle(thread: ChatThread): string {
+  if (thread.title) return thread.title
+
   const firstUser = thread.messages.find((m) => m.role === 'user')
   if (!firstUser) return 'New chat'
 

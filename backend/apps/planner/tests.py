@@ -1,7 +1,14 @@
-"""Loop tests, run against a scripted model and a tool registered in the test.
+"""Session-driver tests, run against a scripted event stream.
+
+The scripted-*model* harness this replaces no longer applies: Anthropic drives
+the loop, so what the planner actually consumes is a session's event stream. The
+fake below scripts one, in rounds — and a round after the first only arrives once
+the driver has answered the previous round's tool calls, which is the same
+ordering a real session enforces. A driver that forgets to send a tool result
+fails here instead of hanging in the demo.
 
 Every tool in the real registry currently raises `ToolError` (the lanes are
-tasklist B1–B3), so the success path has to bring its own tool. That is not a
+tasklist B1–B3), so the success path brings its own tool. That is not a
 workaround: the registry is the planner's only view of what exists, so a tool
 registered here exercises exactly the code a real one will.
 
@@ -12,75 +19,182 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
+from types import SimpleNamespace
 from unittest import mock
 
-from anthropic.types import Message, TextBlock, ToolUseBlock, Usage
+from apps.core.models import Thread
+from apps.personal.models import UserConnection
 from apps.tools import registry
 from apps.tools.registry import ToolError, register_tool
-from django.test import TestCase, override_settings
+from django.test import TestCase, TransactionTestCase, override_settings
 
+from . import client, loop
 from .citations import validate_markers
-from .loop import drain, run_planner
+from .errors import PlannerError
 
 EMPTY_SCHEMA = {"type": "object", "properties": {}, "required": []}
 
 PLANNER_DEFAULTS = dict(
-    PLANNER_MAX_ITERATIONS=4,
-    PLANNER_MAX_PAUSE_RESUMES=2,
-    PLANNER_DEADLINE_SECONDS=60,
+    PLANNER_AGENT_ID="agent_test",
+    PLANNER_ENVIRONMENT_ID="env_test",
+    PLANNER_SESSION_BUDGET_CENTS=500,
     PLANNER_CITATION_MARKERS=False,
 )
 
 
-def text(body: str) -> TextBlock:
-    return TextBlock(type="text", text=body, citations=None)
+# --- Scripting a session ------------------------------------------------------
 
 
-def tool_use(name: str, block_id: str = "tu_1", **arguments) -> ToolUseBlock:
-    return ToolUseBlock(type="tool_use", id=block_id, name=name, input=arguments)
+def agent_message(*bodies: str) -> SimpleNamespace:
+    """The buffered text of one model turn — what the answer is built from.
 
-
-def reply(*content, stop_reason: str = "end_turn") -> Message:
-    return Message(
-        id="msg_test",
-        model="test",
-        role="assistant",
-        type="message",
-        stop_reason=stop_reason,
-        usage=Usage(input_tokens=1, output_tokens=1),
-        content=list(content),
+    Takes several bodies because a real one arrives split at citation
+    boundaries: quoted spans are their own blocks, and the sentence around them
+    is in the blocks either side.
+    """
+    return SimpleNamespace(
+        type="agent.message",
+        id=_next_id(),
+        content=[SimpleNamespace(type="text", text=body) for body in bodies],
     )
 
 
-class FakeModel:
-    """Stands in for `stream_message`: scripted replies, recorded requests.
-
-    Yields text chunks then the Message, the same shape the real one has. The
-    last reply repeats, so a test that wants the loop to run into a cap does not
-    have to script every turn.
-    """
-
-    def __init__(self, *replies: Message, stream_text: bool = False) -> None:
-        self.replies = list(replies)
-        self.stream_text = stream_text
-        self.calls: list[dict] = []
-
-    def __call__(self, **kwargs):
-        self.calls.append(kwargs)
-        message = self.replies.pop(0) if len(self.replies) > 1 else self.replies[0]
-
-        if self.stream_text:
-            for block in message.content:
-                if block.type == "text":
-                    # Two chunks, so a test can tell appending from replacing.
-                    yield block.text[:4]
-                    yield block.text[4:]
-
-        yield message
+def text_delta(body: str) -> SimpleNamespace:
+    """A live preview fragment. Stream-only, never replayed, has no id."""
+    return SimpleNamespace(
+        type="event_delta",
+        event_id="preview",
+        delta=SimpleNamespace(
+            type="content_delta",
+            index=0,
+            content=SimpleNamespace(type="text", text=body),
+        ),
+    )
 
 
-class FakeToolsMixin:
-    """Lets a test put a working tool in the registry for its own duration."""
+def custom_tool_use(name: str, event_id: str = "", **arguments) -> SimpleNamespace:
+    """The session asking us to run one of our tools."""
+    return SimpleNamespace(
+        type="agent.custom_tool_use",
+        id=event_id or _next_id(),
+        name=name,
+        input=arguments,
+    )
+
+
+def tool_use(name: str, event_id: str = "") -> SimpleNamespace:
+    """A built-in tool — Anthropic runs these, we only watch."""
+    return SimpleNamespace(type="agent.tool_use", id=event_id or _next_id(), name=name, input={})
+
+
+def tool_result(tool_use_id: str, is_error: bool = False) -> SimpleNamespace:
+    return SimpleNamespace(
+        type="agent.tool_result", id=_next_id(), tool_use_id=tool_use_id, is_error=is_error
+    )
+
+
+def idle(reason: str = "end_turn") -> SimpleNamespace:
+    return SimpleNamespace(
+        type="session.status_idle", id=_next_id(), stop_reason=SimpleNamespace(type=reason)
+    )
+
+
+def waiting(*event_ids: str) -> SimpleNamespace:
+    """Idle because the session wants a tool result from us. Not done."""
+    event = idle("requires_action")
+    event.stop_reason.event_ids = list(event_ids)
+    return event
+
+
+def terminated() -> SimpleNamespace:
+    return SimpleNamespace(type="session.status_terminated", id=_next_id())
+
+
+_ids = iter(range(1, 10_000))
+
+
+def _next_id() -> str:
+    return f"sevt_{next(_ids)}"
+
+
+class FakeSession:
+    """A scripted session: rounds of events, and every call we made to it."""
+
+    def __init__(self, *rounds: list, session_id: str = "sesn_test") -> None:
+        self.session_id = session_id
+        self.rounds = [list(round_) for round_ in rounds]
+        self.sent: list[list[dict]] = []
+        self.created: list[dict] = []
+        self.refreshed: list[str] = []
+        #: Rounds to fail the stream after, once each, so a reconnect can be
+        #: tested. A reopened stream resumes rather than replaying, like a real
+        #: one — what happened during the gap is only in the event list.
+        self.drop_after: set[int] = set()
+        self.gap: list = []
+        self.delivered = 0
+        self.opened = 0
+
+    # The three calls the driver makes, recorded and answered.
+
+    def create_session(self, tools, *, title=""):
+        self.created.append({"tools": list(tools), "title": title})
+        return self.session_id
+
+    def refresh_toolset(self, session_id, tools):
+        self.refreshed.append(session_id)
+
+    def send_events(self, session_id, events):
+        self.sent.append(list(events))
+
+    def events_since(self, session_id, since):
+        # The gap a dropped stream left behind. Populated by the reconnect test.
+        return list(self.gap)
+
+    def stream_events(self, session_id):
+        self.opened += 1
+        return _FakeStream(self)
+
+    @property
+    def dispatches(self) -> list[list[dict]]:
+        """Everything sent back after the opening user message."""
+        return self.sent[1:]
+
+    @property
+    def question(self) -> str:
+        return self.sent[0][0]["content"][0]["text"]
+
+
+class _FakeStream:
+    def __init__(self, session: FakeSession) -> None:
+        self.session = session
+
+    def __enter__(self) -> "_FakeStream":
+        return self
+
+    def __exit__(self, *exc) -> bool:
+        return False
+
+    def __iter__(self):
+        session = self.session
+        while session.delivered < len(session.rounds):
+            index = session.delivered
+            # The opening send is sent[0]; each round after the first needs its
+            # predecessor's tool results answered before the session would say
+            # anything more.
+            if index and len(session.sent) <= index:
+                raise AssertionError(
+                    f"the driver started round {index} without answering round {index - 1}"
+                )
+            yield from session.rounds[index]
+            session.delivered += 1
+            if index in session.drop_after:
+                session.drop_after.discard(index)
+                raise PlannerError("stream dropped", status_code=502)
+
+
+class PlannerHarness:
+    """Wires a scripted session into the driver, and a working tool into the registry."""
 
     def setUp(self) -> None:
         super().setUp()
@@ -92,7 +206,14 @@ class FakeToolsMixin:
         logging.disable(logging.ERROR)
         self.addCleanup(logging.disable, logging.NOTSET)
 
-    def register(self, name: str, *, mode: str, is_mock: bool = False) -> None:
+    def register(
+        self,
+        name: str,
+        *,
+        mode: str,
+        is_mock: bool = False,
+        requires_connector: str | None = None,
+    ) -> None:
         def run(**arguments):
             self.tool_calls.append((name, arguments))
             return self.behaviour[name](arguments)
@@ -103,22 +224,53 @@ class FakeToolsMixin:
             json_schema=EMPTY_SCHEMA,
             mode=mode,
             is_mock=is_mock,
+            requires_connector=requires_connector,
         )(run)
         # The registry has no unregister — in production it is populated once at
         # import time, so a test that adds to it has to take it back out.
         self.addCleanup(registry._TOOLS.pop, name, None)
 
+    def drive(self, session: FakeSession, query: str = "where can I eat?", **kwargs) -> list[dict]:
+        """Run the planner over a scripted session and collect its events."""
+        with mock.patch.multiple(
+            client,
+            create_session=session.create_session,
+            refresh_toolset=session.refresh_toolset,
+            send_events=session.send_events,
+            events_since=session.events_since,
+            stream_events=session.stream_events,
+        ):
+            return list(loop.run_planner(query, **kwargs))
+
+    def answer(self, session: FakeSession, **kwargs) -> dict:
+        return loop.drain(iter(self.drive(session, **kwargs)))
+
+
+class PlannerTestCase(PlannerHarness, TestCase):
+    """The harness for tests that touch no personal data."""
+
+
+class PlannerTransactionTestCase(PlannerHarness, TransactionTestCase):
+    """The harness for tests whose tools read the database.
+
+    `TestCase` wraps each test in a transaction that is rolled back at the end,
+    and a row written inside it is invisible to any *other* connection — which
+    is exactly what a tool dispatched into the pool gets. A connector written in
+    the test would look unconnected to the tool that checks for it, and the
+    assertion would fail for a reason that has nothing to do with the planner.
+
+    `TransactionTestCase` commits instead, at the cost of truncating tables
+    between tests. Slower, and only worth it for the handful of tests that need
+    a real cross-thread read.
+    """
+
 
 @override_settings(**PLANNER_DEFAULTS)
-class PlannerLoopTests(FakeToolsMixin, TestCase):
+class SessionDriverTests(PlannerTestCase):
     def setUp(self) -> None:
         super().setUp()
         self.register("fake_dining", mode="dining", is_mock=True)
         self.register("fake_events", mode="events")
-
-    def run_planner(self, model: FakeModel, query: str = "where can I eat?", **kwargs):
-        with mock.patch("apps.planner.loop.stream_message", model):
-            return list(run_planner(query, **kwargs))
 
     # --- The success path -----------------------------------------------------
 
@@ -138,11 +290,11 @@ class PlannerLoopTests(FakeToolsMixin, TestCase):
             ],
         }
 
-        model = FakeModel(
-            reply(tool_use("fake_dining", near="Wean"), stop_reason="tool_use"),
-            reply(text("Rohr Café is open until 5pm.")),
+        session = FakeSession(
+            [custom_tool_use("fake_dining", near="Wean"), waiting()],
+            [agent_message("Rohr Café is open until 5pm."), idle()],
         )
-        payload = drain(iter(self.run_planner(model)))
+        payload = self.answer(session)
 
         self.assertEqual(self.tool_calls, [("fake_dining", {"near": "Wean"})])
         self.assertEqual(payload["answer"], "Rohr Café is open until 5pm.")
@@ -156,18 +308,36 @@ class PlannerLoopTests(FakeToolsMixin, TestCase):
         self.assertTrue(citation["is_mock"], "is_mock must come from the tool, not its result")
         self.assertIn("placeholder data", payload["note"])
 
+    def test_the_result_we_send_back_carries_the_ids_we_issued(self) -> None:
+        self.behaviour["fake_dining"] = lambda args: {
+            "citations": [{"title": "Rohr Café hours", "url": "https://example.edu"}]
+        }
+
+        session = FakeSession(
+            [custom_tool_use("fake_dining", event_id="sevt_call"), waiting()],
+            [agent_message("Open until 5pm."), idle()],
+        )
+        self.answer(session)
+
+        result = session.dispatches[0][0]
+        self.assertEqual(result["type"], "user.custom_tool_result")
+        self.assertEqual(result["custom_tool_use_id"], "sevt_call")
+        self.assertFalse(result["is_error"])
+        # This is how the model learns the fact it just received is S1.
+        sent_back = json.loads(result["content"][0]["text"])
+        self.assertEqual(sent_back["citations"][0]["id"], "S1")
+
     def test_events_report_each_lane_starting_and_finishing(self) -> None:
         self.behaviour["fake_dining"] = lambda args: {"open_now": []}
 
-        model = FakeModel(
-            reply(tool_use("fake_dining"), stop_reason="tool_use"),
-            reply(text("Nothing is open.")),
+        session = FakeSession(
+            [custom_tool_use("fake_dining"), waiting()],
+            [agent_message("Nothing is open."), idle()],
         )
-        events = self.run_planner(model)
+        events = self.drive(session)
 
         self.assertEqual(
-            [event["type"] for event in events],
-            ["mode_start", "mode_end", "done"],
+            [event["type"] for event in events], ["mode_start", "mode_end", "done"]
         )
         self.assertEqual(events[0]["data"], {"mode": "dining", "tool": "fake_dining"})
         self.assertEqual(events[1]["data"]["ok"], True)
@@ -175,12 +345,17 @@ class PlannerLoopTests(FakeToolsMixin, TestCase):
     def test_answer_text_is_forwarded_as_it_arrives(self) -> None:
         self.behaviour["fake_dining"] = lambda args: {"open_now": []}
 
-        model = FakeModel(
-            reply(text("Looking…"), tool_use("fake_dining"), stop_reason="tool_use"),
-            reply(text("Rohr Café is open.")),
-            stream_text=True,
+        session = FakeSession(
+            [
+                text_delta("Look"),
+                text_delta("ing…"),
+                agent_message("Looking…"),
+                custom_tool_use("fake_dining"),
+                waiting(),
+            ],
+            [text_delta("Rohr Café "), text_delta("is open."), agent_message("Rohr Café is open."), idle()],
         )
-        events = self.run_planner(model)
+        events = self.drive(session)
 
         self.assertEqual(
             [event["type"] for event in events],
@@ -190,31 +365,165 @@ class PlannerLoopTests(FakeToolsMixin, TestCase):
         )
         streamed = "".join(e["data"]["text"] for e in events if e["type"] == "text_delta")
         self.assertEqual(streamed, "Looking…Rohr Café is open.")
+        # The preamble is narration, not answer: only the last turn's text is.
         self.assertEqual(events[-1]["data"]["answer"], "Rohr Café is open.")
 
-    def test_parallel_results_go_back_in_one_user_message(self) -> None:
+    def test_a_parallel_batch_is_answered_in_one_send(self) -> None:
         self.behaviour["fake_dining"] = lambda args: {"open_now": ["Rohr"]}
         self.behaviour["fake_events"] = lambda args: {"events": ["AI Club"]}
 
-        model = FakeModel(
-            reply(
-                tool_use("fake_dining", block_id="tu_a"),
-                tool_use("fake_events", block_id="tu_b"),
-                stop_reason="tool_use",
-            ),
-            reply(text("Rohr, then AI Club.")),
+        session = FakeSession(
+            [
+                custom_tool_use("fake_dining", event_id="sevt_a"),
+                custom_tool_use("fake_events", event_id="sevt_b"),
+                waiting(),
+            ],
+            [agent_message("Rohr, then AI Club."), idle()],
         )
-        payload = drain(iter(self.run_planner(model)))
+        payload = self.answer(session)
 
-        # Splitting these across two user messages trains the model out of
-        # making parallel calls at all.
-        last_sent = model.calls[1]["messages"][-1]
-        self.assertEqual(last_sent["role"], "user")
-        self.assertEqual([block["type"] for block in last_sent["content"]], ["tool_result"] * 2)
+        self.assertEqual(len(session.dispatches), 1, "one idle, one send")
         self.assertEqual(
-            [block["tool_use_id"] for block in last_sent["content"]], ["tu_a", "tu_b"]
+            [result["custom_tool_use_id"] for result in session.dispatches[0]],
+            ["sevt_a", "sevt_b"],
         )
         self.assertEqual(payload["modes_used"], ["dining", "events"])
+
+    def test_a_batch_runs_in_parallel_rather_than_one_after_another(self) -> None:
+        """The platform batches the model's requests; we still run the tools.
+
+        Executing them in sequence would cost the sum of a batch rather than its
+        slowest member — the whole reason a four-hop answer is worth batching.
+        """
+        started = threading.Barrier(2, timeout=5)
+
+        def blocks_until_both_have_started(args):
+            # Deadlocks and trips the timeout if the two calls are serialised,
+            # so this fails loudly rather than merely running slowly.
+            started.wait()
+            return {"ok": True}
+
+        self.behaviour["fake_dining"] = blocks_until_both_have_started
+        self.behaviour["fake_events"] = blocks_until_both_have_started
+
+        session = FakeSession(
+            [custom_tool_use("fake_dining"), custom_tool_use("fake_events"), waiting()],
+            [agent_message("Both."), idle()],
+        )
+        payload = self.answer(session)
+
+        self.assertEqual(payload["modes_used"], ["dining", "events"])
+
+    def test_citation_ids_follow_call_order_not_completion_order(self) -> None:
+        """`S1` has to mean the same source every run.
+
+        Tools finish in whatever order the network allows, so harvesting as they
+        complete would shuffle the ids between runs — and a marker is only
+        useful if it is stable.
+        """
+        finish_dining_last = threading.Event()
+
+        def slow(args):
+            finish_dining_last.wait(timeout=5)
+            return {"citations": [{"title": "Dining, asked for first"}]}
+
+        def quick(args):
+            finish_dining_last.set()
+            return {"citations": [{"title": "Events, asked for second"}]}
+
+        self.behaviour["fake_dining"] = slow
+        self.behaviour["fake_events"] = quick
+
+        session = FakeSession(
+            [custom_tool_use("fake_dining"), custom_tool_use("fake_events"), waiting()],
+            [agent_message("Both."), idle()],
+        )
+        citations = self.answer(session)["citations"]
+
+        self.assertEqual(
+            [(citation["id"], citation["title"]) for citation in citations],
+            [("S1", "Dining, asked for first"), ("S2", "Events, asked for second")],
+        )
+
+    def test_an_idle_with_nothing_left_to_dispatch_is_not_the_end_of_the_turn(self) -> None:
+        """Regression: this truncated every multi-hop answer to nothing.
+
+        A session idles again while it works through results we already sent.
+        Reading that as "the turn is over" ends the answer right after the last
+        lookup — tools run, citations collect, and the reader gets the
+        no-answer fallback.
+        """
+        self.behaviour["fake_dining"] = lambda args: {"open_now": ["Rohr"]}
+
+        session = FakeSession(
+            [custom_tool_use("fake_dining", event_id="sevt_call"), waiting("sevt_call")],
+            # Idle again, naming the call we have already answered.
+            [waiting("sevt_call"), agent_message("Rohr Café is open."), idle()],
+        )
+        payload = self.answer(session)
+
+        self.assertEqual(payload["answer"], "Rohr Café is open.")
+        self.assertEqual(len(session.dispatches), 1, "the call is answered once, not twice")
+
+    def test_an_idle_waiting_on_something_we_cannot_answer_stops(self) -> None:
+        # A permission prompt, say. We set no policy so it should not happen, but
+        # stopping beats hanging until the app's timeout gives up.
+        session = FakeSession([agent_message("Half an answer."), waiting("sevt_unknown")])
+        self.assertEqual(self.answer(session)["answer"], "Half an answer.")
+
+    def test_a_built_in_web_tool_earns_the_verify_chip(self) -> None:
+        session = FakeSession(
+            [
+                tool_use("web_search", event_id="sevt_web"),
+                tool_result("sevt_web"),
+                agent_message("The office moved to Warner Hall."),
+                idle(),
+            ]
+        )
+        events = self.drive(session)
+        payload = events[-1]["data"]
+
+        # Anthropic runs these, so `run_tool` never sees them — the mode has to
+        # come from the events instead.
+        self.assertEqual(payload["modes_used"], ["web_verify"])
+        self.assertEqual(events[0]["data"], {"mode": "web_verify", "tool": "web_search"})
+        self.assertEqual(events[1]["data"], {"mode": "web_verify", "tool": "web_search", "ok": True})
+
+    def test_a_cited_answer_is_one_piece_of_prose_not_one_paragraph_per_block(self) -> None:
+        """Regression: this shredded every web-verified answer on screen.
+
+        The model splits its text at citation boundaries, so a quote is its own
+        block and the sentence around it is in the blocks either side — with an
+        empty or whitespace block wherever the split lands. Joining those with
+        blank lines turned each quoted span into a free-standing paragraph and
+        left stray empty ones between them.
+        """
+        session = FakeSession(
+            [
+                agent_message(
+                    "Startup Week is a month out, not tomorrow. ",
+                    "Join 2000+ founders, investors and researchers.",
+                    " ",
+                    "It runs September 14–18.",
+                    "",
+                    " So there is nothing on tomorrow.",
+                ),
+                idle(),
+            ]
+        )
+        answer = self.answer(session)["answer"]
+
+        self.assertEqual(
+            answer,
+            "Startup Week is a month out, not tomorrow. "
+            "Join 2000+ founders, investors and researchers. "
+            "It runs September 14–18. So there is nothing on tomorrow.",
+        )
+        self.assertNotIn("\n", answer)
+
+    def test_a_terminated_session_still_produces_the_answer(self) -> None:
+        session = FakeSession([agent_message("Wean is central."), terminated()])
+        self.assertEqual(self.answer(session)["answer"], "Wean is central.")
 
     # --- Degrading ------------------------------------------------------------
 
@@ -224,15 +533,17 @@ class PlannerLoopTests(FakeToolsMixin, TestCase):
 
         self.behaviour["fake_dining"] = boom
 
-        model = FakeModel(
-            reply(tool_use("fake_dining"), stop_reason="tool_use"),
-            reply(text("I could not reach dining data, but Wean is central.")),
+        session = FakeSession(
+            [custom_tool_use("fake_dining"), waiting()],
+            [agent_message("I could not reach dining data, but Wean is central."), idle()],
         )
-        payload = drain(iter(self.run_planner(model)))
+        payload = self.answer(session)
 
-        result = model.calls[1]["messages"][-1]["content"][0]
+        result = session.dispatches[0][0]
+        # A failure is a result, never a dropped block: an unanswered call leaves
+        # the session idle for ever.
         self.assertTrue(result["is_error"])
-        self.assertIn("503", result["content"])
+        self.assertIn("503", result["content"][0]["text"])
 
         # A lane that failed contributed nothing, so it claims no chip.
         self.assertEqual(payload["modes_used"], [])
@@ -245,125 +556,45 @@ class PlannerLoopTests(FakeToolsMixin, TestCase):
 
         self.behaviour["fake_dining"] = boom
 
-        model = FakeModel(
-            reply(tool_use("fake_dining"), stop_reason="tool_use"),
-            reply(text("Here is what I have.")),
+        session = FakeSession(
+            [custom_tool_use("fake_dining"), waiting()],
+            [agent_message("Here is what I have."), idle()],
         )
-        payload = drain(iter(self.run_planner(model)))
+        payload = self.answer(session)
 
         self.assertIn("ValueError: bad fixture", payload["note"])
         self.assertEqual(payload["answer"], "Here is what I have.")
 
     def test_an_invented_tool_name_is_an_error_result(self) -> None:
-        model = FakeModel(
-            reply(tool_use("no_such_tool"), stop_reason="tool_use"),
-            reply(text("Sorry, I cannot do that.")),
+        session = FakeSession(
+            [custom_tool_use("no_such_tool"), waiting()],
+            [agent_message("Sorry, I cannot do that."), idle()],
         )
-        payload = drain(iter(self.run_planner(model)))
+        payload = self.answer(session)
 
-        result = model.calls[1]["messages"][-1]["content"][0]
-        self.assertTrue(result["is_error"])
+        self.assertTrue(session.dispatches[0][0]["is_error"])
         self.assertEqual(payload["modes_used"], [])
 
     def test_an_uncited_answer_says_so(self) -> None:
-        payload = drain(iter(self.run_planner(FakeModel(reply(text("Probably Wean."))))))
-        self.assertIn("No campus source", payload["note"])
+        session = FakeSession([agent_message("Probably Wean."), idle()])
+        self.assertIn("No campus source", self.answer(session)["note"])
 
-    # --- The brakes -----------------------------------------------------------
+    def test_the_budget_is_the_runaway_bound_and_it_says_so(self) -> None:
+        session = FakeSession([agent_message("Partial, sorry."), idle("budget_reached")])
+        payload = self.answer(session)
 
-    @override_settings(PLANNER_DEADLINE_SECONDS=0)
-    def test_the_deadline_forces_a_text_only_turn(self) -> None:
-        self.behaviour["fake_dining"] = lambda args: {"open_now": []}
+        self.assertIn("lookup budget", payload["note"])
+        self.assertEqual(payload["answer"], "Partial, sorry.")
 
-        model = FakeModel(reply(text("Going on what I have: Wean is central.")))
-        payload = drain(iter(self.run_planner(model)))
-
-        self.assertEqual(len(model.calls), 1)
-        self.assertEqual(model.calls[0]["tool_choice"], {"type": "none"})
-        self.assertIn("time ran out", payload["note"])
-        self.assertIn("Wean is central", payload["answer"])
-
-    def test_the_iteration_cap_ends_in_prose(self) -> None:
-        self.behaviour["fake_dining"] = lambda args: {"open_now": []}
-
-        model = FakeModel(reply(tool_use("fake_dining"), stop_reason="tool_use"))
-        payload = drain(iter(self.run_planner(model)))
-
-        # Four tool rounds, then one forced call that cannot use tools.
-        self.assertEqual(len(model.calls), 5)
-        self.assertEqual(model.calls[-1]["tool_choice"], {"type": "none"})
-        self.assertNotIn("tool_choice", model.calls[0])
-        self.assertIn("more lookups than expected", payload["note"])
-
-    def test_pause_turn_is_resumed(self) -> None:
-        model = FakeModel(
-            reply(text("Searching…"), stop_reason="pause_turn"),
-            reply(text("Found it.")),
+    def test_a_session_error_is_not_by_itself_the_end(self) -> None:
+        error = SimpleNamespace(
+            type="session.error",
+            id=_next_id(),
+            error=SimpleNamespace(type="model_overloaded", message="overloaded"),
         )
-        payload = drain(iter(self.run_planner(model)))
+        session = FakeSession([error, agent_message("Got there in the end."), idle()])
 
-        self.assertEqual(len(model.calls), 2)
-        self.assertEqual(model.calls[1]["messages"][-1]["role"], "assistant")
-        self.assertEqual(payload["answer"], "Found it.")
-
-    def test_endless_pause_turns_are_capped(self) -> None:
-        model = FakeModel(reply(text("Still searching…"), stop_reason="pause_turn"))
-        payload = drain(iter(self.run_planner(model)))
-
-        self.assertEqual(len(model.calls), 4)
-        self.assertIn("cut off", payload["note"])
-
-    # --- The request we send --------------------------------------------------
-
-    def test_forbidden_sampling_parameters_are_never_sent(self) -> None:
-        model = FakeModel(reply(text("Hi.")))
-        self.run_planner(model)
-
-        sent = model.calls[0]
-        for forbidden in ("temperature", "top_p", "top_k", "thinking"):
-            self.assertNotIn(forbidden, sent, f"{forbidden} is a 400 on this model")
-        self.assertEqual(sent["output_config"], {"effort": "medium"})
-
-    def test_the_system_prompt_carries_the_cache_breakpoint(self) -> None:
-        model = FakeModel(reply(text("Hi.")))
-        self.run_planner(model)
-
-        system = model.calls[0]["system"]
-        self.assertEqual(system[-1]["cache_control"], {"type": "ephemeral"})
-        # Caching is a prefix match, so a timestamp here would invalidate it on
-        # every request. It belongs in the user turn.
-        self.assertNotIn("2026", system[-1]["text"])
-        self.assertIn("Right now it is", model.calls[0]["messages"][-1]["content"])
-
-    def test_history_is_reshaped_into_what_the_api_accepts(self) -> None:
-        model = FakeModel(reply(text("Friday, then.")))
-        history = [
-            # Dropped: an assistant turn cannot come first.
-            {"role": "assistant", "content": "Hello!"},
-            {"role": "user", "content": "9-unit ML electives?"},
-            {"role": "assistant", "content": "Try 10-601."},
-            # Merged into the turn above: roles have to alternate.
-            {"role": "assistant", "content": "Or 10-701."},
-            # Dropped: an empty text block is a 400.
-            {"role": "user", "content": "   "},
-        ]
-        self.run_planner(model, history=history)
-
-        sent = model.calls[0]["messages"]
-        self.assertEqual([turn["role"] for turn in sent], ["user", "assistant", "user"])
-        self.assertEqual(sent[1]["content"], "Try 10-601.\n\nOr 10-701.")
-
-    def test_no_tools_means_no_tool_choice(self) -> None:
-        # tool_choice without tools is a 400, and a session can legitimately have
-        # no tools at all.
-        for name in ("fake_dining", "fake_events"):
-            registry._TOOLS.pop(name, None)
-
-        model = FakeModel(reply(text("Hi.")))
-        self.run_planner(model)
-
-        self.assertNotIn("tools", model.calls[0])
-        self.assertNotIn("tool_choice", model.calls[0])
+        self.assertEqual(self.answer(session)["answer"], "Got there in the end.")
 
     # --- Markers --------------------------------------------------------------
 
@@ -371,11 +602,11 @@ class PlannerLoopTests(FakeToolsMixin, TestCase):
         self.behaviour["fake_dining"] = lambda args: {
             "citations": [{"title": "Rohr Café hours", "url": "https://example.edu"}]
         }
-        model = FakeModel(
-            reply(tool_use("fake_dining"), stop_reason="tool_use"),
-            reply(text("Rohr closes at 5pm [S1].")),
+        session = FakeSession(
+            [custom_tool_use("fake_dining"), waiting()],
+            [agent_message("Rohr closes at 5pm [S1]."), idle()],
         )
-        payload = drain(iter(self.run_planner(model)))
+        payload = self.answer(session)
 
         self.assertEqual(payload["answer"], "Rohr closes at 5pm.")
         self.assertEqual(payload["citations"][0]["id"], "S1")
@@ -385,13 +616,224 @@ class PlannerLoopTests(FakeToolsMixin, TestCase):
         self.behaviour["fake_dining"] = lambda args: {
             "citations": [{"title": "Rohr Café hours", "url": "https://example.edu"}]
         }
-        model = FakeModel(
-            reply(tool_use("fake_dining"), stop_reason="tool_use"),
-            reply(text("Rohr closes at 5pm [S1], and Hunt at 2am [S7].")),
+        session = FakeSession(
+            [custom_tool_use("fake_dining"), waiting()],
+            [agent_message("Rohr closes at 5pm [S1], and Hunt at 2am [S7]."), idle()],
         )
-        payload = drain(iter(self.run_planner(model)))
+        payload = self.answer(session)
 
+        # The agent is provisioned with the marker rules whatever the setting
+        # says, so this branch is the runtime half — and the only reason turning
+        # citations on is an env flip rather than a re-provision.
         self.assertEqual(payload["answer"], "Rohr closes at 5pm [S1], and Hunt at 2am.")
+
+
+@override_settings(**PLANNER_DEFAULTS)
+class SessionLifecycleTests(PlannerTestCase):
+    """Which session a question runs in, and what that session is told."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.register("fake_dining", mode="dining")
+        self.behaviour["fake_dining"] = lambda args: {"open_now": []}
+
+    def test_the_stream_is_opened_before_anything_is_sent(self) -> None:
+        session = FakeSession([agent_message("Hi."), idle()])
+
+        opened_at_send: list[int] = []
+        real_send = session.send_events
+        session.send_events = lambda sid, events: (
+            opened_at_send.append(session.opened),
+            real_send(sid, events),
+        )[1]
+
+        self.drive(session)
+
+        # The stream carries only what is emitted after it opens, and there is no
+        # replay. Sending first races it and can lose the whole answer.
+        self.assertEqual(opened_at_send, [1])
+
+    def test_a_new_thread_gets_a_session_and_keeps_the_id(self) -> None:
+        session = FakeSession([agent_message("Hi."), idle()], session_id="sesn_new")
+        self.drive(session, session_id="anon-1", thread_id="thread-1")
+
+        thread = Thread.objects.get(session_id="anon-1", client_id="thread-1")
+        self.assertEqual(thread.cma_session_id, "sesn_new")
+        self.assertEqual(len(session.created), 1)
+
+    def test_a_follow_up_reuses_the_thread_session_and_does_not_repeat_history(self) -> None:
+        Thread.objects.create(
+            session_id="anon-1", client_id="thread-1", cma_session_id="sesn_existing"
+        )
+        session = FakeSession([agent_message("Still 5pm."), idle()])
+        self.drive(
+            session,
+            query="is that still right?",
+            session_id="anon-1",
+            thread_id="thread-1",
+            history=[{"role": "user", "content": "when does Rohr close?"}],
+        )
+
+        self.assertEqual(session.created, [], "a thread with a session must not open another")
+        self.assertEqual(session.refreshed, ["sesn_existing"])
+        # The session holds the conversation itself; replaying our copy into it
+        # would say everything twice.
+        self.assertNotIn("when does Rohr close?", session.question)
+
+    def test_a_new_session_is_told_the_history_the_app_already_has(self) -> None:
+        session = FakeSession([agent_message("Friday, then."), idle()])
+        self.drive(
+            session,
+            query="what about Friday?",
+            session_id="anon-1",
+            thread_id="thread-1",
+            history=[
+                {"role": "user", "content": "9-unit ML electives?"},
+                {"role": "assistant", "content": "Try 10-601."},
+                # Dropped: an empty turn carries nothing.
+                {"role": "user", "content": "   "},
+            ],
+        )
+
+        question = session.question
+        self.assertIn("9-unit ML electives?", question)
+        self.assertIn("Try 10-601.", question)
+        self.assertIn("what about Friday?", question)
+
+    def test_a_stale_session_id_starts_a_new_one_rather_than_failing(self) -> None:
+        Thread.objects.create(
+            session_id="anon-1", client_id="thread-1", cma_session_id="sesn_deleted"
+        )
+        session = FakeSession([agent_message("Fresh start."), idle()], session_id="sesn_fresh")
+
+        opens = iter([client.SessionGone("404"), None])
+
+        def stream_events(session_id):
+            problem = next(opens, None)
+            if problem is not None:
+                raise problem
+            return session.stream_events(session_id)
+
+        with mock.patch.multiple(
+            client,
+            create_session=session.create_session,
+            refresh_toolset=session.refresh_toolset,
+            send_events=session.send_events,
+            events_since=session.events_since,
+            stream_events=stream_events,
+        ):
+            events = list(
+                loop.run_planner(
+                    "hello", session_id="anon-1", thread_id="thread-1"
+                )
+            )
+
+        self.assertEqual(events[-1]["data"]["answer"], "Fresh start.")
+        thread = Thread.objects.get(session_id="anon-1", client_id="thread-1")
+        self.assertEqual(thread.cma_session_id, "sesn_fresh")
+
+    def test_no_thread_means_a_session_per_question(self) -> None:
+        session = FakeSession([agent_message("Hi."), idle()])
+        self.drive(session, session_id="anon-1")
+
+        self.assertEqual(len(session.created), 1)
+        self.assertFalse(Thread.objects.exists())
+
+    def test_a_dropped_stream_recovers_the_tool_call_it_missed(self) -> None:
+        preamble = agent_message("Let me check.")
+        call = custom_tool_use("fake_dining", event_id="sevt_call")
+        wait = waiting()
+
+        session = FakeSession([preamble], [agent_message("Rohr Café."), idle()])
+        # The connection dies just as the session asks for a tool. The stream has
+        # no replay, so without the event list we would never learn about the
+        # call — and the session would wait for a result for ever.
+        session.drop_after = {0}
+        session.gap = [preamble, call, wait]
+
+        payload = self.answer(session)
+
+        self.assertEqual(session.opened, 2, "the driver reconnected")
+        # `preamble` is in the gap too, and it was already handled — deduping by
+        # event id is what stops it running the lane twice.
+        self.assertEqual(self.tool_calls, [("fake_dining", {})])
+        self.assertEqual(len(session.dispatches), 1)
+        self.assertEqual(payload["answer"], "Rohr Café.")
+
+    def test_the_session_is_opened_with_this_request_s_toolset(self) -> None:
+        session = FakeSession([agent_message("Hi."), idle()])
+        self.drive(session)
+
+        names = [tool.name for tool in session.created[0]["tools"]]
+        self.assertIn("fake_dining", names)
+
+        reference = client.agent_reference(session.created[0]["tools"])
+        self.assertEqual(reference["type"], "agent_with_overrides")
+        self.assertEqual(reference["id"], "agent_test")
+        # Overrides replace in full, so the prebuilt toolset has to be listed
+        # again or the web lane silently disappears.
+        self.assertEqual(reference["tools"][0], client.AGENT_TOOLSET)
+        self.assertEqual(
+            [tool["name"] for tool in reference["tools"][1:]], ["fake_dining"]
+        )
+        self.assertTrue(all(tool["type"] == "custom" for tool in reference["tools"][1:]))
+
+    @override_settings(PLANNER_AGENT_ID="")
+    def test_an_unprovisioned_planner_fails_loudly_instead_of_provisioning(self) -> None:
+        from .errors import PlannerError
+
+        with self.assertRaises(PlannerError) as caught:
+            client.agent_reference([])
+
+        self.assertIn("provision_planner", str(caught.exception))
+
+
+@override_settings(**PLANNER_DEFAULTS)
+class PersonalToolGatingTests(PlannerTransactionTestCase):
+    """A personal tool is offered — and runnable — only where it was connected."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.register("fake_canvas", mode="personal", requires_connector="canvas")
+        self.behaviour["fake_canvas"] = lambda args: {"assignments": ["15-213 Lab 4"]}
+
+    def test_a_session_without_the_connector_is_never_offered_the_tool(self) -> None:
+        session = FakeSession([agent_message("I cannot see your Canvas."), idle()])
+        self.drive(session, session_id="anon-1")
+
+        names = [tool.name for tool in session.created[0]["tools"]]
+        self.assertNotIn("fake_canvas", names)
+
+    def test_naming_it_anyway_is_an_error_result_not_someone_else_s_data(self) -> None:
+        session = FakeSession(
+            [custom_tool_use("fake_canvas"), waiting()],
+            [agent_message("I could not check Canvas."), idle()],
+        )
+        payload = self.answer(session, session_id="anon-1")
+
+        # `run_tool` re-checks the connector on every dispatch, so a stale or
+        # invented offer still cannot reach anyone's data.
+        self.assertEqual(self.tool_calls, [])
+        self.assertTrue(session.dispatches[0][0]["is_error"])
+        self.assertEqual(payload["modes_used"], [])
+
+    def test_a_connected_session_gets_the_tool_and_it_runs(self) -> None:
+        # No token: what gates the tool is the connection existing, and storing
+        # one would drag Fernet into a test about the registry.
+        UserConnection.objects.create(session_id="anon-1", provider="canvas")
+
+        session = FakeSession(
+            [custom_tool_use("fake_canvas"), waiting()],
+            [agent_message("Lab 4 is due Friday."), idle()],
+        )
+        payload = self.answer(session, session_id="anon-1")
+
+        names = [tool.name for tool in session.created[0]["tools"]]
+        self.assertIn("fake_canvas", names)
+        self.assertEqual(payload["modes_used"], ["personal"])
+        # The session reaches the tool from the request, never from the model:
+        # it passes arguments, not whose data to read.
+        self.assertEqual(self.tool_calls, [("fake_canvas", {"session_id": "anon-1"})])
 
 
 class MarkerValidationTests(TestCase):
@@ -404,10 +846,28 @@ class MarkerValidationTests(TestCase):
         cleaned, _ = validate_markers("Open until 5pm [S1][S2].", set())
         self.assertEqual(cleaned, "Open until 5pm.")
 
+    def test_a_marker_carrying_several_ids_is_handled(self) -> None:
+        """Regression: `[S25, S30-4]` reached the screen as a dead marker.
+
+        Asked to cite two sources for one claim, the model writes what a person
+        would rather than the `[S1]` the prompt asks for.
+        """
+        cleaned, _ = validate_markers("Startup Week runs in September [S25, S30-4].", set())
+        self.assertEqual(cleaned, "Startup Week runs in September.")
+
+        kept, uncited = validate_markers("Runs in September [S25, S30-4].", {"S25", "S9"})
+        self.assertEqual(kept, "Runs in September [S25].")
+        self.assertEqual(uncited, {"S9"})
+
+    def test_bracketed_prose_is_left_alone(self) -> None:
+        # The pattern is wide; it must not be wide enough to eat real text.
+        for text in ("See [Section 3] for detail.", "Check [See below].", "Costs [S] nothing."):
+            self.assertEqual(validate_markers(text, set())[0], text)
+
 
 @override_settings(**PLANNER_DEFAULTS)
-class AskEndpointTests(FakeToolsMixin, TestCase):
-    """Both endpoints, over one scripted model, returning the same payload."""
+class AskEndpointTests(PlannerTestCase):
+    """Both endpoints, over one scripted session, returning the same payload."""
 
     def setUp(self) -> None:
         super().setUp()
@@ -418,23 +878,33 @@ class AskEndpointTests(FakeToolsMixin, TestCase):
         }
         self.body = {"query": "what is open near Wean?", "session_id": "", "history": []}
 
-    def script(self) -> FakeModel:
-        return FakeModel(
-            reply(tool_use("fake_dining"), stop_reason="tool_use"),
-            reply(text("Rohr Café.")),
+    def script(self) -> FakeSession:
+        return FakeSession(
+            [custom_tool_use("fake_dining"), waiting()],
+            [agent_message("Rohr Café."), idle()],
         )
 
-    def post(self, path: str, model: FakeModel):
-        with mock.patch("apps.planner.loop.stream_message", model):
+    def patched(self, session: FakeSession):
+        return mock.patch.multiple(
+            client,
+            create_session=session.create_session,
+            refresh_toolset=session.refresh_toolset,
+            send_events=session.send_events,
+            events_since=session.events_since,
+            stream_events=session.stream_events,
+        )
+
+    def post(self, path: str, session: FakeSession):
+        with self.patched(session):
             return self.client.post(path, self.body, content_type="application/json")
 
-    def stream(self, model: FakeModel) -> tuple:
+    def stream(self, session: FakeSession) -> tuple:
         """POST to the streaming endpoint and read it to the end.
 
         The body has to be consumed inside the patch: a StreamingHttpResponse is
         lazy, so the planner does not run until something iterates the response.
         """
-        with mock.patch("apps.planner.loop.stream_message", model):
+        with self.patched(session):
             response = self.client.post(
                 "/api/ask/stream/", self.body, content_type="application/json"
             )
@@ -464,6 +934,16 @@ class AskEndpointTests(FakeToolsMixin, TestCase):
         _, frames = self.stream(self.script())
 
         self.assertEqual(plain, frames[-1][1])
+
+    def test_a_thread_id_is_optional(self) -> None:
+        # The app may or may not send one; without it the answer is the same,
+        # it just does not continue a conversation.
+        self.body["thread_id"] = "thread-9"
+        session = self.script()
+        response = self.post("/api/ask/", session)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(Thread.objects.exists(), "no session_id means no thread to key on")
 
     def test_a_bad_request_is_still_a_validation_error(self) -> None:
         self.body = {"query": ""}

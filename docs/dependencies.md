@@ -40,26 +40,30 @@ tasklist §1 together.
 
 | Package | Why it's here | Alternatives considered |
 |---|---|---|
-| `anthropic` | The planner, **and the web-search lane**. Claude's tool-use API drives the multi-hop loop (Courses → Maps → Dining → Events) that is the demo's whole point. It also ships **server-side `web_search` / `web_fetch`**, which is why there is no search provider on this list. Default model `claude-sonnet-5` — the planner mostly does routing and tool selection rather than deep reasoning, and Sonnet is roughly half the cost of Opus per token. Set `PLANNER_MODEL=claude-opus-5` if multi-hop answers come out weak; nothing else changes. **We use the SDK, not its agent loop** — see below. | OpenAI function calling — no reason to prefer it, and we would still need Anthropic-quality tool use. |
+| `anthropic` | The planner, **and the web-search lane**. Claude's tool-use API drives the multi-hop loop (Courses → Maps → Dining → Events) that is the demo's whole point. It also ships **server-side `web_search` / `web_fetch`**, which is why there is no search provider on this list. Default model `claude-sonnet-5` — the planner mostly does routing and tool selection rather than deep reasoning, and Sonnet is roughly half the cost of Opus per token. Set `PLANNER_MODEL=claude-opus-5` if multi-hop answers come out weak; nothing else changes. **The loop runs on Managed Agents** — same package, `client.beta.agents` / `client.beta.sessions`; see below. | OpenAI function calling — no reason to prefer it, and we would still need Anthropic-quality tool use. |
 | `openai` | **Embeddings only** (`text-embedding-3-small`), for the vector half of hybrid retrieval. Anthropic has no embeddings endpoint, so a second provider is unavoidable — this is the one narrow job it does. | A local `sentence-transformers` model: no API key and no per-call cost, but it adds ~2GB to the image and slows the container start enough to hurt a five-minute setup. Revisit if API budget becomes the binding constraint. |
 | `pgvector` | Vector column and index types for Postgres. Keeping vectors in the Postgres we already run means one database to start, back up and ship a demo fixture from — no second service in `docker-compose.yml`. The Postgres **extension** still has to be enabled separately (tasklist B0); this package is only the Django/psycopg integration. | Chroma, Qdrant, Pinecone — all add a moving part to a setup that has to work first try on a teammate's laptop. |
 | `cryptography` | Fernet encryption for personal access tokens at rest (PRD §9). Also an indirect dependency of the SDKs above, but pinned here because [`apps/personal/crypto.py`](./backend/apps/personal/crypto.py) imports it directly — a direct import deserves a direct pin. | Rolling our own with `hashlib` — no. Fernet is authenticated, so a tampered ciphertext fails loudly instead of decrypting to garbage. |
 | `httpx` | HTTP client for the crawler and the live-tool clients. Gives us timeouts, connection reuse and a shared retry policy without hand-rolling them; also the client both SDKs above already use, so it is in the image regardless. | `requests` — no timeout by default, which is exactly the failure mode that hangs a demo. |
 
-### Not used: the SDK's `tool_runner` — we write the loop ourselves
+### The loop: Managed Agents, not `tool_runner` and not our own
 
-`client.beta.messages.tool_runner()` drives an agentic loop for you, and an
-earlier version of this file said B4's loop was therefore "a parameter, not code
-we write". **That was wrong, and the reason is worth keeping.** The Python runner
-does not resume a `pause_turn` — a long web-search turn ends early and the runner
-hands the paused turn back as if it had finished, with no error. The demo would
-silently truncate. Resuming it is four lines in a loop we own.
+**No new dependency** — Managed Agents is the same `anthropic` package under
+`client.beta.agents` and `client.beta.sessions`. Worth a row here anyway, because
+it changes what the package *is* to us: an SDK we call becomes a platform we run
+on, and two of the alternatives below were previously chosen and are now not.
 
-Three smaller reasons behind that one: the runner wants `@beta_tool`-decorated
-functions, while our registry is plain functions plus hand-written schemas; it
-keeps its own message list, and we need the transcript to harvest citations and
-to build a partial answer when the deadline trips; and it is beta while the
-manual loop is not. See [b4-planner.md](./b4-planner.md).
+| Option | Why not |
+|---|---|
+| `client.beta.messages.tool_runner()` | **Does not resume a `pause_turn`.** A long web-search turn ends early and the runner hands the paused turn back as if finished, with no error — the demo silently truncates. Also wants `@beta_tool`-decorated functions when our registry is plain functions plus hand-written schemas, and keeps a message list it won't show us. |
+| Our own loop | What we built, and it works. Superseded because the platform now gives us durable sessions, cancel and compaction for free, and takes `pause_turn` off our hands entirely — the very thing that ruled out the runner. |
+| `claude-agent-sdk` | A **different package**: Claude Code as a library. Built-in Read/Write/Edit/Bash over a filesystem we don't have, custom tools only through MCP, and a shell running in the process that ingests crawled pages. Wrong product for a routing planner. |
+
+An earlier version of this file said B4's loop was "a parameter, not code we
+write", then corrected itself to say we must write it. Both halves were right
+about `tool_runner` and wrong about where the loop should live. The trade we are
+actually making is recorded in [b4-planner.md](./b4-planner.md): a network round
+trip per tool batch, and a deadline path that has to be rebuilt.
 
 ### Removed: `tavily-python` — Claude does web search server-side
 
@@ -121,9 +125,43 @@ source. See [frontend/app/package.json](./frontend/app/package.json).
 | `react-native-web` | Translates those components into real HTML so one codebase serves the browser too. This is what makes "one frontend, three platforms" true rather than aspirational. |
 | `react-native-safe-area-context` | Keeps content clear of notches and home indicators. |
 | `react-native-screens` | Native screen primitives that make navigation transitions smooth. |
+| `react-native-reanimated` | Every microinteraction in the app. `@assistant-ui/react-native` ships **no** animation code at all — the web package gets its motion from Tailwind transitions and Radix, none of which crosses over — so the sidebar, the hero-to-thread handoff and the typing-indicator crossfade are all ours. Chosen over RN's built-in `Animated` because react-native-web has no native driver (see `USE_NATIVE_DRIVER` in `components/TypingIndicator.tsx`), so `Animated` runs on the JS thread there, and because the sidebar animates a layout width, which stutters off the UI thread. Was already present transitively via `expo-router`; this makes it direct. Needs no `babel.config.js` — `babel-preset-expo` wires `react-native-worklets/plugin` itself. Tokens and the reduced-motion gate live in [`lib/motion.ts`](./frontend/app/lib/motion.ts). |
 | `@assistant-ui/react-native` | The chat/thread UI the ask screen is built on — message list, composer, streaming-ready thread state. Saves building a chat surface from scratch during a hackathon. |
 | `@react-native-async-storage/async-storage` | Key-value storage that works on **all three** platforms. Holds the anonymous session id ([`lib/session.ts`](./frontend/app/lib/session.ts)) and the source filter. Replaced `localStorage`, which is web-only — on a phone `window` does not exist, so the guards around it meant native builds silently persisted nothing and lost every conversation on restart. |
 | `typescript`, `@types/react` | Types. The API contract in [`lib/types.ts`](./frontend/app/lib/types.ts) is only load-bearing because TypeScript enforces it — keep `npx tsc --noEmit` clean. |
+
+### Markdown rendering: evaluated and hand-rolled
+
+**No package.** `lib/markdown.ts` (~180 lines) parses the subset the planner
+actually writes, and `components/AnswerText.tsx` renders it.
+
+This needed deciding because the model emits Markdown and **nothing in our stack
+renders it** — assistant-ui's markdown support is a separate package,
+`@assistant-ui/react-markdown`, built on `react-markdown` and Radix, so it is
+React DOM only. `@assistant-ui/react-native` exports no markdown renderer at all;
+it hands you `part.text` and expects you to render it. Until this landed, `**bold**`
+reached the screen with the asterisks showing.
+
+Three libraries were checked. All of them cost more than they save here:
+
+| Package | Why not |
+|---|---|
+| `react-native-markdown-display` | Unpublished since 2023, on `markdown-it@10` and `react-native-fit-image` — an unmaintained renderer against RN 0.86 + React 19 is a bet, not a saving |
+| `@ronradtke/react-native-markdown-display` | Maintained, but pulls `@react-native-vector-icons/material-design-icons` **and** `prism-react-renderer` — an icon font needing native linking plus a syntax highlighter, to render three bullets and some bold |
+| `react-native-marked` | Needs `react-native-svg` as a peer dependency — a new native module in an Expo app whose whole selling point is that teammates never open Xcode |
+
+Rules of thumb 1 and 2 below both bite: the standard library really does do it
+(the answers are paragraphs, bullets, bold and the odd link), and every candidate
+adds a native build step for a teammate.
+
+The deciding argument is F2, though. Inline `[S1]` citation chips have to be
+**direct children of the outermost `<Text>`** ([b4-planner.md](./b4-planner.md)),
+and every one of these libraries owns the whole text subtree. `AnswerText`
+funnels each leaf string through one `renderSpanText` seam, which is where the
+chips go.
+
+**Revisit if** answers start containing tables, images, or nested lists — at that
+point the subset stops being a subset and the parser stops being small.
 
 ### `assistant-cloud` — keep it, and why removing it fails
 

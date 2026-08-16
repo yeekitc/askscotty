@@ -56,6 +56,7 @@ def _planner_events(request: Request):
     return run_planner(
         serializer.validated_data["query"],
         session_id=serializer.validated_data["session_id"],
+        thread_id=serializer.validated_data["thread_id"],
         history=serializer.validated_data["history"],
     )
 
@@ -190,6 +191,7 @@ def _session_id(request: Request) -> str:
 def _serialize_thread(thread: Thread) -> dict:
     return {
         "id": thread.client_id,
+        "title": thread.title,
         "messages": [
             {"role": message.role, "content": message.content}
             # `.all()` rather than a fresh query so ThreadListView's prefetch is
@@ -241,6 +243,9 @@ class ThreadDetailView(APIView):
         serializer = ThreadSerializer(data={**request.data, "id": thread_id})
         serializer.is_valid(raise_exception=True)
         messages = serializer.validated_data["messages"]
+        # `None` means the body never mentioned a title, which is different from
+        # `""` — see ThreadSerializer.
+        title = serializer.validated_data.get("title")
 
         # Readers see either the old message list or the new one, never a
         # half-written thread.
@@ -248,6 +253,11 @@ class ThreadDetailView(APIView):
             thread, _created = Thread.objects.get_or_create(
                 session_id=session_id, client_id=thread_id
             )
+
+            updated_fields = ["updated_at"]
+            if title is not None:
+                thread.title = title
+                updated_fields.append("title")
 
             # Replace rather than diff: the app sends the whole thread every
             # time, and message ids are not stable across an edit or a branch.
@@ -266,7 +276,7 @@ class ThreadDetailView(APIView):
 
             # Rewriting messages does not touch the thread row, so auto_now
             # would not fire and the sidebar's ordering would go stale.
-            thread.save(update_fields=["updated_at"])
+            thread.save(update_fields=updated_fields)
 
         thread.refresh_from_db()
         return Response(

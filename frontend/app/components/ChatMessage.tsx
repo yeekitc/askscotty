@@ -3,11 +3,15 @@
  * ambient context, so nothing has to be passed in as a prop.
  */
 
+import { useEffect } from 'react'
 import { Image, StyleSheet, Text, View } from 'react-native'
+import Animated, { useAnimatedStyle, useSharedValue, withTiming } from 'react-native-reanimated'
 import { MessagePrimitive as Message, useAuiState } from '@assistant-ui/react-native'
 
+import { durations, easing, offsets, useReducedMotion } from '../lib/motion'
 import { colors, radius, spacing } from '../lib/theme'
 import { sourcePartToCitation } from '../lib/assistantAdapter'
+import { AnswerText } from './AnswerText'
 import { CitationCard } from './CitationCard'
 
 const MASCOT = require('../assets/mascot.png')
@@ -22,32 +26,57 @@ export function ChatMessage() {
       !state.message.content.some((part) => part.type !== 'text' || part.text.length > 0),
   )
 
+  const reduceMotion = useReducedMotion()
+
+  // Driven off isBlank rather than mount: the assistant message is mounted
+  // empty for the whole wait, so this has to fire when content arrives, which
+  // is also when TypingIndicator starts fading out.
+  const enter = useSharedValue(0)
+  useEffect(() => {
+    if (isBlank) return
+    enter.value = reduceMotion ? 1 : withTiming(1, { duration: durations.entrance, easing })
+  }, [isBlank, reduceMotion, enter])
+
+  const enterStyle = useAnimatedStyle(() => ({
+    opacity: enter.value,
+    transform: [{ translateY: (1 - enter.value) * offsets.item }],
+  }))
+
   if (isBlank) return null
 
   return (
-    <Message.Root style={styles.root}>
-      <Message.If user>
-        <View style={styles.userRow}>
-          <View style={styles.userBubble}>
-            <Message.Content
-              renderText={({ part }) => <Text style={styles.userText}>{part.text}</Text>}
-            />
+    <Animated.View style={enterStyle}>
+      <Message.Root style={styles.root}>
+        <Message.If user>
+          <View style={styles.userRow}>
+            <View style={styles.userBubble}>
+              <Message.Content
+                renderText={({ part }) => <Text style={styles.userText}>{part.text}</Text>}
+              />
+            </View>
           </View>
-        </View>
-      </Message.If>
+        </Message.If>
 
-      <Message.If assistant>
-        <View style={styles.assistantRow}>
-          <Image source={MASCOT} style={styles.avatar} accessibilityLabel="Scotty" />
-          <View style={styles.assistantCard}>
-            <Message.Content
-              renderText={({ part }) => <Text style={styles.assistantText}>{part.text}</Text>}
-              renderSource={({ part }) => <CitationCard citation={sourcePartToCitation(part)} />}
-            />
+        <Message.If assistant>
+          <View style={styles.assistantRow}>
+            <Image source={MASCOT} style={styles.avatar} accessibilityLabel="Scotty" />
+            <View style={styles.assistantCard}>
+              {/* The model writes Markdown — bold, bullets, the occasional
+                  heading — and nothing renders it unless we do: assistant-ui's
+                  markdown package is React DOM, and the React Native one ships no
+                  renderer at all. Without AnswerText the asterisks show up
+                  literally. */}
+              <Message.Content
+                renderText={({ part }) => (
+                  <AnswerText text={part.text} style={styles.assistantText} />
+                )}
+                renderSource={({ part }) => <CitationCard citation={sourcePartToCitation(part)} />}
+              />
+            </View>
           </View>
-        </View>
-      </Message.If>
-    </Message.Root>
+        </Message.If>
+      </Message.Root>
+    </Animated.View>
   )
 }
 

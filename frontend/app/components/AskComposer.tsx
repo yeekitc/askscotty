@@ -7,8 +7,10 @@
 
 import { useState } from 'react'
 import { StyleSheet, Text, View } from 'react-native'
+import Animated, { useAnimatedStyle, useSharedValue, withSpring } from 'react-native-reanimated'
 import { ComposerPrimitive as Composer } from '@assistant-ui/react-native'
 
+import { PRESS_SCALE, pressSpring, useReducedMotion } from '../lib/motion'
 import { colors, radius, shadows, spacing } from '../lib/theme'
 import { HoverPressable } from './HoverPressable'
 
@@ -23,6 +25,16 @@ type Props = {
 export function AskComposer({ sources, onSourcesChange }: Props) {
   const [showSources, setShowSources] = useState(false)
   const [sendHovered, setSendHovered] = useState(false)
+  const reduceMotion = useReducedMotion()
+
+  // Scales the wrapper rather than the button: Composer.Send takes a plain
+  // style, so there is nowhere on it to hang an animated one.
+  const sendScale = useSharedValue(1)
+  const sendStyle = useAnimatedStyle(() => ({ transform: [{ scale: sendScale.value }] }))
+
+  function springSend(to: number) {
+    sendScale.value = reduceMotion ? 1 : withSpring(to, pressSpring)
+  }
 
   function toggleSource(name: string) {
     onSourcesChange(
@@ -52,16 +64,20 @@ export function AskComposer({ sources, onSourcesChange }: Props) {
           <Text style={styles.sourcesText}>Sources ▾</Text>
         </HoverPressable>
 
-        <Composer.Send
-          onHoverIn={() => setSendHovered(true)}
-          onHoverOut={() => setSendHovered(false)}
-          style={({ pressed }) => [
-            styles.sendButton,
-            (pressed || sendHovered) && styles.sendButtonActive,
-          ]}
-        >
-          <Text style={styles.sendText}>↑</Text>
-        </Composer.Send>
+        <Animated.View style={sendStyle}>
+          <Composer.Send
+            onHoverIn={() => setSendHovered(true)}
+            onHoverOut={() => setSendHovered(false)}
+            onPressIn={() => springSend(PRESS_SCALE)}
+            onPressOut={() => springSend(1)}
+            style={({ pressed }) => [
+              styles.sendButton,
+              (pressed || sendHovered) && styles.sendButtonActive,
+            ]}
+          >
+            <Text style={styles.sendText}>↑</Text>
+          </Composer.Send>
+        </Animated.View>
       </Composer.Root>
 
       {showSources ? (

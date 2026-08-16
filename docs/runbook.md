@@ -17,6 +17,7 @@ docker compose down                 # stop
 |---|---|---|---|
 | `GET` | `/api/health/` | — | Is the API alive? |
 | `POST` | `/api/ask/` | body `session_id` | **The main endpoint.** Ask a question. |
+| `POST` | `/api/ask/stream/` | body `session_id` | Same answer, plus SSE progress events. What the app actually calls. |
 | `GET` | `/api/sources/` | — | Source registry + freshness (credits UI) |
 | `GET` | `/api/threads/` | `X-Session-Id` | This session's saved conversations |
 | `PUT` | `/api/threads/{id}/` | `X-Session-Id` | Save a conversation (creates if new) |
@@ -76,7 +77,12 @@ The contract lives in three places that must agree — `backend/apps/core/serial
 | Symptom | Cause / fix |
 |---|---|
 | App says "Could not reach the API" | `docker compose up -d`. On a **physical phone**, `localhost` is the phone — set `EXPO_PUBLIC_API_URL` in `frontend/app/.env` to your laptop's LAN IP and restart Expo. |
-| `/api/ask/` answers but says "0 tool(s) available" | Expected today — the tools are tasklist B2 and the planner is B4. The contract is real; the answer is a stub. |
+| `/api/ask/` answers but cites nothing | Expected today. **The planner is built and running** — what it has to call isn't: no campus tool is registered until B1–B3 land. It falls back to the web lane, which earns a `web_verify` chip but no citations until B3 harvests them. |
+| Every question fails "The planner is not provisioned" | `PLANNER_AGENT_ID` isn't reaching the container. Run `manage.py provision_planner`, put both ids in the **root** `.env`, then `docker compose up -d backend` — compose passes variables through one by one, and a restart is what picks up a new one. `manage.py check` says so at startup too. |
+| Answers are slow, or one takes over a minute | Expected, not broken. Managed Agents costs a round trip per tool batch — measured at ~2× the old loop end to end and ~4× to first token ([b4-planner.md](./b4-planner.md)). There is deliberately no server-side deadline: a slow turn is allowed to finish. The session `budget` caps spend, not time. |
+| An answer hits "The server did not respond within 120s" | The app's own backstop, not the planner. The turn is still running (and billing) on Anthropic's side, and we do not reattach to it yet, so ask again. There is no second loop to fall back to ([b4-planner.md](./b4-planner.md)). |
+| A follow-up re-searches instead of remembering | The app isn't sending `thread_id`, so each question opens its own planner session. Check the ask request body. |
+| SSE stream returns one blob at the end | A proxy is buffering. `X-Accel-Buffering: no` is set; check anything in front of Django. `curl -N` bypasses client-side buffering. |
 | Threads return `validation_error` about `X-Session-Id` | The header is missing. The app sends it automatically; `curl` needs it by hand. |
 | Thread request fails in the browser only | CORS preflight. `X-Session-Id` must be in `CORS_ALLOW_HEADERS` (`backend/config/settings.py`). |
 | Changed `models.py`, now errors | `docker compose exec backend python manage.py makemigrations && … migrate` |

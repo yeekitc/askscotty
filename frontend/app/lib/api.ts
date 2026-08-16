@@ -151,12 +151,13 @@ function normalizeAskResponse(raw: RawAskResponse): AskResponse {
  * lets the planner use this person's connected sources. Omitting it silently
  * drops every personal tool.
  */
-async function askBody(query: string, sources?: string[]) {
+async function askBody(query: string, sources?: string[], threadId?: string) {
   const body: AskRequest & { sources?: string[] } = {
     query,
     session_id: await getSessionId(),
   }
   if (sources) body.sources = sources
+  if (threadId) body.thread_id = threadId
   return body
 }
 
@@ -167,10 +168,14 @@ async function askBody(query: string, sources?: string[]) {
  * is the agreed fallback for anything that cannot read a stream, and it is how
  * you tell a broken planner apart from a broken stream.
  */
-export async function ask(query: string, sources?: string[]): Promise<AskResponse> {
+export async function ask(
+  query: string,
+  sources?: string[],
+  threadId?: string,
+): Promise<AskResponse> {
   const raw = await request<RawAskResponse>('/api/ask/', {
     method: 'POST',
-    body: await askBody(query, sources),
+    body: await askBody(query, sources, threadId),
   })
   return normalizeAskResponse(raw)
 }
@@ -188,10 +193,10 @@ export async function ask(query: string, sources?: string[]): Promise<AskRespons
  */
 export async function* askEvents(
   query: string,
-  options: { sources?: string[]; signal?: AbortSignal } = {},
+  options: { sources?: string[]; threadId?: string; signal?: AbortSignal } = {},
 ): AsyncGenerator<AskEvent, void> {
   const sessionId = await getSessionId()
-  const body = await askBody(query, options.sources)
+  const body = await askBody(query, options.sources, options.threadId)
 
   const queue: AskEvent[] = []
   let failure: ApiError | null = null
@@ -326,11 +331,19 @@ export async function fetchThreads(): Promise<StoredThread[]> {
  * Save a thread, creating it if the server has not seen this id before. The
  * whole message list goes up every time, not just the new turn, so an edited
  * or branched thread cannot drift from what is stored.
+ *
+ * `title` is always sent — including as `''` — because the backend treats an
+ * absent key as "leave the stored title alone", which would make clearing a
+ * rename impossible from here.
  */
-export function saveThread(id: string, messages: StoredThread['messages']): Promise<StoredThread> {
+export function saveThread(
+  id: string,
+  messages: StoredThread['messages'],
+  title: string,
+): Promise<StoredThread> {
   return request<StoredThread>(`/api/threads/${encodeURIComponent(id)}/`, {
     method: 'PUT',
-    body: { messages },
+    body: { messages, title },
   })
 }
 
