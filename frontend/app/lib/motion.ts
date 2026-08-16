@@ -37,8 +37,13 @@ export const offsets = {
 /** Leaves quickly, settles softly. The CSS ease-out most web UIs transition on. */
 export const easing = Easing.bezier(0.22, 1, 0.36, 1)
 
-/** Underdamped just enough to feel physical, not enough to visibly wobble. */
-export const pressSpring = { mass: 0.4, damping: 14, stiffness: 320 }
+/**
+ * Stiff on purpose. A press has to reach most of its travel inside the ~80ms a
+ * real tap lasts, or the button is already springing back before it looks like
+ * anything happened. Softer settings measured ~250ms to arrive, which reads as
+ * no feedback at all.
+ */
+export const pressSpring = { mass: 0.25, damping: 13, stiffness: 700 }
 
 /** How far the send button shrinks under a finger. */
 export const PRESS_SCALE = 0.9

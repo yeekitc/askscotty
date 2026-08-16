@@ -18,12 +18,7 @@ import {
   useWindowDimensions,
 } from 'react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
-import Animated, {
-  runOnJS,
-  useAnimatedStyle,
-  useSharedValue,
-  withTiming,
-} from 'react-native-reanimated'
+import Animated, { useAnimatedStyle, useSharedValue, withTiming } from 'react-native-reanimated'
 import AsyncStorage from '@react-native-async-storage/async-storage'
 import {
   AssistantRuntimeProvider,
@@ -47,7 +42,7 @@ import {
   removeThread,
   threadTitle,
 } from '../lib/chatThreads'
-import { durations, easing, useReducedMotion } from '../lib/motion'
+import { durations, easing, offsets, useReducedMotion } from '../lib/motion'
 import { colors, radius, shadows, spacing } from '../lib/theme'
 import { useCurrentUser } from '../lib/user'
 
@@ -149,7 +144,7 @@ export default function AskScreen() {
     const target = sidebarEffectiveOpen ? 1 : 0
     sidebarProgress.value = reduceMotion
       ? target
-      : withTiming(target, { duration: durations.slow, easing })
+      : withTiming(target, { duration: durations.sidebar, easing })
   }, [sidebarEffectiveOpen, reduceMotion, sidebarProgress])
 
   // Width rather than a transform, because the main column is flex:1 — animating
@@ -697,9 +692,14 @@ function RunningIndicator() {
       setMounted(false)
       return
     }
-    opacity.value = withTiming(0, { duration: durations.base, easing }, (finished) => {
-      if (finished) runOnJS(setMounted)(false)
-    })
+    opacity.value = withTiming(0, { duration: durations.base, easing })
+    // A timer, not withTiming's completion callback. That callback still fires
+    // after a new wait has begun — superseding an animation does not reliably
+    // report `finished: false` — and unmounted the indicator that had just come
+    // back, leaving the dots gone for the whole run. Effect cleanup cancels this
+    // the instant `waiting` flips back.
+    const timer = setTimeout(() => setMounted(false), durations.base)
+    return () => clearTimeout(timer)
   }, [waiting, reduceMotion, opacity])
 
   const style = useAnimatedStyle(() => ({ opacity: opacity.value }))

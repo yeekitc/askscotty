@@ -8,7 +8,7 @@ import { Image, StyleSheet, Text, View } from 'react-native'
 import Animated, { useAnimatedStyle, useSharedValue, withTiming } from 'react-native-reanimated'
 import { MessagePrimitive as Message, useAuiState } from '@assistant-ui/react-native'
 
-import { durations, easing, useReducedMotion } from '../lib/motion'
+import { durations, easing, offsets, useReducedMotion } from '../lib/motion'
 import { colors, radius, spacing } from '../lib/theme'
 import { sourcePartToCitation } from '../lib/assistantAdapter'
 import { AnswerText } from './AnswerText'
@@ -34,12 +34,12 @@ export function ChatMessage() {
   const enter = useSharedValue(0)
   useEffect(() => {
     if (isBlank) return
-    enter.value = reduceMotion ? 1 : withTiming(1, { duration: durations.base, easing })
+    enter.value = reduceMotion ? 1 : withTiming(1, { duration: durations.entrance, easing })
   }, [isBlank, reduceMotion, enter])
 
   const enterStyle = useAnimatedStyle(() => ({
     opacity: enter.value,
-    transform: [{ translateY: (1 - enter.value) * 6 }],
+    transform: [{ translateY: (1 - enter.value) * offsets.item }],
   }))
 
   if (isBlank) return null

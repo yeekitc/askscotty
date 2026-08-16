@@ -10,7 +10,7 @@ import { StyleSheet, Text, View } from 'react-native'
 import Animated, { useAnimatedStyle, useSharedValue, withSpring } from 'react-native-reanimated'
 import { ComposerPrimitive as Composer } from '@assistant-ui/react-native'
 
-import { pressSpring, useReducedMotion } from '../lib/motion'
+import { PRESS_SCALE, pressSpring, useReducedMotion } from '../lib/motion'
 import { colors, radius, shadows, spacing } from '../lib/theme'
 import { HoverPressable } from './HoverPressable'
 
@@ -68,7 +68,7 @@ export function AskComposer({ sources, onSourcesChange }: Props) {
           <Composer.Send
             onHoverIn={() => setSendHovered(true)}
             onHoverOut={() => setSendHovered(false)}
-            onPressIn={() => springSend(0.94)}
+            onPressIn={() => springSend(PRESS_SCALE)}
             onPressOut={() => springSend(1)}
             style={({ pressed }) => [
               styles.sendButton,
