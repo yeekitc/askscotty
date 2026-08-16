@@ -268,12 +268,11 @@ progress events and finishes by yielding the validated `AskResponse`, which is
 why `/api/ask/` and `/api/ask/stream/` are two thin wrappers over one loop.
 
 **Decided: the loop runs on Managed Agents** — Anthropic drives it, we execute
-the tools it asks for. **Shipped 2026-08-15.** The hand-written loop lives on in
-`apps/planner/manual_loop.py` behind `PLANNER_MANAGED_AGENTS=false`, and on the
-measured latency it is still the safer demo-day setting — Managed Agents is
-**~2× slower end to end and ~4× slower to first token**. Numbers, the four
-things the build turned up, and the mitigations are in
-[b4-planner.md](./docs/b4-planner.md).
+the tools it asks for. **Shipped 2026-08-15.** It is the only path — there is no
+hand-written fallback, because one without the web tools can only answer uncited.
+That costs **~2× end to end and ~4× to first token** against the loop it
+replaced. Numbers, the four things the build turned up, and the mitigations are
+in [b4-planner.md](./docs/b4-planner.md).
 
 **One amendment to §2, additive:** the ask request gains an optional
 `thread_id`. The backend keeps one planner session per thread, and without it
@@ -289,10 +288,10 @@ response shapes and every SSE event are unchanged.
 - [x] Populate `modes_used` from which tool families actually ran — successful calls only, so a chip never claims a lane that failed
 - [x] ~~Timeout + graceful partial answer if one tool hangs~~ — built on the manual loop (deadline + iteration cap + `pause_turn` cap, all ending in one `tool_choice: none` call rather than a 504). **Removed by the Managed Agents move:** a session has no `tool_choice`, and a slow answer is resumable rather than lost, so resumability replaces partial prose. A session `budget` bounds the runaway case
 - [x] Never let personal data enter a shared-index call (PRD §3) — every dispatch goes through `run_tool`, which is what withholds `session_id` from public tools
-- [x] ~~Parallel tool dispatch~~, with **all** results returned in one send. The platform batches the *requests* now, but the `ThreadPoolExecutor` that executed them concurrently was removed with the migration — a three-tool batch costs the sum rather than the slowest. Worth reinstating once a real lane is slower than a few hundred ms
+- [x] Parallel tool dispatch, with **all** results returned in one send. Removed during the migration on the reasoning that "the platform batches", then restored once that turned out to conflate two things: the platform batches the model's *requests*, but every tool still executes in our process. Measured at **3.0×** on a three-tool batch. Citations are harvested in call order rather than completion order, so `S1` means the same source on every run
 - [x] A failed tool comes back as a `tool_result` with `is_error`, never a dropped block
-- [x] Prompt caching: frozen system prompt, `cache_control` on its last block, the clock in the user turn — confirmed live via `cache_read_input_tokens`
-- [x] Loop tests against a scripted **event stream** and a tool registered in the test (`apps/planner/tests.py`); the fallback keeps its scripted-model tests in `tests_manual_loop.py`
+- [x] Prompt caching: frozen system prompt on the agent version, the clock in the user turn, the session caching its own prefix — confirmed live via `cache_read_input_tokens`
+- [x] Loop tests against a scripted **event stream** and a tool registered in the test (`apps/planner/tests.py`)
 - [x] `Thread.cma_session_id` — one planner session per thread, so a follow-up reuses the previous turn's lookups instead of re-searching
 - [ ] Inline `[S1]` markers — plumbed and tested, gated off behind `PLANNER_CITATION_MARKERS` until F2 can render one as a chip
 - [ ] Server-side web tools — deferred with B3. Note the shape changed: under Managed Agents there is no `web_search_tool_result` block to parse, the results arrive as an `agent.tool_result` **event**. The `web_verify` chip already works; the citations do not

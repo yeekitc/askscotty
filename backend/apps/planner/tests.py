@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 from types import SimpleNamespace
 from unittest import mock
 
@@ -26,7 +27,7 @@ from apps.core.models import Thread
 from apps.personal.models import UserConnection
 from apps.tools import registry
 from apps.tools.registry import ToolError, register_tool
-from django.test import TestCase, override_settings
+from django.test import TestCase, TransactionTestCase, override_settings
 
 from . import client, loop
 from .citations import validate_markers
@@ -35,7 +36,6 @@ from .errors import PlannerError
 EMPTY_SCHEMA = {"type": "object", "properties": {}, "required": []}
 
 PLANNER_DEFAULTS = dict(
-    PLANNER_MANAGED_AGENTS=True,
     PLANNER_AGENT_ID="agent_test",
     PLANNER_ENVIRONMENT_ID="env_test",
     PLANNER_SESSION_BUDGET_CENTS=500,
@@ -193,7 +193,7 @@ class _FakeStream:
                 raise PlannerError("stream dropped", status_code=502)
 
 
-class PlannerTestCase(TestCase):
+class PlannerHarness:
     """Wires a scripted session into the driver, and a working tool into the registry."""
 
     def setUp(self) -> None:
@@ -244,6 +244,25 @@ class PlannerTestCase(TestCase):
 
     def answer(self, session: FakeSession, **kwargs) -> dict:
         return loop.drain(iter(self.drive(session, **kwargs)))
+
+
+class PlannerTestCase(PlannerHarness, TestCase):
+    """The harness for tests that touch no personal data."""
+
+
+class PlannerTransactionTestCase(PlannerHarness, TransactionTestCase):
+    """The harness for tests whose tools read the database.
+
+    `TestCase` wraps each test in a transaction that is rolled back at the end,
+    and a row written inside it is invisible to any *other* connection — which
+    is exactly what a tool dispatched into the pool gets. A connector written in
+    the test would look unconnected to the tool that checks for it, and the
+    assertion would fail for a reason that has nothing to do with the planner.
+
+    `TransactionTestCase` commits instead, at the cost of truncating tables
+    between tests. Slower, and only worth it for the handful of tests that need
+    a real cross-thread read.
+    """
 
 
 @override_settings(**PLANNER_DEFAULTS)
@@ -369,6 +388,62 @@ class SessionDriverTests(PlannerTestCase):
             ["sevt_a", "sevt_b"],
         )
         self.assertEqual(payload["modes_used"], ["dining", "events"])
+
+    def test_a_batch_runs_in_parallel_rather_than_one_after_another(self) -> None:
+        """The platform batches the model's requests; we still run the tools.
+
+        Executing them in sequence would cost the sum of a batch rather than its
+        slowest member — the whole reason a four-hop answer is worth batching.
+        """
+        started = threading.Barrier(2, timeout=5)
+
+        def blocks_until_both_have_started(args):
+            # Deadlocks and trips the timeout if the two calls are serialised,
+            # so this fails loudly rather than merely running slowly.
+            started.wait()
+            return {"ok": True}
+
+        self.behaviour["fake_dining"] = blocks_until_both_have_started
+        self.behaviour["fake_events"] = blocks_until_both_have_started
+
+        session = FakeSession(
+            [custom_tool_use("fake_dining"), custom_tool_use("fake_events"), waiting()],
+            [agent_message("Both."), idle()],
+        )
+        payload = self.answer(session)
+
+        self.assertEqual(payload["modes_used"], ["dining", "events"])
+
+    def test_citation_ids_follow_call_order_not_completion_order(self) -> None:
+        """`S1` has to mean the same source every run.
+
+        Tools finish in whatever order the network allows, so harvesting as they
+        complete would shuffle the ids between runs — and a marker is only
+        useful if it is stable.
+        """
+        finish_dining_last = threading.Event()
+
+        def slow(args):
+            finish_dining_last.wait(timeout=5)
+            return {"citations": [{"title": "Dining, asked for first"}]}
+
+        def quick(args):
+            finish_dining_last.set()
+            return {"citations": [{"title": "Events, asked for second"}]}
+
+        self.behaviour["fake_dining"] = slow
+        self.behaviour["fake_events"] = quick
+
+        session = FakeSession(
+            [custom_tool_use("fake_dining"), custom_tool_use("fake_events"), waiting()],
+            [agent_message("Both."), idle()],
+        )
+        citations = self.answer(session)["citations"]
+
+        self.assertEqual(
+            [(citation["id"], citation["title"]) for citation in citations],
+            [("S1", "Dining, asked for first"), ("S2", "Events, asked for second")],
+        )
 
     def test_an_idle_with_nothing_left_to_dispatch_is_not_the_end_of_the_turn(self) -> None:
         """Regression: this truncated every multi-hop answer to nothing.
@@ -714,7 +789,7 @@ class SessionLifecycleTests(PlannerTestCase):
 
 
 @override_settings(**PLANNER_DEFAULTS)
-class PersonalToolGatingTests(PlannerTestCase):
+class PersonalToolGatingTests(PlannerTransactionTestCase):
     """A personal tool is offered — and runnable — only where it was connected."""
 
     def setUp(self) -> None:

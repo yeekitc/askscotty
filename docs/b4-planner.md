@@ -76,7 +76,7 @@ which is the one thing we should keep measuring (see [What it costs](#what-it-co
 |---|---|
 | The `while` loop and `stop_reason` branching | Anthropic's |
 | `pause_turn` resume, `PLANNER_MAX_PAUSE_RESUMES` | gone — the platform owns it |
-| `ThreadPoolExecutor` dispatch, all-results-in-one-message | gone — the platform batches |
+| `ThreadPoolExecutor` dispatch, all-results-in-one-message | **stays ours.** The platform batches the model's *requests*; it never runs our tools — see [Parallel dispatch](#parallel-dispatch-restored) |
 | Context compaction on long threads | built in; we never built it |
 | Cancel | `user.interrupt`; we never built it |
 | An answer that dies with the HTTP connection | durable, resumable sessions |
@@ -109,7 +109,9 @@ scale — revisit only if measured overhead is material.
 
 **This is the number the migration was supposed to produce, and it is worse than
 the plan assumed.** Same query (the PRD §8 signature multi-hop), same machine,
-same model, cold start each time, `PLANNER_MANAGED_AGENTS` flipped between runs.
+same model, cold start each time, the two loops swapped between runs. The manual
+loop is gone now — [why](#decided-no-fallback-loop) — so these are the numbers it
+left behind, not something to re-run.
 
 B1–B3 have not landed, so the four campus lanes were stand-ins registered for the
 measurement: same shapes, same citation payloads, a deliberate 400 ms of latency
@@ -192,19 +194,71 @@ mitigations as B4 work rather than polish.
 - **Try `effort: low`.** It is an agent-version change, so it costs a
   re-provision to test — but it is the single biggest lever and the routing here
   is not deep reasoning.
-- **Reinstate parallel dispatch** if a real lane is slower than 400 ms. It was
-  removed on instruction and is a genuine regression for a parallel batch: three
-  400 ms tools now cost 1.2 s instead of 0.4 s.
-- **The fallback stays reachable, but it is not a demo-day option today.**
-  `PLANNER_MANAGED_AGENTS=false` is one env var, and the loop behind it is twice
-  as fast — but it builds its `tools` array from the registry alone and never
-  declared `web_search` / `web_fetch`, because under Managed Agents those arrive
-  with the prebuilt toolset and on the old path they were always going to arrive
-  with B3. **With B1–B3 unlanded that means zero tools**: the user turn says
-  nothing can be checked and the answer is uncited general knowledge. Every real
-  answer measured here came from the web lane, which only exists on the Managed
-  Agents path. Keep the fallback for a Managed Agents outage; it becomes the
-  genuine performance option once B1/B2 give it something to call.
+- ~~**Reinstate parallel dispatch.**~~ **Done** — see
+  [Parallel dispatch](#parallel-dispatch-restored). Measured at 3.0× on a
+  three-tool batch.
+### Parallel dispatch, restored
+
+Removed during the migration, then put back. Worth recording why it went, because
+the reasoning was subtly wrong and the same mistake is easy to repeat.
+
+The "What we stop maintaining" table said the `ThreadPoolExecutor` was gone
+because *"the platform batches"*. **That conflates two different things.** The
+platform does batch the model's tool *requests* — several `agent.custom_tool_use`
+events arrive together and resolve into a single `requires_action` idle — but it
+never executes our tools. Those are custom tools; that is the whole point. They
+run in this process, and running them one after another costs the sum of a batch
+rather than its slowest member.
+
+Measured directly on `_dispatch`, three tools of 1.5 s each in one batch:
+
+| | Time |
+|---|---|
+| Forced serial (`_MAX_PARALLEL = 1`) | 4.52 s |
+| Parallel (pool of 4) | **1.51 s** |
+
+**3.0×**, and it scales with the batch — which is exactly the signature multi-hop,
+where Dining and Events are independent once Maps resolves.
+
+Two ordering details worth keeping:
+
+- **`mode_end` fires as each lane finishes**, so a fast chip clears while a slow
+  one is still spinning.
+- **Citations are harvested in call order, not completion order.** Tools finish
+  in whatever order the network allows, so a ledger filled as they complete would
+  shuffle `S1` and `S2` between runs — and a marker is only useful if it is
+  stable. Both are covered by tests.
+
+One consequence to know about: a personal tool now reads the database from a pool
+thread, so `_call_tool` closes its connection in a `finally` (Django only closes
+the request thread's for us). It also means a test that writes a connector and
+expects a tool to see it needs `TransactionTestCase` — inside `TestCase`'s
+rollback-only transaction, another connection sees nothing.
+
+### Decided: no fallback loop
+
+Managed Agents is the only path. There is no hand-written loop to flip back to,
+and the tempting reading of the measurement above — that the loop it replaced was
+twice as fast, so keep it for demo day — does not survive one detail: **that loop
+never declared `web_search` / `web_fetch`.** It built its `tools` array from the
+registry alone, because under Managed Agents the web pair arrives with the
+prebuilt toolset and on the old path it was always going to arrive with B3. With
+B1–B3 unlanded that is zero tools, and every real answer measured above came from
+the web lane.
+
+So the hatch could only answer uncited, which is not a degraded AskScotty but a
+different product; "the planner is unavailable" is the more honest failure.
+Making it a real hatch meant declaring the server-side web tools and harvesting
+citations out of `web_search_tool_result` blocks — B3, done a second time, in a
+second loop. Against that: 903 lines, ~30% of the planner package, a second set
+of prompt semantics (it was the only caller of the `tools_available` branch
+[finding 3](#four-things-the-build-turned-up) says the session driver
+deliberately stops sending), and one more "does the fallback need this too?" on
+every B1/B2/B5 change.
+
+Git keeps it if B1/B2 ever make the 2× worth re-deriving. That is the part that
+decided it: recovering a loop from history is cheaper than carrying one through
+three unlanded lanes.
 
 ### Decided: no wall-clock deadline
 
@@ -1013,15 +1067,17 @@ rather than by config.
 - [x] `citations.py` — unchanged, and see [Citations](#citations-unchanged-with-one-caveat-for-b3)
       for the one thing that changed underneath it
 - [x] `tests.py` — rebuilt against a scripted **event stream**; the fallback's
-      scripted-model tests moved to `tests_manual_loop.py` so a reachable loop
-      stays a tested one. 58 tests green
-- [x] Delete `PLANNER_MAX_PAUSE_RESUMES`, `PLANNER_DEADLINE_SECONDS` and the
-      `ThreadPoolExecutor`
+      39 tests green
+- [x] Delete `PLANNER_MAX_PAUSE_RESUMES` and `PLANNER_DEADLINE_SECONDS`
+- [x] ~~Delete the `ThreadPoolExecutor`~~ — **reverted.** Deleting it was a
+      mistake the rest of that row explains: see
+      [Parallel dispatch](#parallel-dispatch-restored)
 - [ ] Re-test against each real tool as its lane lands
 - [x] Signature multi-hop, end to end, cold start — with stand-in lanes, since
       B1–B3 have not landed
 - [x] **Measure the round-trip cost** against the manual loop on the same query —
       [it is 2× slower, and ~4× to first token](#what-it-actually-cost-measured-2026-08-15)
+- [x] Restore parallel dispatch — [3.0× on a three-tool batch](#parallel-dispatch-restored)
 
 ### Which knobs survived
 
@@ -1035,7 +1091,7 @@ rather than by config.
 | `PLANNER_MAX_RETRIES` | **Kept.** The SDK still retries 429/5xx on those same short calls. |
 | `PLANNER_CITATION_MARKERS` | **Kept, and load-bearing.** The agent is provisioned with the marker rules unconditionally; `loop.py` still strips them while the setting is off. That is what makes F2 an env flip instead of a re-provision. |
 | `PLANNER_SESSION_BUDGET_CENTS` | **New.** The runaway bound. |
-| `PLANNER_MANAGED_AGENTS` | **New.** The way back to `manual_loop.py`. Delete both together. |
+| `PLANNER_MANAGED_AGENTS` | **Never shipped.** It selected the hand-written loop, and [there is no fallback loop](#decided-no-fallback-loop). |
 
 ### Four things the build turned up
 
@@ -1059,8 +1115,9 @@ prebuilt toolset again.
 branch for an empty toolset — with none registered, the model tried to satisfy
 "everything factual comes from a tool" by writing a tool call out as prose. Under
 Managed Agents the prebuilt toolset always carries the web pair, so that branch
-now *talks the model out of the one lane it has*. The session driver never sends
-it; `manual_loop.py` still does, correctly.
+*talks the model out of the one lane it has*. There is no such branch any more;
+`loop.py` carries a comment saying why, because its absence is the non-obvious
+part.
 
 **4. A stale session id has to be survivable.** `Thread.cma_session_id` is a
 second store. A session archived or deleted on Anthropic's side leaves the row

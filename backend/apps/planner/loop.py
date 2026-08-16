@@ -27,15 +27,20 @@ silently:
    is where all five invariants in docs/architecture.md are enforced.
 
 What is *not* here, because the platform owns it now: the `while` loop,
-`pause_turn` resume, parallel batching, context compaction, and the wall-clock
-deadline. The runaway bound is the session's dollar budget instead. The old loop
-is still in `manual_loop.py` behind `PLANNER_MANAGED_AGENTS=false`.
+`pause_turn` resume, context compaction, and the wall-clock deadline. The runaway
+bound is the session's dollar budget instead.
+
+**Parallel dispatch is still ours**, and the distinction is easy to lose: the
+platform batches the model's tool *requests*, but every one of them executes in
+this process. Running them one after another would cost the sum of a batch
+rather than its slowest member — see `_dispatch`.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Iterable, Iterator
@@ -51,9 +56,10 @@ from apps.tools.registry import (
     tools_for_session,
 )
 from django.conf import settings
+from django.db import connection
 from django.utils import timezone
 
-from . import client, manual_loop, prompt
+from . import client, prompt
 from .citations import CitationLedger, validate_markers
 from .errors import PlannerError
 
@@ -70,6 +76,10 @@ _MAX_RECONNECTS = 2
 # Anything else (a rejected key, a 400) will fail the same way twice.
 _RECONNECTABLE = (502, 504)
 
+# The lanes are all I/O-bound HTTP, so a small pool is enough to make a parallel
+# batch cost about as much as its slowest member.
+_MAX_PARALLEL = 4
+
 
 def run_planner(
     query: str,
@@ -80,14 +90,6 @@ def run_planner(
     now: datetime | None = None,
 ) -> Iterator[dict[str, Any]]:
     """Answer `query`, yielding progress events and finally the `AskResponse`."""
-    if not settings.PLANNER_MANAGED_AGENTS:
-        # The fallback takes no thread: a hand-written loop has no session to
-        # reuse, so history is all the continuity it has.
-        yield from manual_loop.run_planner(
-            query, session_id=session_id, history=history, now=now
-        )
-        return
-
     now = now or timezone.localtime()
     tools = tools_for_session(session_id or None)
     turn = _Turn(tools={tool.name: tool for tool in tools}, session_id=session_id)
@@ -98,10 +100,10 @@ def run_planner(
     # A reused session already holds the conversation, so replaying `history`
     # into it would say everything twice. A new one has never seen the thread,
     # so what the app knows is all the continuity there is.
-    # `tools_available` stays True even with no campus tools registered: the
-    # agent's prebuilt toolset always carries web_search and web_fetch, so there
-    # is always something to check against. Telling the model otherwise — which
-    # is what the empty-registry case did before the migration — talks it out of
+    #
+    # There is deliberately no "no lookup tools available" variant, even with an
+    # empty registry: the agent's prebuilt toolset always carries web_search and
+    # web_fetch, so telling the model nothing can be checked would talk it out of
     # the one lane it still has.
     message = prompt.user_turn(query, now, history=history if is_new else ())
 
@@ -425,21 +427,52 @@ def _on_idle(turn: _Turn, cma_session_id: str, event: Any) -> Iterator[dict[str,
 def _dispatch(turn: _Turn, cma_session_id: str) -> Iterator[dict[str, Any]]:
     """Run every tool the session asked for and send the results back.
 
-    Sequential, and that is a real cost: the platform batches parallel calls into
-    one idle, so a four-tool batch now takes the sum of its members rather than
-    the slowest. It buys a dispatch path with no thread pool, no per-thread
-    database connection to close, and no ordering to reconstruct — see
-    docs/b4-planner.md for the measured difference.
-    """
-    results: list[dict[str, Any]] = []
+    **In parallel.** The platform batches the model's *requests* — several
+    `agent.custom_tool_use` events arrive together and resolve into one idle —
+    but it never runs our tools, so executing them one after another costs the
+    sum of the batch rather than its slowest member. The lanes are all I/O-bound
+    HTTP, so a small pool makes a four-tool batch cost about what one tool does.
 
-    for call in turn.pending:
-        tool = turn.tools.get(call.name)
-        ok, payload = _call_tool(call.name, dict(call.input or {}), turn.session_id)
+    Two ordering details, both deliberate:
+
+    - `mode_end` fires as each lane finishes, so a fast lane's chip clears while
+      a slow one is still spinning.
+    - Citations are harvested afterwards, **in the order the model asked**, not
+      in completion order. `S1` is then the same source on every run, which a
+      non-deterministic ledger would not give us.
+    """
+    calls = turn.pending
+    turn.pending = []
+    outcomes: dict[int, tuple[bool, Any]] = {}
+
+    # max(1, …): a pool of zero workers is a ValueError, and an empty batch is
+    # only unreachable because the one caller guards it.
+    with ThreadPoolExecutor(max_workers=max(1, min(len(calls), _MAX_PARALLEL))) as pool:
+        futures = {
+            pool.submit(_call_tool, call.name, dict(call.input or {}), turn.session_id): index
+            for index, call in enumerate(calls)
+        }
+
+        for future in as_completed(futures):
+            index = futures[future]
+            call = calls[index]
+            outcomes[index] = future.result()
+
+            tool = turn.tools.get(call.name)
+            if tool is not None:
+                yield _event(
+                    "mode_end", {"mode": tool.mode, "tool": tool.name, "ok": outcomes[index][0]}
+                )
+
+    results: list[dict[str, Any]] = []
+    for index, call in enumerate(calls):
+        ok, payload = outcomes[index]
 
         if ok:
             turn.ran.append(call.name)
-            content = json.dumps(turn.ledger.record(tool, payload), default=str)
+            content = json.dumps(
+                turn.ledger.record(turn.tools.get(call.name), payload), default=str
+            )
         else:
             turn.failures.append(f"{call.name}: {payload}")
             content = str(payload)
@@ -454,23 +487,29 @@ def _dispatch(turn: _Turn, cma_session_id: str) -> Iterator[dict[str, Any]]:
                 "is_error": not ok,
             }
         )
-
         turn.answered.add(call.id)
-        if tool is not None:
-            yield _event("mode_end", {"mode": tool.mode, "tool": tool.name, "ok": ok})
 
-    turn.pending = []
     client.send_events(cma_session_id, results)
 
 
 def _call_tool(name: str, arguments: dict[str, Any], session_id: str) -> tuple[bool, Any]:
-    """Run one tool. Never raises — a failure is a value the model gets to read."""
+    """Run one tool in a pool thread. Never raises — a failure is a value here.
+
+    A failure has to come back as a value rather than an exception: the model
+    reads it and routes around a dead upstream, which is what makes "degrade,
+    don't crash" real.
+    """
     try:
         return True, run_tool(name, arguments, session_id=session_id or None)
     except ToolError as exc:
         return False, str(exc)
     except Exception as exc:  # a tool bug must not take the answer down with it
         return False, f"{type(exc).__name__}: {exc}"
+    finally:
+        # Django only closes the request thread's connection for us, and personal
+        # tools hit the database to check the connector. Without this each pool
+        # thread leaks one connection per dispatch.
+        connection.close()
 
 
 # --- Assembling the reply -----------------------------------------------------
