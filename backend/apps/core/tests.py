@@ -11,6 +11,7 @@ hand once; see the commit message.
 
 from __future__ import annotations
 
+import threading
 import time
 from unittest import mock
 
@@ -40,17 +41,22 @@ class GetJsonTests(SimpleTestCase):
     def stub(self, *outcomes) -> list[httpx.Request]:
         """Install a transport replaying `outcomes`; return the requests it saw.
 
-        An outcome is either `(status, payload)` or an exception to raise, which
-        covers both halves of the retry policy. The last one repeats, so a
-        single outcome means "always answer this".
+        An outcome is either `(status, payload)`, an `httpx.Response` for a body
+        that is not JSON, or an exception to raise — between them that covers
+        both halves of the retry policy. The last one repeats, so a single
+        outcome means "always answer this".
         """
         seen: list[httpx.Request] = []
+        lock = threading.Lock()
 
         def handler(request: httpx.Request) -> httpx.Response:
-            seen.append(request)
-            outcome = outcomes[min(len(seen) - 1, len(outcomes) - 1)]
+            with lock:
+                seen.append(request)
+                outcome = outcomes[min(len(seen) - 1, len(outcomes) - 1)]
             if isinstance(outcome, Exception):
                 raise outcome
+            if isinstance(outcome, httpx.Response):
+                return httpx.Response(outcome.status_code, content=outcome.content)
             status, payload = outcome
             return httpx.Response(status, json=payload)
 
@@ -108,6 +114,15 @@ class GetJsonTests(SimpleTestCase):
             http.get_json(URL)
         self.assertEqual(len(seen), 1)
 
+    def test_a_body_that_is_not_json_stays_in_the_httpx_family(self):
+        # An upstream serving an error page with a 200 is ordinary; the point is
+        # that one `except httpx.HTTPError` at the call site catches it, rather
+        # than a bare ValueError escaping past a tool and 500-ing the request.
+        self.stub(httpx.Response(200, text="<html>maintenance</html>"))
+
+        with self.assertRaises(httpx.HTTPError):
+            http.get_json(URL)
+
     def test_ttl_serves_the_second_call_from_cache(self):
         seen = self.stub((200, {"ok": True}))
 
@@ -124,6 +139,16 @@ class GetJsonTests(SimpleTestCase):
         http.get_json(URL, params={"campus": "doha"}, ttl=60)
 
         self.assertEqual(len(seen), 2)
+
+    def test_cache_ignores_param_order(self):
+        seen = self.stub((200, {"ok": True}))
+
+        http.get_json(URL, params={"campus": "pittsburgh", "day": "mon"}, ttl=60)
+        http.get_json(URL, params={"day": "mon", "campus": "pittsburgh"}, ttl=60)
+
+        # Two dicts spelling the same request are the same request. Without the
+        # sort in _cache_key this is a miss and the demo refetches.
+        self.assertEqual(len(seen), 1)
 
     def test_default_never_touches_the_cache(self):
         seen = self.stub((200, {"ok": True}))
@@ -152,3 +177,26 @@ class GetJsonTests(SimpleTestCase):
 
         self.assertGreaterEqual(same_host, 0.2)
         self.assertLess(other_host, 0.1)
+
+    def test_throttles_concurrent_callers_to_one_host(self):
+        # The reason for a lock per host rather than a bare timestamp: tool
+        # dispatch is parallel (planner/loop.py), so the gate has to hold across
+        # threads, not just across sequential calls on one.
+        seen = self.stub((200, {"ok": True}))
+        self.patch(_MIN_HOST_INTERVAL=0.1)
+
+        threads = [
+            threading.Thread(target=http.get_json, args=("https://one.example.edu/a",))
+            for _ in range(4)
+        ]
+        started = time.monotonic()
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        elapsed = time.monotonic() - started
+
+        self.assertEqual(len(seen), 4)
+        # Four requests spaced 0.1s apart: the first goes straight out, the
+        # other three each wait their turn.
+        self.assertGreaterEqual(elapsed, 0.3)

@@ -75,10 +75,11 @@ def get_json(
     could be served the other's data. A personal connector (PRD §9) that wants
     caching has to fold the user into the key, which this helper does not do.
 
-    Raises whatever httpx raises once the retries are spent — an unreachable
-    host, a timeout, or a non-2xx status. A tool calling this is expected to
-    catch and re-raise as ToolError (apps/tools/registry.py) so a dead upstream
-    degrades the answer instead of failing the request.
+    Every failure surfaces as an `httpx.HTTPError` once the retries are spent —
+    an unreachable host, a timeout, a non-2xx status, or a body that is not JSON.
+    One family on purpose, so a tool can catch it in one `except` and re-raise as
+    ToolError (apps/tools/registry.py), and a dead upstream degrades the answer
+    instead of failing the request.
     """
     key = _cache_key(url, params) if ttl > 0 else None
 
@@ -113,12 +114,30 @@ def _fetch(url: str, *, params: dict[str, Any] | None, timeout: float) -> Any:
         else:
             if response.status_code not in _RETRY_STATUSES or _out_of_retries(attempt, deadline):
                 response.raise_for_status()
-                return response.json()
+                return _decode(response)
         time.sleep(_RETRY_BACKOFF * (attempt + 1))
 
 
 def _out_of_retries(attempt: int, deadline: float) -> bool:
     return attempt >= _MAX_ATTEMPTS - 1 or time.monotonic() >= deadline
+
+
+def _decode(response: httpx.Response) -> Any:
+    """Decode the body, re-raising a malformed one as an httpx error.
+
+    A 200 carrying an error page instead of JSON is a normal upstream failure,
+    but `response.json()` reports it as a bare ValueError. A tool catching
+    `httpx.HTTPError` to convert to ToolError would miss that and 500 the whole
+    request — one exception family means one `except` at every call site.
+    """
+    try:
+        return response.json()
+    except ValueError as exc:
+        raise httpx.DecodingError(
+            f"{response.url} returned {response.headers.get('content-type', 'no content-type')}, "
+            "not JSON",
+            request=response.request,
+        ) from exc
 
 
 def _throttle(host: str) -> None:
