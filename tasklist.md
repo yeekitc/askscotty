@@ -136,9 +136,9 @@ Django 5.1 + DRF + Postgres. Everything lives under `backend/`. Code is bind-mou
 - [x] Create `backend/apps/personal/` app (user-scoped connectors)
 - [x] Register new apps in `backend/config/settings.py` `INSTALLED_APPS`
 - [x] Add a settings block for external API keys, read from env with safe defaults
-- [ ] Add a shared HTTP client helper: timeout, retry, identifying User-Agent, per-host rate limit
-- [ ] Add a response cache (per-tool TTL) so demo reloads don't hammer public APIs
-- [ ] Add structured logging for every tool call: tool name, args, latency, cache hit/miss — name/mode/latency/outcome done in `tools/registry.py:run_tool`; cache fields pending the cache. **Args are deliberately not logged** (a personal tool's args can identify a student). *(b4: those lines were being emitted into the void — Django only configures the `django` logger, so `settings.LOGGING` now wires up `apps.*` and they actually appear.)*
+- [x] Add a shared HTTP client helper: timeout, retry, identifying User-Agent, per-host rate limit — `apps/core/http.py:get_json`, the one place `httpx` is imported. GET only; every known caller is a read.
+- [x] Add a response cache (per-tool TTL) so demo reloads don't hammer public APIs — same function, `ttl=` per call. Django's default `LocMemCache`, so a second worker won't share a hit; accepted at this scale rather than adding Redis. **Defaults to off:** the key is only `(url, params)`, so caching an authenticated response would collide across students (PRD §9).
+- [ ] Add structured logging for every tool call: tool name, args, latency, cache hit/miss — name/mode/latency/outcome done in `tools/registry.py:run_tool`; cache hit/miss is its own `http_cache` line from `core/http.py`, because tool dispatch runs in a thread pool and contextvars don't cross it. **Args are deliberately not logged** (a personal tool's args can identify a student). *(b4: those lines were being emitted into the void — Django only configures the `django` logger, so `settings.LOGGING` now wires up `apps.*` and they actually appear.)*
 
 ## B1. Campus index / RAG — P0 (Days 1–2)
 

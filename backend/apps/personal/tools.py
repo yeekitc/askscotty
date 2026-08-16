@@ -8,6 +8,12 @@ The Canvas HTTP client is not wired yet (tasklist B5); the definitions are here
 because the plumbing — registry, per-session gating, credential handoff — is
 what §1 is about. Until then each function raises `ToolError`, the same path a
 real Canvas outage takes, so degrade-don't-crash gets exercised either way.
+
+When it is wired, `apps.core.http.get_json` is the client to use — but never
+copy the `ttl=` from a public B2 call into it. That cache is keyed on url and
+params only, so two students hitting the same Canvas endpoint with different
+tokens would collide and one could be served the other's data (PRD §9). Caching
+a personal response needs a key that includes the user.
 """
 
 from __future__ import annotations
