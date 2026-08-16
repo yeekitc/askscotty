@@ -144,8 +144,25 @@ turns and the round trip per batch: roughly 18 s of first-turn-plus-answer, then
 about 3 s per extra tool round (3 rounds → 27.5 s, 4 rounds → 30.6 s). Finishing
 B1/B2 makes answers *more reliable*, not fundamentally faster.
 
-So the remaining lever is `effort`, which is agent config and costs a
-re-provision to test — see [Model settings](#model-settings).
+So the remaining lever is `effort`. **Tested, and it is now `low`** (agent
+version 2, approved and re-provisioned 2026-08-15). Same query, same stand-in
+lanes, no web search:
+
+| Effort | Total, median | To first token | Lanes called |
+|---|---|---|---|
+| `medium` (6 runs) | 29.5 s | ~20.5 s | 3 of 3, every run |
+| **`low` (5 runs)** | **25.7 s** | **~15 s** | 3 of 3, every run |
+
+**~13% off the answer and ~27% off the wait before anything appears**, which is
+the half a person feels. The thing to watch for was under-thinking — the
+migration guide warns that `low` scopes work tightly and can drop tool calls —
+and it did not happen: every run used all three lanes, and with no campus tools
+registered it still reached for the web lane unprompted. If anything the prose
+came back better organised.
+
+Not free forever: revisit if answers start missing a hop once the real lanes land
+and the routing gets harder than four tools. `PLANNER_EFFORT` is the knob, and it
+takes a re-provision — an effort set on a session is silently ignored.
 
 Three things to take from it.
 
@@ -331,7 +348,7 @@ trap below.
 |---|---|---|
 | `temperature` / `top_p` / `top_k` | **Don't set them at all** | Non-default values are a **400** on this model. Steer with the prompt. |
 | `thinking` | **Omit it** — adaptive is on by default | Disabling thinking makes the model *less* likely to call tools, the opposite of what a routing planner wants. And `budget_tokens` is a 400. |
-| `effort` | `model: {id: "claude-sonnet-5", effort: "medium"}` on the agent | Default is `high`. For tool routing, medium is plenty and it's our main latency lever. |
+| `effort` | `model: {id: "claude-sonnet-5", effort: "low"}` on the agent | Default is `high`. Our main latency lever, and `low` measured faster with no loss of routing — see [What it actually cost](#what-it-actually-cost-measured-2026-08-15). |
 
 > ⚠️ **`effort` inside a per-session `model` override is silently ignored.** It is
 > the one overridable field that fails quietly instead of erroring, so a session
@@ -1126,8 +1143,9 @@ Zero new dependencies. Everything needed is RN core + react-native-web.
 - **What bounds a runaway loop now.** A session `budget` is the plan, but nobody
   has picked a number. It wants to be generous enough that a legitimate
   multi-hop never trips it and small enough to matter.
-- **Effort level.** Starting at `medium`. Now an agent-version change rather than
-  an env knob, so measuring it costs a re-provision.
+- ~~**Effort level.**~~ **Settled: `low`**, agent version 2. Measured rather than
+  guessed — ~13% off the answer, ~27% off time-to-first-token, and no lane went
+  uncalled. See [What it actually cost](#what-it-actually-cost-measured-2026-08-15).
 - **Who owns conversation state.** A session per thread makes CMA the second
   store alongside `Thread`/`Message`. Ours stays authoritative for what the app
   renders; the session is what the model sees. Worth deciding explicitly before

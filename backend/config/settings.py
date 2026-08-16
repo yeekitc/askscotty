@@ -185,11 +185,17 @@ ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 # "use the empty string". Same below.
 PLANNER_MODEL = os.getenv("PLANNER_MODEL") or "claude-sonnet-5"
 
-# How hard the model thinks before answering. The default is `high`; for tool
-# routing `medium` is plenty and it is the main latency lever we have.
+# How hard the model thinks before answering. The API default is `high`; `low` is
+# measured as ~13% faster end to end and ~27% to first token than `medium` on the
+# signature multi-hop, with no loss of tool routing (docs/b4-planner.md).
+#
+# Read only by `manage.py provision_planner`. Effort lives on the agent, and an
+# effort set inside a per-session override is *silently ignored* — so changing
+# this without re-provisioning does nothing at all.
+#
 # Note what is *not* here: temperature, top_p and top_k are a 400 on this model
 # at any non-default value, so the planner never sends them.
-PLANNER_EFFORT = os.getenv("PLANNER_EFFORT") or "medium"
+PLANNER_EFFORT = os.getenv("PLANNER_EFFORT") or "low"
 
 # Managed Agents config objects, created once by `manage.py provision_planner`
 # and referenced by every session after that. Not secret. Empty until someone

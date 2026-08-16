@@ -728,6 +728,10 @@ const styles = StyleSheet.create({
     width: SIDEBAR_WIDTH,
     padding: spacing.lg,
     backgroundColor: colors.sidebar,
+    // Fills the track, which is the flex child that stretches to the row. The
+    // drawer ignores this — absolute children are not flex items — and gets its
+    // height from top/bottom instead.
+    flex: 1,
   },
   // The shadow lives on whichever element bounds the visible sidebar. Inline
   // that is the track, whose width is the animated one; on the panel it would
