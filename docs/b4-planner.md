@@ -116,13 +116,36 @@ measurement: same shapes, same citation payloads, a deliberate 400 ms of latency
 each. That measures the dispatch path honestly and says nothing about how fast a
 real Courses API is.
 
-| | Manual loop (4 runs) | Managed Agents (6 runs) |
+| | Manual loop (4 runs) | Managed Agents (11 runs) |
 |---|---|---|
-| **Total, median** | **13.3 s** | **37.9 s** |
-| Total, same 3-lane shape | 11.6 – 16.7 s | 24.8 – 28.9 s |
+| **Total, median** | **13.3 s** | **~32 s** |
 | Total, range | 11.6 – 16.7 s | 24.8 – **86.5** s |
-| **Time to first `text_delta`, median** | **~7 s** | **~28 s** |
+| **Time to first `text_delta`, median** | **~7 s** | **~21 s** |
 | Tool calls per answer | 2 – 3 | 3 – 5 |
+
+**Split by whether the web lane ran**, which turns out to be the single biggest
+factor — and the one that goes away as B1/B2 land:
+
+| Managed Agents | Median | Range |
+|---|---|---|
+| Campus tools only, no web search (6 runs) | **29.5 s** | 24.8 – 31.0 s |
+| Web search ran (5 runs) | **41.0 s** | 34.9 – **86.5** s |
+
+Two things follow. **Web search costs roughly 12 seconds at the median** —
+consistent with the ~26 s figure tasklist §1 measured for a searching turn — and
+more importantly it owns the entire tail: without it the spread is 25–31 s, with
+it the worst run was 86 s. That is the case for RAG-before-web restated as
+latency rather than tokens.
+
+**But the floor is not the tools.** The stand-in lanes sleep 400 ms each, so
+three of them are 1.2 s of a 30-second answer — about 4%. Real campus APIs at a
+second apiece would add two or three seconds, not twenty. What is left is model
+turns and the round trip per batch: roughly 18 s of first-turn-plus-answer, then
+about 3 s per extra tool round (3 rounds → 27.5 s, 4 rounds → 30.6 s). Finishing
+B1/B2 makes answers *more reliable*, not fundamentally faster.
+
+So the remaining lever is `effort`, which is agent config and costs a
+re-provision to test — see [Model settings](#model-settings).
 
 Three things to take from it.
 

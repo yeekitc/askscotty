@@ -18,6 +18,12 @@ import {
   useWindowDimensions,
 } from 'react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
+import Animated, {
+  runOnJS,
+  useAnimatedStyle,
+  useSharedValue,
+  withTiming,
+} from 'react-native-reanimated'
 import AsyncStorage from '@react-native-async-storage/async-storage'
 import {
   AssistantRuntimeProvider,
@@ -41,6 +47,7 @@ import {
   removeThread,
   threadTitle,
 } from '../lib/chatThreads'
+import { durations, easing, useReducedMotion } from '../lib/motion'
 import { colors, radius, shadows, spacing } from '../lib/theme'
 import { useCurrentUser } from '../lib/user'
 
@@ -66,6 +73,19 @@ const TITLE_MAX = 120
  */
 function fingerprintOf(thread: ChatThread): string {
   return JSON.stringify([thread.title, thread.messages])
+}
+
+/**
+ * The sidebar stays mounted when closed so the closing half of the animation
+ * has something to play on, which otherwise leaves it reachable by tab and by
+ * screen reader while it is off-screen.
+ */
+function hiddenWhenClosed(open: boolean) {
+  return {
+    pointerEvents: open ? ('auto' as const) : ('none' as const),
+    accessibilityElementsHidden: !open,
+    importantForAccessibility: open ? ('auto' as const) : ('no-hide-descendants' as const),
+  }
 }
 
 // The source filter is per-device UI state, so it stays on the device — in
@@ -119,6 +139,35 @@ export default function AskScreen() {
   const [sidebarOpen, setSidebarOpen] = useState<boolean | null>(null)
   const sidebarEffectiveOpen = sidebarOpen ?? isWide
   const [searchQuery, setSearchQuery] = useState('')
+
+  const reduceMotion = useReducedMotion()
+
+  // One 0→1 value drives both layouts: the track's width when the sidebar is
+  // inline, the panel's offset when it is a drawer.
+  const sidebarProgress = useSharedValue(sidebarEffectiveOpen ? 1 : 0)
+  useEffect(() => {
+    const target = sidebarEffectiveOpen ? 1 : 0
+    sidebarProgress.value = reduceMotion
+      ? target
+      : withTiming(target, { duration: durations.slow, easing })
+  }, [sidebarEffectiveOpen, reduceMotion, sidebarProgress])
+
+  // Width rather than a transform, because the main column is flex:1 — animating
+  // the track is what makes the thread area follow the sidebar instead of
+  // snapping across once it lands.
+  const sidebarTrackStyle = useAnimatedStyle(() => ({
+    width: sidebarProgress.value * SIDEBAR_WIDTH,
+  }))
+
+  // The panel keeps its full width and slides, so its contents never reflow
+  // mid-animation. What overhangs is off the left edge of the screen.
+  const sidebarPanelStyle = useAnimatedStyle(() => ({
+    transform: [{ translateX: (sidebarProgress.value - 1) * SIDEBAR_WIDTH }],
+  }))
+
+  const drawerBackdropStyle = useAnimatedStyle(() => ({
+    opacity: sidebarProgress.value,
+  }))
 
   // Which row's "..." menu is open, and which row is being renamed in place.
   // Both are hand-rolled: @assistant-ui/react-native ships no menu primitive
@@ -227,6 +276,23 @@ export default function AskScreen() {
   // Thread.MessagesFlatList's item list shrink to zero under it via
   // thread.reset() raced the FlatList's index bookkeeping and crashed.
   const [isEmpty, setIsEmpty] = useState(true)
+
+  // The hero-to-thread swap is a hard cut on the app's most-watched moment, the
+  // first send. Only the arriving side is animated: crossfading would mean two
+  // AskComposers mounted at once, both bound to the same runtime composer.
+  const threadEnter = useSharedValue(0)
+  useEffect(() => {
+    if (isEmpty) {
+      threadEnter.value = 0
+      return
+    }
+    threadEnter.value = reduceMotion ? 1 : withTiming(1, { duration: durations.base, easing })
+  }, [isEmpty, reduceMotion, threadEnter])
+
+  const threadEnterStyle = useAnimatedStyle(() => ({
+    opacity: threadEnter.value,
+    transform: [{ translateY: (1 - threadEnter.value) * 8 }],
+  }))
 
   // Mirrors the live thread back into whichever thread is active, so switching
   // away and back loses nothing. Reads activeThreadIdRef rather than the state,
@@ -508,7 +574,14 @@ export default function AskScreen() {
     <AssistantRuntimeProvider runtime={runtime}>
       <View style={[styles.screen, { paddingTop: insets.top }]}>
         <View style={styles.row}>
-          {isWide && sidebarEffectiveOpen ? <View style={styles.sidebar}>{sidebar}</View> : null}
+          {isWide ? (
+            <Animated.View
+              style={[styles.sidebarTrack, sidebarTrackStyle]}
+              {...hiddenWhenClosed(sidebarEffectiveOpen)}
+            >
+              <Animated.View style={[styles.sidebar, sidebarPanelStyle]}>{sidebar}</Animated.View>
+            </Animated.View>
+          ) : null}
 
           <View style={styles.mainColumn}>
             <View style={styles.topBar}>
@@ -536,7 +609,7 @@ export default function AskScreen() {
                   <AskComposer sources={sources} onSourcesChange={setSources} />
                 </View>
               ) : (
-                <View style={styles.activeThread}>
+                <Animated.View style={[styles.activeThread, threadEnterStyle]}>
                   <Thread.MessagesFlatList
                     // Forces a full remount per thread switch: the previous
                     // thread's messages are a different list, not an edit.
@@ -550,22 +623,35 @@ export default function AskScreen() {
                   <View style={[styles.pinnedComposer, { paddingBottom: insets.bottom + spacing.sm }]}>
                     <AskComposer sources={sources} onSourcesChange={setSources} />
                   </View>
-                </View>
+                </Animated.View>
               )}
             </KeyboardAvoidingView>
           </View>
         </View>
 
-        {!isWide && sidebarEffectiveOpen ? (
+        {!isWide ? (
           <>
-            <Pressable
-              style={styles.drawerBackdrop}
-              onPress={() => setSidebarOpen(false)}
-              accessibilityLabel="Close sidebar"
-            />
-            <View style={[styles.sidebar, styles.sidebarDrawer, { paddingTop: insets.top + spacing.md }]}>
+            <Animated.View
+              style={[styles.drawerBackdrop, drawerBackdropStyle]}
+              {...hiddenWhenClosed(sidebarEffectiveOpen)}
+            >
+              <Pressable
+                style={StyleSheet.absoluteFill}
+                onPress={() => setSidebarOpen(false)}
+                accessibilityLabel="Close sidebar"
+              />
+            </Animated.View>
+            <Animated.View
+              style={[
+                styles.sidebar,
+                styles.sidebarDrawer,
+                { paddingTop: insets.top + spacing.md },
+                sidebarPanelStyle,
+              ]}
+              {...hiddenWhenClosed(sidebarEffectiveOpen)}
+            >
               {sidebar}
-            </View>
+            </Animated.View>
           </>
         ) : null}
       </View>
@@ -592,7 +678,39 @@ function RunningIndicator() {
     return !last.content.some((part) => part.type !== 'text' || part.text.length > 0)
   })
 
-  return waiting ? <TypingIndicator /> : null
+  const reduceMotion = useReducedMotion()
+
+  // Outlives `waiting` by the length of the fade, so the dots hand over to the
+  // answer rather than blinking out the frame it arrives. ChatMessage fades the
+  // card in on the same signal, which is what makes the two overlap.
+  const [mounted, setMounted] = useState(waiting)
+  const opacity = useSharedValue(waiting ? 1 : 0)
+
+  useEffect(() => {
+    if (waiting) {
+      setMounted(true)
+      opacity.value = reduceMotion ? 1 : withTiming(1, { duration: durations.fast, easing })
+      return
+    }
+    if (reduceMotion) {
+      opacity.value = 0
+      setMounted(false)
+      return
+    }
+    opacity.value = withTiming(0, { duration: durations.base, easing }, (finished) => {
+      if (finished) runOnJS(setMounted)(false)
+    })
+  }, [waiting, reduceMotion, opacity])
+
+  const style = useAnimatedStyle(() => ({ opacity: opacity.value }))
+
+  if (!mounted) return null
+
+  return (
+    <Animated.View style={style}>
+      <TypingIndicator />
+    </Animated.View>
+  )
 }
 
 const styles = StyleSheet.create({
@@ -610,6 +728,11 @@ const styles = StyleSheet.create({
     width: SIDEBAR_WIDTH,
     padding: spacing.lg,
     backgroundColor: colors.sidebar,
+  },
+  // The shadow lives on whichever element bounds the visible sidebar. Inline
+  // that is the track, whose width is the animated one; on the panel it would
+  // travel off-screen with the slide.
+  sidebarTrack: {
     ...shadows.sidebar,
   },
   sidebarDrawer: {
@@ -618,6 +741,7 @@ const styles = StyleSheet.create({
     left: 0,
     bottom: 0,
     zIndex: 60,
+    ...shadows.sidebar,
   },
   drawerBackdrop: {
     position: 'absolute',
