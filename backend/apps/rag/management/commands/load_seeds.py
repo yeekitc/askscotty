@@ -10,12 +10,14 @@ class Command(BaseCommand):
     def handle(self, *args, **options):
         created = 0
         for url, label in SEEDS:
-            _, was_created = CrawlSeed.objects.get_or_create(
+            seed, was_created = CrawlSeed.objects.get_or_create(
                 url=url,
                 defaults={"label": label},
             )
             if was_created:
                 created += 1
-        self.stdout.write(
+            elif seed.label != label:
+                seed.label = label
+                seed.save(update_fields=["label"])
             self.style.SUCCESS(f"Done. {created} new seeds added ({len(SEEDS)} total).")
         )
