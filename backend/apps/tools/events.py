@@ -56,9 +56,19 @@ def _parse_dt(s: str) -> datetime | None:
     """Try a few common datetime formats from the feed."""
     if not s:
         return None
-    for fmt in ("%Y-%m-%dT%H:%M:%S%z", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
+
+    cleaned = s.strip()
+    if cleaned.endswith("Z"):
+        cleaned = cleaned[:-1] + "+00:00"
+
+    for fmt in (
+        "%Y-%m-%dT%H:%M:%S%z",
+        "%Y-%m-%dT%H:%M:%S",
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%d",
+    ):
         try:
-            dt = datetime.strptime(s.rstrip("Z"), fmt.rstrip("%z"))
+            dt = datetime.strptime(cleaned, fmt)
             if dt.tzinfo is None:
                 dt = dt.replace(tzinfo=timezone.utc)
             return dt
