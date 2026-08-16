@@ -64,12 +64,12 @@ def embed_pending(*, force: bool = False, stdout=None) -> int:
     if stdout:
         stdout.write(f"Embedding {total} chunks...")
 
-    ids = list(qs.values_list("id", flat=True))
+    ids = list(qs.order_by("id").values_list("id", flat=True))
     embedded = 0
 
     for i in range(0, len(ids), _BATCH_SIZE):
         batch_ids = ids[i : i + _BATCH_SIZE]
-        chunks = list(Chunk.objects.filter(id__in=batch_ids))
+        chunks = list(Chunk.objects.filter(id__in=batch_ids).order_by("id"))
         texts = [c.text for c in chunks]
 
         vectors = embed_texts(texts)
