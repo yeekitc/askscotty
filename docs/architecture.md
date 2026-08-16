@@ -71,7 +71,7 @@ returns an error, never someone's data.
 | `backend/apps/core/` | endpoints, contract, errors, threads |
 | `backend/apps/tools/` | tool registry, source registry |
 | `backend/apps/personal/` | encrypted connectors |
-| `backend/apps/planner/` | the session driver, prompt, citations. `manual_loop.py` is the pre-migration loop, still reachable via `PLANNER_MANAGED_AGENTS=false` — see [b4-planner.md](./b4-planner.md) |
+| `backend/apps/planner/` | the session driver, prompt, citations — see [b4-planner.md](./b4-planner.md) |
 | `backend/apps/rag/` | not created yet |
 | `frontend/app/` | the whole app, all three platforms |
 

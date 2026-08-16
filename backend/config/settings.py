@@ -204,15 +204,6 @@ PLANNER_EFFORT = os.getenv("PLANNER_EFFORT") or "low"
 PLANNER_AGENT_ID = os.getenv("PLANNER_AGENT_ID") or ""
 PLANNER_ENVIRONMENT_ID = os.getenv("PLANNER_ENVIRONMENT_ID") or ""
 
-# The escape hatch back to the hand-written loop in apps/planner/manual_loop.py.
-# Kept only until the migration is proven end to end; delete the file and this
-# setting together.
-PLANNER_MANAGED_AGENTS = (os.getenv("PLANNER_MANAGED_AGENTS") or "true").lower() in {
-    "1",
-    "true",
-    "yes",
-}
-
 # What bounds a runaway tool loop now that the wall-clock deadline is gone.
 # Dollar-denominated because that is the shape the problem actually has, in
 # minor units (cents) because that is what the API takes. It bounds a whole

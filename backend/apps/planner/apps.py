@@ -22,8 +22,6 @@ def _check_provisioned(app_configs, **kwargs):
     with the same instruction the first time anyone asks a question, in
     `apps/planner/client.py`. Neither ever self-provisions.
     """
-    if not settings.PLANNER_MANAGED_AGENTS:
-        return []
     if settings.PLANNER_AGENT_ID and settings.PLANNER_ENVIRONMENT_ID:
         return []
 
