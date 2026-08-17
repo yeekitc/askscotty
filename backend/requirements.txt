@@ -30,3 +30,12 @@ httpx==0.28.1
 # HTML → clean text for the campus crawler. Strips nav/footer/script/style and
 # extracts heading hierarchy so the chunker can split on section boundaries.
 beautifulsoup4==4.12.3
+
+# Unofficial, reverse-engineered clients for Piazza and Gradescope. Both
+# authenticate with the student's real email and password rather than a scoped
+# token — neither service issues one — so connecting either stores a password we
+# can decrypt. That risk was raised explicitly and accepted; see
+# docs/b5-piazza-gradescope.md and the reasoning column in docs/dependencies.md
+# before adding anything else in this shape.
+piazza-api==0.16.0
+gradescopeapi==1.8.1

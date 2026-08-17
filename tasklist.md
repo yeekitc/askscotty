@@ -306,22 +306,34 @@ response shapes and every SSE event are unchanged.
 ## B5. Personal connectors — P0/P1 (Day 5)
 
 📋 **[docs/b5-connections.md](./docs/b5-connections.md)** — the connections
-contract + endpoint (nothing in B5 is reachable without it; the model and
-encryption below are already built). **[docs/b5-piazza-gradescope.md](./docs/b5-piazza-gradescope.md)**
-— Piazza and Gradescope connectors, built on top of it; both authenticate
-with the student's real password rather than a token, an explicit accepted
-risk (see that doc's opening section), not the default pattern here.
+contract + endpoint. **Done** — `Provider` already includes `PIAZZA`/
+`GRADESCOPE`, `get_credential()`/`set_credential()` exist. **[docs/b5-piazza-gradescope.md](./docs/b5-piazza-gradescope.md)**
+— Piazza and Gradescope connectors, built on that contract. **Done** — both
+live in `apps/personal/tools.py` alongside Canvas, so one module docstring
+covers both credential models. Both authenticate with the student's real
+password rather than a token, an explicit accepted risk (see that doc's
+opening section), not the default pattern here; the one thing still open is
+confirming a real CMU login is not interrupted by Duo, which needs an account
+the test suite must never hold. **[docs/b5-canvas-ed-stellic.md](./docs/b5-canvas-ed-stellic.md)**
+— the other three boxes below: Canvas (finishes the existing stub), Ed
+Discussion (new — confirmed against `edapi`'s real source, not a guess),
+Stellic (mock only, no real integration, by explicit direction). Also fixes
+a real gap found while grounding it: `apps/core/http.py`'s `get_json()` has
+no way to send an `Authorization` header at all, which both Canvas and Ed
+need.
 
 - [x] `UserConnection` model: user/session, provider, encrypted token, `connected_at`, `last_sync_at` — `apps/personal/models.py`
 - [x] Encrypt tokens at rest; never log them; never return them in any API response — `apps/personal/crypto.py`
 - [x] `GET`/`POST /api/connections/` (list, connect), `DELETE /api/connections/{provider}/` (disconnect)
 - [x] **Disconnect deletes all synced data** (PRD §7 — required)
+- [x] Piazza (`piazza_list_classes`, `piazza_search`) and Gradescope (`gradescope_get_assignments`) — **P1**
+- [ ] Confirm a real CMU Piazza/Gradescope login is not interrupted by Duo — needs a real account, so it cannot be a test (`scripts/check_connector_login.py`)
 - [ ] Canvas client against `canvas.cmu.edu/api/v1` using a student PAT — **P0**
 - [ ] Canvas: courses, assignments + due dates, announcements
 - [ ] `personal_search(query)` tool, scoped to the current user only
 - [ ] "What's due this week?" works end to end
 - [ ] Ed Discussion via settings API token — **P1**
-- [ ] Stellic: mock / uploaded JSON degree audit — **P1**
+- [ ] Stellic: mock / uploaded JSON degree audit — **P1** — scope narrowed to mock only, no upload parser (see doc)
 - [ ] "On track for CS minor?" using Stellic mock + live Courses — **P1**
 - [ ] Assert in code + test that personal chunks are never written to the shared index
 
