@@ -166,6 +166,27 @@ export type ThreadListResponse = {
   threads: StoredThread[]
 }
 
+// --- Personal connections -----------------------------------------------------
+
+/** The personal sources a session can connect (Provider in apps/personal/models.py). */
+export type Provider = 'canvas' | 'ed' | 'stellic' | 'piazza' | 'gradescope'
+
+/**
+ * One connected source. There is deliberately no `credential` field: the
+ * backend never returns one (PRD §9), so there is nothing here to hold it.
+ */
+export type Connection = {
+  provider: Provider
+  connected_at: string
+  /** null until the source has actually been pulled from. */
+  last_sync_at: string | null
+}
+
+/** GET /api/connections/ response body. */
+export type ConnectionListResponse = {
+  connections: Connection[]
+}
+
 /** Every API failure uses this shape (tasklist §2). Show `message` to the user. */
 export type ApiError = {
   error: {

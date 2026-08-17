@@ -7,6 +7,8 @@ import logging
 from datetime import datetime, timezone
 from typing import Iterator
 
+from apps.personal.context import disconnect, get_connector, get_user_connectors
+from apps.personal.models import UserConnection
 from apps.planner.errors import PlannerError, as_api_exception
 from apps.planner.loop import drain, run_planner
 from apps.tools.sources import all_sources
@@ -22,6 +24,8 @@ from .errors import code_for_status
 from .models import Message, Thread
 from .serializers import (
     AskSerializer,
+    ConnectionListResponseSerializer,
+    ConnectionSerializer,
     SourcesResponseSerializer,
     ThreadListResponseSerializer,
     ThreadSerializer,
@@ -297,4 +301,92 @@ class ThreadDetailView(APIView):
             raise NotFound("No such thread for this session.")
 
         # Messages go with it via the CASCADE on Message.thread.
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+# --- Personal connections -----------------------------------------------------
+#
+# A credential is write-only end to end: it arrives in a POST body, the model
+# encrypts it, and nothing here can read it back out (PRD §9). Same session
+# scoping as threads above — the header, never the URL.
+
+
+def _serialize_connection(connection: UserConnection) -> dict:
+    """Never the credential. Not even shaped to carry one — see
+    ConnectionSerializer.credential's write_only."""
+    return {
+        "provider": connection.provider,
+        "connected_at": connection.connected_at,
+        "last_sync_at": connection.last_sync_at,
+    }
+
+
+class ConnectionsView(APIView):
+    """GET / POST /api/connections/ — what this session has connected, and
+    connecting a new source.
+
+    GET is not in tasklist B5's literal checklist, but the settings UI needs it
+    to render connected state on load — the same reason SourcesView exists.
+    """
+
+    authentication_classes: list = []
+    permission_classes: list = []
+
+    def get(self, request: Request) -> Response:
+        session_id = _session_id(request)
+
+        payload = {
+            "connections": [
+                _serialize_connection(connection)
+                for connection in get_user_connectors(session_id)
+            ]
+        }
+        return Response(
+            ConnectionListResponseSerializer(payload).data, status=status.HTTP_200_OK
+        )
+
+    def post(self, request: Request) -> Response:
+        session_id = _session_id(request)
+
+        serializer = ConnectionSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        provider = serializer.validated_data["provider"]
+
+        # Reconnecting rewrites the existing row rather than leaving a stale
+        # credential behind — which the model's unique constraint requires
+        # anyway.
+        connection = get_connector(session_id, provider) or UserConnection(
+            session_id=session_id, provider=provider
+        )
+        # Encrypted before anything is written: inserting first would leave a
+        # row holding an empty credential if this raised, and every later
+        # get_credential() on that row would fail with no way to tell why.
+        connection.set_credential(serializer.validated_data["credential"])
+        connection.save()
+
+        return Response(
+            ConnectionSerializer(_serialize_connection(connection)).data,
+            status=status.HTTP_200_OK,
+        )
+
+
+class ConnectionDetailView(APIView):
+    """DELETE /api/connections/{provider}/ — disconnect a source.
+
+    All the work is already in apps/personal/context.disconnect(): it deletes
+    the UserConnection row, which is the whole of PRD §7's "disconnecting
+    deletes the synced data". Anything that ever stores synced data must FK to
+    that row with CASCADE, so there is nothing else to clean up here — now or
+    when the first connector actually syncs something.
+    """
+
+    authentication_classes: list = []
+    permission_classes: list = []
+
+    def delete(self, request: Request, provider: str) -> Response:
+        session_id = _session_id(request)
+
+        if not disconnect(session_id, provider):
+            raise NotFound(f"No {provider} connection for this session.")
+
         return Response(status=status.HTTP_204_NO_CONTENT)

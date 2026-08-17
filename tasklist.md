@@ -305,10 +305,17 @@ response shapes and every SSE event are unchanged.
 
 ## B5. Personal connectors — P0/P1 (Day 5)
 
-- [ ] `UserConnection` model: user/session, provider, encrypted token, `connected_at`, `last_sync_at`
-- [ ] Encrypt tokens at rest; never log them; never return them in any API response
-- [ ] `POST /api/connections/` (connect), `DELETE /api/connections/{provider}/` (disconnect)
-- [ ] **Disconnect deletes all synced data** (PRD §7 — required)
+📋 **[docs/b5-connections.md](./docs/b5-connections.md)** — the connections
+contract + endpoint (nothing in B5 is reachable without it; the model and
+encryption below are already built). **[docs/b5-piazza-gradescope.md](./docs/b5-piazza-gradescope.md)**
+— Piazza and Gradescope connectors, built on top of it; both authenticate
+with the student's real password rather than a token, an explicit accepted
+risk (see that doc's opening section), not the default pattern here.
+
+- [x] `UserConnection` model: user/session, provider, encrypted token, `connected_at`, `last_sync_at` — `apps/personal/models.py`
+- [x] Encrypt tokens at rest; never log them; never return them in any API response — `apps/personal/crypto.py`
+- [x] `GET`/`POST /api/connections/` (list, connect), `DELETE /api/connections/{provider}/` (disconnect)
+- [x] **Disconnect deletes all synced data** (PRD §7 — required)
 - [ ] Canvas client against `canvas.cmu.edu/api/v1` using a student PAT — **P0**
 - [ ] Canvas: courses, assignments + due dates, announcements
 - [ ] `personal_search(query)` tool, scoped to the current user only

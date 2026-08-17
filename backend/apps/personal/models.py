@@ -14,6 +14,8 @@ PRD §7 rules this file exists to enforce:
 
 from __future__ import annotations
 
+import json
+
 from django.db import models
 
 from .crypto import decrypt, encrypt
@@ -29,6 +31,25 @@ class Provider(models.TextChoices):
     CANVAS = "canvas", "Canvas"
     ED = "ed", "Ed Discussion"
     STELLIC = "stellic", "Stellic (uploaded audit)"
+    PIAZZA = "piazza", "Piazza"
+    GRADESCOPE = "gradescope", "Gradescope"
+
+
+# What a credential must contain, per provider. One place knows the shape, so
+# the connections endpoint and the tools that spend the credential cannot
+# disagree about it.
+#
+# STELLIC is absent on purpose: its "credential" is an uploaded degree-audit
+# JSON file, not a login, so it does not go through the connect endpoint.
+# Piazza and Gradescope want an email and password rather than a scoped token
+# because their unofficial libraries offer nothing else — see
+# docs/b5-piazza-gradescope.md for that decision and the risk accepted with it.
+CREDENTIAL_FIELDS: dict[str, tuple[str, ...]] = {
+    Provider.CANVAS: ("token",),
+    Provider.ED: ("token",),
+    Provider.PIAZZA: ("email", "password"),
+    Provider.GRADESCOPE: ("email", "password"),
+}
 
 
 class UserConnection(models.Model):
@@ -46,7 +67,8 @@ class UserConnection(models.Model):
     )
     provider = models.CharField(max_length=32, choices=Provider.choices)
     encrypted_token = models.TextField(
-        help_text="Fernet ciphertext. Read it through get_token(), never directly.",
+        help_text="Fernet ciphertext of a JSON credential. Read it through "
+        "get_credential(), never directly.",
     )
     connected_at = models.DateTimeField(auto_now_add=True)
     last_sync_at = models.DateTimeField(
@@ -71,14 +93,31 @@ class UserConnection(models.Model):
         # pages, so it must stay boring.
         return f"{self.get_provider_display()} (session {self.session_id[:8]}…)"
 
-    def set_token(self, raw_token: str) -> None:
-        """Encrypt and store a credential. Does not save."""
-        self.encrypted_token = encrypt(raw_token.strip())
+    def set_credential(self, credential: dict) -> None:
+        """Encrypt and store a credential dict. Does not save.
 
-    def get_token(self) -> str:
-        """Decrypt the credential for an outbound API call.
+        Always a JSON object, never a bare string: Canvas and Ed hand over one
+        token, but Piazza and Gradescope need an email *and* a password, and one
+        stored shape means the endpoint and the tools never have to ask which
+        kind of provider they are holding.
+        """
+        self.encrypted_token = encrypt(json.dumps(credential))
+
+    def get_credential(self) -> dict:
+        """Decrypt and parse the stored credential.
 
         Keep the return value local and let it go out of scope. Do not log it,
         do not attach it to an exception, do not return it.
         """
-        return decrypt(self.encrypted_token)
+        return json.loads(decrypt(self.encrypted_token))
+
+    def set_token(self, raw_token: str) -> None:
+        """Convenience for single-token providers (Canvas, Ed)."""
+        self.set_credential({"token": raw_token.strip()})
+
+    def get_token(self) -> str:
+        """Convenience for single-token providers (Canvas, Ed).
+
+        Same discipline as get_credential(): local, and never logged or returned.
+        """
+        return self.get_credential()["token"]

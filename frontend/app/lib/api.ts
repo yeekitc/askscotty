@@ -10,7 +10,10 @@ import type {
   AskRequest,
   AskResponse,
   Citation,
+  Connection,
+  ConnectionListResponse,
   Mode,
+  Provider,
   StoredThread,
   ThreadListResponse,
 } from './types'
@@ -351,4 +354,44 @@ export function saveThread(
 /** Delete a thread and its messages. Deleting an unknown id throws a not_found. */
 export function deleteThread(id: string): Promise<void> {
   return request<void>(`/api/threads/${encodeURIComponent(id)}/`, { method: 'DELETE' })
+}
+
+// --- Personal connections -----------------------------------------------------
+//
+// Credentials travel one way only. `connect` sends one; nothing here ever
+// receives one back, because no response contains one (PRD §9).
+
+/** The personal sources this session has connected. */
+export async function fetchConnections(): Promise<Connection[]> {
+  const { connections } = await request<ConnectionListResponse>('/api/connections/')
+  return connections ?? []
+}
+
+/**
+ * Connect a source, or replace the credential on one already connected.
+ *
+ * `credential` is whatever that provider needs — `{token}` for Canvas and Ed,
+ * `{email, password}` for Piazza and Gradescope (CREDENTIAL_FIELDS in
+ * apps/personal/models.py). Sending the wrong keys is a validation_error
+ * naming the missing ones.
+ */
+export function connect(
+  provider: Provider,
+  credential: Record<string, string>,
+): Promise<Connection> {
+  return request<Connection>('/api/connections/', {
+    method: 'POST',
+    body: { provider, credential },
+  })
+}
+
+/**
+ * Disconnect a source, deleting the credential and everything synced from it
+ * (PRD §7). Disconnecting something that was never connected throws a
+ * not_found.
+ */
+export function disconnect(provider: Provider): Promise<void> {
+  return request<void>(`/api/connections/${encodeURIComponent(provider)}/`, {
+    method: 'DELETE',
+  })
 }

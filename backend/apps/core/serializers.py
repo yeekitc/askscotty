@@ -10,6 +10,7 @@ here rather than as a blank chip on someone's phone.
 
 from __future__ import annotations
 
+from apps.personal.models import CREDENTIAL_FIELDS, Provider
 from apps.tools.registry import MODES
 from apps.tools.sources import ACCESS, TIERS
 from rest_framework import serializers
@@ -191,3 +192,77 @@ class ThreadListResponseSerializer(serializers.Serializer):
     """GET /api/threads/ response body."""
 
     threads = ThreadSerializer(many=True)
+
+
+# --- Personal connections -----------------------------------------------------
+
+
+class ConnectionSerializer(serializers.Serializer):
+    """POST /api/connections/ request, and — minus `credential` — the response."""
+
+    provider = serializers.ChoiceField(choices=Provider.choices)
+
+    # write_only: even if something upstream tried to echo this back, DRF drops
+    # it from the serialized output. Defence in depth on top of
+    # _serialize_connection() simply never touching it (PRD §9).
+    credential = serializers.JSONField(write_only=True)
+
+    connected_at = serializers.DateTimeField(read_only=True, required=False)
+    last_sync_at = serializers.DateTimeField(read_only=True, required=False, allow_null=True)
+
+    def validate_credential(self, value):
+        # JSONField accepts any JSON, so without this a bare string or a list
+        # reaches the per-provider key check below as an AttributeError — a 500
+        # on a malformed request instead of a 400.
+        if not isinstance(value, dict):
+            raise serializers.ValidationError("Expected an object of credential fields.")
+        return value
+
+    def validate(self, attrs):
+        """Check the credential carries what this particular provider needs.
+
+        Cross-field, so it belongs here rather than in the view: `credential` is
+        only meaningful against a `provider`. Errors name the missing *keys* and
+        never a value — this is the one serializer whose input is a password.
+        """
+        provider = attrs["provider"]
+        credential = attrs["credential"]
+
+        expected = CREDENTIAL_FIELDS.get(provider)
+        if expected is None:
+            # A provider with no credential shape — Stellic, whose "connection"
+            # is an uploaded degree audit rather than a login.
+            raise serializers.ValidationError(
+                {"provider": f"{provider} is not connected with a login credential."}
+            )
+
+        # Trailing whitespace survives a paste from a phone keyboard far more
+        # often than it belongs in a real credential, and set_token() has always
+        # stripped — so one rule for the whole credential, not a per-key one.
+        cleaned = {
+            key: value.strip()
+            for key, value in credential.items()
+            if key in expected and isinstance(value, str)
+        }
+
+        missing = [key for key in expected if not cleaned.get(key)]
+        if missing:
+            raise serializers.ValidationError(
+                {
+                    "credential": (
+                        f"{provider} needs: {', '.join(expected)}. "
+                        f"Missing: {', '.join(missing)}."
+                    )
+                }
+            )
+
+        # Only the declared keys are stored, so a caller cannot park arbitrary
+        # data in an encrypted blob nothing will ever read.
+        attrs["credential"] = cleaned
+        return attrs
+
+
+class ConnectionListResponseSerializer(serializers.Serializer):
+    """GET /api/connections/ response body."""
+
+    connections = ConnectionSerializer(many=True)
