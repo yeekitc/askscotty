@@ -11,7 +11,7 @@ import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { Animated, Easing, Image, Platform, StyleSheet, Text, View } from 'react-native'
 
 import { MODE_LABELS } from '../lib/assistantAdapter'
-import { getIdleProgress, getProgress, subscribeToProgress } from '../lib/progress'
+import { getNoRun, getRun, subscribeToRuns } from '../lib/runs'
 import { colors, fonts, radius, spacing } from '../lib/theme'
 
 const MASCOT = require('../assets/mascot.png')
@@ -87,24 +87,31 @@ function Dot({ delay }: { delay: number }) {
  * time-to-first-token to roughly half a minute (docs/b4-planner.md), so without
  * this the demo is a bouncing dot for 30 seconds with nothing to say for itself.
  */
-function ThinkingStatus() {
-  const progress = useSyncExternalStore(subscribeToProgress, getProgress, getIdleProgress)
+function ThinkingStatus({ threadId }: { threadId: string }) {
+  // Per thread, because two answers can now be generating at once — a single
+  // global slot would show one conversation's lanes under the other's question.
+  const run = useSyncExternalStore(
+    subscribeToRuns,
+    () => getRun(threadId),
+    getNoRun,
+  )
 
   // Re-render once a second purely to advance the clock. Mounted only while the
   // indicator is up, so the timer stops when the answer starts.
   const [, tick] = useState(0)
+  const startedAt = run?.startedAt ?? 0
   useEffect(() => {
-    if (!progress.startedAt) return
+    if (!startedAt) return
     const timer = setInterval(() => tick((n) => n + 1), 1000)
     return () => clearInterval(timer)
-  }, [progress.startedAt])
+  }, [startedAt])
 
-  if (!progress.startedAt) return null
+  if (!run) return null
 
-  const seconds = Math.floor((Date.now() - progress.startedAt) / 1000)
+  const seconds = Math.floor((Date.now() - run.startedAt) / 1000)
   const label =
-    progress.running.length > 0
-      ? `Checking ${progress.running.map((mode) => MODE_LABELS[mode]).join(', ')}`
+    run.lanes.length > 0
+      ? `Checking ${run.lanes.map((mode) => MODE_LABELS[mode]).join(', ')}`
       : 'Working'
 
   return (
@@ -118,7 +125,7 @@ function ThinkingStatus() {
   )
 }
 
-export function TypingIndicator() {
+export function TypingIndicator({ threadId }: { threadId: string }) {
   return (
     <View
       style={styles.row}
@@ -133,7 +140,7 @@ export function TypingIndicator() {
             <Dot key={delay} delay={delay} />
           ))}
         </View>
-        <ThinkingStatus />
+        <ThinkingStatus threadId={threadId} />
       </View>
     </View>
   )

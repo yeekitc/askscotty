@@ -9,13 +9,12 @@
  */
 
 import type { ChatModelAdapter, SourceMessagePart } from '@assistant-ui/react-native'
-import { askEvents } from './api'
-import { endRun, laneEnded, laneStarted, startRun } from './progress'
+import { clearRun, detachRun, startRun, tailRun } from './runs'
 import type { Citation, Mode } from './types'
 
 const PROVIDER_KEY = 'askscotty'
 
-function citationToSourcePart(citation: Citation, index: number): SourceMessagePart {
+export function citationToSourcePart(citation: Citation, index: number): SourceMessagePart {
   const providerMetadata = {
     [PROVIDER_KEY]: {
       // Not part.id, which is assistant-ui's own handle for the part. This is
@@ -130,61 +129,48 @@ export function createHttpAdapter(
         return
       }
 
-      let streamed = ''
-      startRun()
+      // Undefined only before the first thread exists, which cannot happen from
+      // the composer — but the id keys the run, so it cannot be optional here.
+      const threadId = getThreadId() ?? ''
+
+      // The stream belongs to lib/runs.ts, not to this generator. That is what
+      // lets an answer outlive the conversation being closed: this loop is only
+      // a reader, and abandoning it does not stop the run.
+      startRun(threadId, text, getDisabledModes())
 
       try {
-        for await (const event of askEvents(text, {
-          disabledModes: getDisabledModes(),
-          threadId: getThreadId(),
-          signal: abortSignal,
-        })) {
-          if (event.type === 'done') {
+        for await (const run of tailRun(threadId)) {
+          if (abortSignal.aborted) return
+
+          if (run.result) {
             // The validated answer, which supersedes whatever streamed: markers
             // have been checked and unissued ones stripped by now.
             yield {
               content: [
-                { type: 'text', text: event.data.answer },
-                ...event.data.citations.map(citationToSourcePart),
+                { type: 'text', text: run.result.answer },
+                ...run.result.citations.map(citationToSourcePart),
               ],
             }
+            // Delivered — so nothing downstream should write it a second time.
+            clearRun(threadId)
             return
           }
 
-          if (event.type === 'text_delta') {
-            streamed += event.data.text
-            yield { content: [{ type: 'text', text: provisional(streamed) }] }
-            continue
+          if (run.error) {
+            yield { content: [{ type: 'text', text: run.error }] }
+            clearRun(threadId)
+            return
           }
 
-          // Lane events drive the thinking indicator, not the message. They used
-          // to be yielded as assistant text, which meant a debounced save firing
-          // mid-run could persist "Checking Dining…" as somebody's answer.
-          if (event.type === 'mode_start') {
-            laneStarted(event.data.mode)
-            // The model went off to look something up, so what it had written
-            // was preamble to that, not an answer.
-            streamed = ''
-            yield { content: [{ type: 'text', text: '' }] }
-          }
-          if (event.type === 'mode_end') laneEnded(event.data.mode)
+          yield { content: [{ type: 'text', text: provisional(run.text) }] }
         }
-
-        // Fell out of the loop without a `done` — the connection dropped
-        // mid-answer. Say so, rather than leaving the indicator up forever.
-        // Unless the user stopped it themselves, which needs no explaining.
-        if (!abortSignal.aborted) {
-          yield {
-            content: [{ type: 'text', text: 'The answer was cut off before it arrived.' }],
-          }
-        }
-      } catch (err) {
-        const message = err instanceof Error ? err.message : 'The assistant failed to respond.'
-        yield { content: [{ type: 'text', text: message }] }
       } finally {
-        // Whatever happened — answered, aborted, threw — the lanes are not
-        // running any more, and a stuck indicator outlives the turn.
-        endRun()
+        // The real detach hook, and it has to be `finally`: when the reader
+        // closes the conversation the runtime breaks its own `for await`, which
+        // calls `.return()` on this generator rather than resuming it — so the
+        // aborted check above never runs. A no-op after a delivered answer,
+        // because that path cleared the run first.
+        detachRun(threadId)
       }
     },
   }

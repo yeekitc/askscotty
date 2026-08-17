@@ -6,7 +6,7 @@
  * assistant-ui's thread list needs a runtime we don't use — see lib/chatThreads.ts.
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import {
   KeyboardAvoidingView,
   Platform,
@@ -18,7 +18,12 @@ import {
   useWindowDimensions,
 } from 'react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
-import Animated, { useAnimatedStyle, useSharedValue, withTiming } from 'react-native-reanimated'
+import Animated, {
+  useAnimatedStyle,
+  useSharedValue,
+  withRepeat,
+  withTiming,
+} from 'react-native-reanimated'
 import AsyncStorage from '@react-native-async-storage/async-storage'
 import {
   AssistantRuntimeProvider,
@@ -36,7 +41,16 @@ import { ChatMessage } from '../components/ChatMessage'
 import { useCitationOverlay } from '../components/CitationOverlay'
 import { HoverPressable } from '../components/HoverPressable'
 import { TypingIndicator } from '../components/TypingIndicator'
-import { createHttpAdapter } from '../lib/assistantAdapter'
+import { citationToSourcePart, createHttpAdapter } from '../lib/assistantAdapter'
+import {
+  cancelRun,
+  clearRun,
+  getNoRun,
+  getRun,
+  listRuns,
+  subscribeToRuns,
+  type Run,
+} from '../lib/runs'
 import {
   type ChatThread,
   createEmptyThread,
@@ -71,6 +85,39 @@ const TITLE_MAX = 120
  */
 function fingerprintOf(thread: ChatThread): string {
   return JSON.stringify([thread.title, thread.messages])
+}
+
+/** What a finished run should be written into its thread as. */
+function assistantMessageFor(run: Run): ThreadMessageLike {
+  if (run.result) {
+    return {
+      role: 'assistant',
+      content: [
+        { type: 'text', text: run.result.answer },
+        ...run.result.citations.map(citationToSourcePart),
+      ],
+    }
+  }
+  return {
+    role: 'assistant',
+    content: [{ type: 'text', text: run.error ?? 'The answer was cut off before it arrived.' }],
+  }
+}
+
+/**
+ * Replaces the placeholder the runtime left behind with the finished answer.
+ *
+ * The runtime creates its assistant message the moment a run starts, and the
+ * mirror saves that empty shell along with everything else — so a detached run
+ * has to overwrite it rather than append, or the thread ends up with a blank
+ * bubble above its own answer. Only a *trailing assistant* message is replaced;
+ * anything else means the shell was never saved, and the answer just goes on
+ * the end.
+ */
+function withAnswer(thread: ChatThread, assistant: ThreadMessageLike): ChatThread {
+  const messages = [...thread.messages]
+  if (messages[messages.length - 1]?.role === 'assistant') messages.pop()
+  return { ...thread, messages: [...messages, assistant], updatedAt: Date.now() }
 }
 
 /**
@@ -316,11 +363,6 @@ export default function AskScreen() {
     })
   }, [runtime, schedulePersist])
 
-  useEffect(() => {
-    runtime.thread.composer.setText(DEMO_QUERY)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
-
   /**
    * Put a thread's messages in the runtime, stopping whatever was running.
    *
@@ -338,6 +380,52 @@ export default function AskScreen() {
     },
     [runtime],
   )
+
+  /**
+   * Writes down an answer whose reader went away.
+   *
+   * An attached run is delivered by the adapter and mirrored like any other, so
+   * this only ever handles the detached case: the conversation was closed
+   * before the answer arrived.
+   */
+  const finishDetachedRun = useCallback(
+    (run: Run) => {
+      const thread = threadsRef.current.find((t) => t.id === run.threadId)
+      if (!thread) {
+        clearRun(run.threadId) // deleted while it was still generating
+        return
+      }
+
+      const updated = withAnswer(thread, assistantMessageFor(run))
+      setThreads((prev) => prev.map((t) => (t.id === updated.id ? updated : t)))
+      schedulePersist(updated)
+
+      // Reopened while it was still working: the runtime is showing the stored
+      // messages, which do not include the answer that just landed.
+      if (run.threadId === activeThreadIdRef.current) openInRuntime(updated.messages)
+
+      clearRun(run.threadId)
+    },
+    [schedulePersist, openInRuntime],
+  )
+
+  useEffect(() => {
+    return subscribeToRuns(() => {
+      for (const run of listRuns()) {
+        if (!run.done || run.attached) continue
+        // `clearRun` notifies, which re-enters this subscriber, which may reach
+        // a later run before this loop does. Re-reading is what stops the same
+        // answer being written twice.
+        if (!getRun(run.threadId)) continue
+        finishDetachedRun(run)
+      }
+    })
+  }, [finishDetachedRun])
+
+  useEffect(() => {
+    runtime.thread.composer.setText(DEMO_QUERY)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   const startNewChat = useCallback(() => {
     setMenuThreadId(null)
@@ -386,6 +474,8 @@ export default function AskScreen() {
       // would PUT the thread straight back and recreate the row.
       pendingSaves.current.delete(id)
       lastSaved.current.delete(id)
+      // Nothing left to write the answer into, so stop paying for it.
+      cancelRun(id)
 
       const remaining = threads.filter((t) => t.id !== id)
 
@@ -426,6 +516,11 @@ export default function AskScreen() {
       if (!isWide) setSidebarOpen(false)
     },
     [threads, openInRuntime, isWide],
+  )
+
+  const renderRunningIndicator = useCallback(
+    () => <RunningIndicator threadId={activeThreadId} />,
+    [activeThreadId],
   )
 
   const visibleThreads = useMemo(() => {
@@ -515,6 +610,7 @@ export default function AskScreen() {
                   >
                     {({ hovered }) => (
                       <>
+                        <ThreadActivity threadId={t.id} />
                         <Text
                           style={[styles.recentItemText, active && styles.recentItemTextActive]}
                           numberOfLines={1}
@@ -638,7 +734,7 @@ export default function AskScreen() {
                     // chip was, so it has to go the moment that stops being true.
                     onScroll={closeCitation}
                     scrollEventThrottle={16}
-                    ListFooterComponent={RunningIndicator}
+                    ListFooterComponent={renderRunningIndicator}
                     children={() => <ChatMessage />}
                   />
                   {/* The credits below are the bottom-most element now, so the
@@ -690,6 +786,39 @@ export default function AskScreen() {
 }
 
 /**
+ * A pulsing dot on a conversation that is still being answered.
+ *
+ * The whole point of detaching a run is that you can walk away from it, which
+ * leaves no other sign anywhere that an answer is still coming.
+ */
+function ThreadActivity({ threadId }: { threadId: string }) {
+  const run = useSyncExternalStore(subscribeToRuns, () => getRun(threadId), getNoRun)
+  const reduceMotion = useReducedMotion()
+  const busy = Boolean(run && !run.done)
+
+  const pulse = useSharedValue(1)
+  useEffect(() => {
+    if (!busy || reduceMotion) {
+      pulse.value = 1
+      return
+    }
+    pulse.value = withRepeat(withTiming(0.25, { duration: 700, easing }), -1, true)
+  }, [busy, reduceMotion, pulse])
+
+  const style = useAnimatedStyle(() => ({ opacity: pulse.value }))
+
+  if (!busy) return null
+
+  return (
+    <Animated.View
+      style={[styles.activityDot, style]}
+      accessibilityLabel="Still answering"
+      accessibilityRole="progressbar"
+    />
+  )
+}
+
+/**
  * Dots until the answer starts arriving, then nothing.
  *
  * Not `Thread.If running`, which is what this used to be: `isRunning` stays true
@@ -697,8 +826,8 @@ export default function AskScreen() {
  * that is already being written. The handoff is the first chunk, not the end of
  * the run.
  */
-function RunningIndicator() {
-  const waiting = useAuiState((state) => {
+function RunningIndicator({ threadId }: { threadId: string }) {
+  const attached = useAuiState((state) => {
     if (!state.thread.isRunning) return false
 
     // The runtime creates the assistant message the moment the run starts, so
@@ -707,6 +836,11 @@ function RunningIndicator() {
     if (!last || last.role !== 'assistant') return true
     return !last.content.some((part) => part.type !== 'text' || part.text.length > 0)
   })
+
+  // Reopened while its answer was still coming. There is no run in the runtime
+  // to ask — the registry is the only thing that knows this thread is busy.
+  const run = useSyncExternalStore(subscribeToRuns, () => getRun(threadId), getNoRun)
+  const waiting = attached || Boolean(run && !run.attached && !run.done)
 
   const reduceMotion = useReducedMotion()
 
@@ -743,7 +877,7 @@ function RunningIndicator() {
 
   return (
     <Animated.View style={style}>
-      <TypingIndicator />
+      <TypingIndicator threadId={threadId} />
     </Animated.View>
   )
 }
@@ -863,6 +997,13 @@ const styles = StyleSheet.create({
   },
   recentItemActive: {
     backgroundColor: colors.sidebarHover,
+  },
+  activityDot: {
+    width: 6,
+    height: 6,
+    borderRadius: radius.pill,
+    marginRight: spacing.xs + 2,
+    backgroundColor: colors.textMuted,
   },
   recentItemText: {
     // Shrinks so a long title truncates rather than pushing the delete
