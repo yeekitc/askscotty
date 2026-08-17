@@ -35,12 +35,13 @@ def agent_tools() -> list[dict]:
     are never used, but the schemas are cheap at demo scale and disabling them is
     config surface to keep in sync (docs/b4-planner.md "What it costs").
 
-    Our tools are here as well as on each session because a session opened by
-    anything other than `create_session` — the Console, a script — gets only what
-    the agent itself declares. An agent holding nothing but the prebuilt toolset
-    made a Console question a different product: the model had the open web and
-    nothing else, and answered "9-unit ML elective, no Friday" with 23 web calls
-    and $0.86 instead of one `search_courses` and $0.04.
+    Our tools are here as well as on each session so that a session opened by
+    anything other than `create_session` sees a toolset resembling the product's.
+    Note what it does *not* buy: nothing outside the request path can actually
+    run one. A custom tool means Anthropic asks and we answer, so a session with
+    no Django process attached stalls on `agent.custom_tool_use` rather than
+    working. This makes such a session fail visibly instead of quietly answering
+    a campus question off the open web.
 
     **Personal tools are excluded, and that is load-bearing.** They are offered
     per session only where the connector exists (PRD §7); declaring one here

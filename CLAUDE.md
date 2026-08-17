@@ -88,13 +88,22 @@ it exists, so it looks like the model chose not to use it.
 docker compose exec backend python manage.py provision_planner
 ```
 
-A request builds its own toolset from the registry, so this is not what makes
-the tool work — but the *agent* also declares the public tools, and a session
-opened outside the request path (the Console, a script) gets only what the agent
-declares. Skip this and those sessions answer campus questions with nothing but
-a web search, which is slow, expensive and worse. Personal tools are deliberately
-absent from the agent: they are offered per session, only where the connector
-exists.
+A request builds its own toolset from the registry, so this is **not** what makes
+the tool work — skipping it costs you nothing in the app. It only keeps the
+agent's own declaration in step, which is what a session opened outside the
+request path sees. Personal tools are deliberately absent from the agent: they
+are offered per session, only where the connector exists.
+
+If a question comes back answered entirely off the open web, this is not the
+cause. Check what is actually registered first:
+
+```
+docker compose exec backend python manage.py shell -c \
+  "from apps.tools.registry import tools_for_session; print([t.name for t in tools_for_session(None)])"
+```
+
+An empty list there means a tool module never imported, and every question is
+being handed a toolset of nothing.
 
 ## Hard rules from the PRD
 
