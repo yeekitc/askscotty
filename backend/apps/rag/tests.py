@@ -45,6 +45,44 @@ class CampusSearchToolTests(SimpleTestCase):
         self.assertEqual(search.call_args.kwargs["k"], 20)
 
 
+class MergeByDocumentTests(SimpleTestCase):
+    """Five chunks of one page are one source, not five."""
+
+    def _row(self, url: str, text: str) -> dict:
+        return {
+            "text": text,
+            "document__url": url,
+            "document__title": "Registrar",
+            "indexed_at": None,
+        }
+
+    def test_chunks_of_one_page_become_one_result_keeping_every_passage(self) -> None:
+        from apps.rag.search import _merge_by_document
+
+        results = _merge_by_document(
+            [
+                self._row("https://www.cmu.edu/hub/", "Drop by week six."),
+                self._row("https://www.cmu.edu/sio/", "Something else."),
+                self._row("https://www.cmu.edu/hub/", "Withdraw by week ten."),
+            ]
+        )
+
+        self.assertEqual([r["url"] for r in results], ["https://www.cmu.edu/hub/", "https://www.cmu.edu/sio/"])
+        # Both passages survive — dropping one would lose what it said.
+        self.assertIn("Drop by week six.", results[0]["snippet"])
+        self.assertIn("Withdraw by week ten.", results[0]["snippet"])
+        self.assertEqual(results[0]["snippet"], results[0]["text"])
+
+    def test_best_ranked_order_is_kept(self) -> None:
+        from apps.rag.search import _merge_by_document
+
+        results = _merge_by_document(
+            [self._row("https://b.edu/", "b"), self._row("https://a.edu/", "a")]
+        )
+
+        self.assertEqual([r["url"] for r in results], ["https://b.edu/", "https://a.edu/"])
+
+
 class EmbedRetryTests(SimpleTestCase):
     """A 429 that says "out of credits" is not a rate limit."""
 

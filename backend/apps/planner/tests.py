@@ -362,6 +362,20 @@ class SessionDriverTests(PlannerTestCase):
         self.assertTrue(citation["is_mock"], "is_mock must come from the tool, not its result")
         self.assertIn("placeholder data", payload["note"])
 
+    def test_a_crawled_title_is_flattened_onto_one_line(self) -> None:
+        # A <title> lifted off a real page arrives with newlines and padding in
+        # it, and a citation card is one line whatever it is handed.
+        self.behaviour["fake_dining"] = lambda args: {
+            "citations": [{"title": "Course Adds, Drops -\n      \n", "url": "https://x.edu"}]
+        }
+        session = FakeSession(
+            [custom_tool_use("fake_dining"), waiting()],
+            [agent_message("Week six."), idle()],
+        )
+        payload = self.answer(session)
+
+        self.assertEqual(payload["citations"][0]["title"], "Course Adds, Drops -")
+
     def test_the_result_we_send_back_carries_the_ids_we_issued(self) -> None:
         self.behaviour["fake_dining"] = lambda args: {
             "citations": [{"title": "Rohr Café hours", "url": "https://example.edu"}]
