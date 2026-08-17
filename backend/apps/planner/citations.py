@@ -34,6 +34,12 @@ class CitationLedger:
 
     def __init__(self) -> None:
         self._citations: list[dict[str, Any]] = []
+        #: url -> the citation already issued for it, for the web path only. A
+        #: search returns several results and the model may cite one across two
+        #: calls, and `S3` has to mean one source everywhere it is referenced.
+        #: Our own tools are deliberately exempt: every dispatch is a distinct
+        #: call, so two results sharing a url are two real lookups.
+        self._by_url: dict[str, dict[str, Any]] = {}
 
     def record(self, tool: Tool, result: Any) -> Any:
         """Harvest `result`'s citations, returning the result as the model sees it.
@@ -70,6 +76,47 @@ class CitationLedger:
             issued.append(citation)
 
         return {**result, "citations": issued}
+
+    def record_web(
+        self,
+        *,
+        title: str,
+        url: str,
+        snippet: str,
+        verified_at: Any,
+        source: str,
+    ) -> dict[str, Any]:
+        """Like `record`, for a citation with no backing `Tool` (web_search/web_fetch).
+
+        Anthropic runs those two, so there is no registry entry to take
+        `citation_defaults` from. Both values it would have supplied are fixed
+        here instead: nothing this path touches is a fixture, and `indexed_at`
+        means "the date we crawled it", which does not apply to a page read
+        seconds ago. `verified_at` is stamped by the caller — the API does not
+        supply one.
+
+        A url already cited returns its existing citation rather than a second
+        id. Called with no url at all, it issues one anyway; that is the caller's
+        judgement, not the ledger's.
+        """
+        seen = self._by_url.get(url) if url else None
+        if seen is not None:
+            return seen
+
+        citation = {
+            "id": f"S{len(self._citations) + 1}",
+            "title": str(title or url or source),
+            "url": str(url or ""),
+            "snippet": str(snippet or ""),
+            "indexed_at": None,
+            "verified_at": verified_at,
+            "source": str(source),
+            "is_mock": False,
+        }
+        self._citations.append(citation)
+        if url:
+            self._by_url[url] = citation
+        return citation
 
     @property
     def citations(self) -> list[dict[str, Any]]:

@@ -225,6 +225,13 @@ PLANNER_CITATION_MARKERS = os.getenv("PLANNER_CITATION_MARKERS", "").lower() in 
     "yes",
 }
 
+# How old an indexed page may be before a time-sensitive question should be
+# checked against the live web instead. The system prompt is frozen on the agent
+# version and cannot read this at request time, so the number is also written out
+# in apps/planner/prompt.py — changing it here means re-running
+# `manage.py provision_planner`, or the model keeps quoting the old one.
+WEB_VERIFY_STALE_AFTER_DAYS = int(os.getenv("WEB_VERIFY_STALE_AFTER_DAYS") or 30)
+
 # Embeddings for the vector half of hybrid retrieval. A separate provider by
 # necessity: Anthropic has no embeddings endpoint (tasklist §1).
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")

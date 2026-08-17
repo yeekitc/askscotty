@@ -187,9 +187,10 @@ class _Turn:
     #: Calls we have already sent a result for, so a later `requires_action`
     #: naming them reads as "still catching up" rather than "stuck".
     answered: set[str] = field(default_factory=set)
-    #: Built-in tool_use id -> tool name, so `agent.tool_result` can close the
-    #: lane the matching `agent.tool_use` opened.
-    lanes: dict[str, str] = field(default_factory=dict)
+    #: Built-in tool_use id -> (tool name, its input), so `agent.tool_result` can
+    #: close the lane the matching `agent.tool_use` opened — and reach the url it
+    #: was asked for, which a result block does not always carry.
+    lanes: dict[str, tuple[str, dict[str, Any]]] = field(default_factory=dict)
     #: Whether a built-in web tool actually returned something. `web_verify` is
     #: the one mode `run_tool` cannot report, because Anthropic runs those two.
     web_verified: bool = False
@@ -355,14 +356,19 @@ def _handle(turn: _Turn, cma_session_id: str, event: Any) -> Iterator[dict[str, 
         # because the planner has any use for them.
         turn.answer = ""
         if event.name in client.WEB_TOOLS:
-            turn.lanes[event.id] = event.name
+            turn.lanes[event.id] = (event.name, dict(event.input or {}))
             yield _event("mode_start", {"mode": "web_verify", "tool": event.name})
 
     elif kind == "agent.tool_result":
-        name = turn.lanes.pop(event.tool_use_id, None)
-        if name is not None:
+        lane = turn.lanes.pop(event.tool_use_id, None)
+        if lane is not None:
+            name, arguments = lane
             ok = not event.is_error
             turn.web_verified = turn.web_verified or ok
+            if ok:
+                _harvest_web(turn, name, arguments, event)
+            else:
+                turn.failures.append(f"{name}: {_result_text(event) or 'the lookup failed'}")
             yield _event("mode_end", {"mode": "web_verify", "tool": name, "ok": ok})
 
     elif kind == "session.error":
@@ -419,6 +425,76 @@ def _on_idle(turn: _Turn, cma_session_id: str, event: Any) -> Iterator[dict[str,
         turn.notes.append("The planner gave up after repeated errors, so this may be incomplete.")
 
     turn.finished = True
+
+
+# --- Web verify ---------------------------------------------------------------
+
+# A citation snippet is a preview on a card, so a fetched page is trimmed to fit
+# one. Deliberately unlike a RAG hit, where the snippet *is* the model's
+# grounding: here the model already has the full content in its own context,
+# because Anthropic ran the tool.
+_WEB_SNIPPET_CHARS = 400
+
+
+def _harvest_web(turn: _Turn, name: str, arguments: dict[str, Any], event: Any) -> None:
+    """Turn a built-in web tool's result into citations.
+
+    `agent.tool_result.content` is a list of blocks. `search_result` carries
+    `source` (the url), `title` and a `content` list of text blocks; `document`
+    carries `source.url` plus an optional `title`; a bare `text` block carries no
+    url at all, so it falls back to the one the matching `agent.tool_use` asked
+    for. Field names are the SDK's `BetaManagedAgentsAgentToolResultEvent`.
+
+    Nothing here reads `agent.message`. On the raw Messages API its text blocks
+    carry per-sentence `web_search_result_location` citations, which would be the
+    better source; under Managed Agents they carry only `text`.
+    """
+    verified_at = timezone.now()
+    requested_url = str(arguments.get("url") or "")
+
+    for block in getattr(event, "content", None) or []:
+        kind = getattr(block, "type", "")
+
+        if kind == "search_result":
+            url = str(getattr(block, "source", "") or "")
+            title = str(getattr(block, "title", "") or "")
+            snippet = " ".join(
+                getattr(part, "text", "")
+                for part in getattr(block, "content", None) or []
+                if getattr(part, "type", "") == "text"
+            )
+        elif kind == "document":
+            source = getattr(block, "source", None)
+            url = str(getattr(source, "url", "") or requested_url)
+            title = str(getattr(block, "title", "") or "")
+            snippet = str(getattr(source, "data", "") or getattr(block, "context", "") or "")
+        elif kind == "text":
+            url, title = requested_url, ""
+            snippet = str(getattr(block, "text", "") or "")
+        else:
+            continue
+
+        # A source with no url is one nobody can check, which is most of what a
+        # citation is for.
+        if not url:
+            continue
+
+        turn.ledger.record_web(
+            title=title or url,
+            url=url,
+            snippet=" ".join(snippet.split())[:_WEB_SNIPPET_CHARS],
+            verified_at=verified_at,
+            source=name,
+        )
+
+
+def _result_text(event: Any) -> str:
+    """The text blocks of a tool result, joined — what a failed one says."""
+    return " ".join(
+        getattr(block, "text", "")
+        for block in getattr(event, "content", None) or []
+        if getattr(block, "type", "") == "text"
+    ).strip()
 
 
 # --- Tool dispatch ------------------------------------------------------------

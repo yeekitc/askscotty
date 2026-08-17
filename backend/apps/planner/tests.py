@@ -7,10 +7,10 @@ the driver has answered the previous round's tool calls, which is the same
 ordering a real session enforces. A driver that forgets to send a tool result
 fails here instead of hanging in the demo.
 
-Every tool in the real registry currently raises `ToolError` (the lanes are
-tasklist B1–B3), so the success path brings its own tool. That is not a
-workaround: the registry is the planner's only view of what exists, so a tool
-registered here exercises exactly the code a real one will.
+The success path brings its own tool rather than driving a real one, because the
+real ones reach live campus APIs and a suite must not. That is not a workaround:
+the registry is the planner's only view of what exists, so a tool registered here
+exercises exactly the code a real one will.
 
     docker compose exec backend python manage.py test apps.planner
 """
@@ -83,15 +83,69 @@ def custom_tool_use(name: str, event_id: str = "", **arguments) -> SimpleNamespa
     )
 
 
-def tool_use(name: str, event_id: str = "") -> SimpleNamespace:
+def tool_use(name: str, event_id: str = "", **arguments) -> SimpleNamespace:
     """A built-in tool — Anthropic runs these, we only watch."""
-    return SimpleNamespace(type="agent.tool_use", id=event_id or _next_id(), name=name, input={})
-
-
-def tool_result(tool_use_id: str, is_error: bool = False) -> SimpleNamespace:
     return SimpleNamespace(
-        type="agent.tool_result", id=_next_id(), tool_use_id=tool_use_id, is_error=is_error
+        type="agent.tool_use", id=event_id or _next_id(), name=name, input=arguments
     )
+
+
+def tool_result(tool_use_id: str, *content, is_error: bool = False) -> SimpleNamespace:
+    """A built-in tool's result. `content` is the blocks it came back with.
+
+    None rather than `[]` when there are none, matching the SDK: the field is
+    optional on `BetaManagedAgentsAgentToolResultEvent`.
+    """
+    return SimpleNamespace(
+        type="agent.tool_result",
+        id=_next_id(),
+        tool_use_id=tool_use_id,
+        is_error=is_error,
+        content=list(content) or None,
+    )
+
+
+# The three result-block shapes the web tools come back with. Field names are
+# the SDK's, because the harvest in loop.py reads them by name.
+
+
+def search_result(url: str, title: str, *texts: str) -> SimpleNamespace:
+    """One web_search hit: the url is `source`, the snippet is in `content`."""
+    return SimpleNamespace(
+        type="search_result",
+        source=url,
+        title=title,
+        content=[SimpleNamespace(type="text", text=text) for text in texts],
+        citations=SimpleNamespace(enabled=True),
+    )
+
+
+def url_document(url: str, title: str = "") -> SimpleNamespace:
+    """web_fetch's result when the block names the page it read."""
+    return SimpleNamespace(
+        type="document",
+        source=SimpleNamespace(type="url", url=url),
+        title=title,
+        context=None,
+    )
+
+
+def text_document(text: str, title: str = "") -> SimpleNamespace:
+    """web_fetch's result when the block carries only the page's text.
+
+    There is no url anywhere on it, so a citation can only come from the one the
+    matching `agent.tool_use` asked for.
+    """
+    return SimpleNamespace(
+        type="document",
+        source=SimpleNamespace(type="text", media_type="text/plain", data=text),
+        title=title,
+        context=None,
+    )
+
+
+def result_text(text: str) -> SimpleNamespace:
+    return SimpleNamespace(type="text", text=text)
 
 
 def idle(reason: str = "end_turn") -> SimpleNamespace:
@@ -489,6 +543,100 @@ class SessionDriverTests(PlannerTestCase):
         self.assertEqual(events[0]["data"], {"mode": "web_verify", "tool": "web_search"})
         self.assertEqual(events[1]["data"], {"mode": "web_verify", "tool": "web_search", "ok": True})
 
+    def test_a_web_search_result_becomes_a_citation(self) -> None:
+        """The chip lit long before this did — a verified answer cited nothing."""
+        session = FakeSession(
+            [
+                tool_use("web_search", event_id="sevt_web", query="CMU startup week"),
+                tool_result(
+                    "sevt_web",
+                    search_result(
+                        "https://www.cmu.edu/events/",
+                        "CMU Events Calendar",
+                        "Startup   Week runs\nSeptember 14–18.",
+                    ),
+                ),
+                agent_message("Startup Week runs September 14–18."),
+                idle(),
+            ]
+        )
+        payload = self.answer(session)
+
+        citation = payload["citations"][0]
+        self.assertEqual(citation["id"], "S1")
+        self.assertEqual(citation["url"], "https://www.cmu.edu/events/")
+        self.assertEqual(citation["title"], "CMU Events Calendar")
+        self.assertEqual(citation["snippet"], "Startup Week runs September 14–18.")
+        # The producing tool's name, the same convention our own tools follow.
+        self.assertEqual(citation["source"], "web_search")
+        self.assertFalse(citation["is_mock"], "nothing on this path is a fixture")
+        self.assertIsNone(citation["indexed_at"], "a live fetch was never crawled")
+        self.assertTrue(citation["verified_at"], "stamped by us at harvest time")
+        self.assertEqual(payload["modes_used"], ["web_verify"])
+        self.assertIsNone(payload["note"], "a cited answer has nothing to flag")
+
+    def test_the_same_url_cited_twice_is_one_citation(self) -> None:
+        hub = "https://www.cmu.edu/hub/"
+        session = FakeSession(
+            [
+                tool_use("web_search", event_id="sevt_a"),
+                tool_result(
+                    "sevt_a",
+                    search_result(hub, "The HUB", "Open 8:30am–5pm."),
+                    search_result("https://www.cmu.edu/sio/", "SIO", "Student Information Online."),
+                ),
+                tool_use("web_fetch", event_id="sevt_b", url=hub),
+                tool_result("sevt_b", url_document(hub, "The HUB")),
+                agent_message("The HUB is open until 5pm."),
+                idle(),
+            ]
+        )
+        citations = self.answer(session)["citations"]
+
+        # S3 has to mean one source everywhere it is referenced.
+        self.assertEqual([citation["id"] for citation in citations], ["S1", "S2"])
+        self.assertEqual(
+            [citation["url"] for citation in citations], [hub, "https://www.cmu.edu/sio/"]
+        )
+
+    def test_a_fetched_page_falls_back_to_the_url_it_was_asked_for(self) -> None:
+        # A document block carrying only text has no url of its own, and a
+        # citation nobody can open is barely a citation.
+        session = FakeSession(
+            [
+                tool_use("web_fetch", event_id="sevt_web", url="https://www.cmu.edu/hub/"),
+                tool_result("sevt_web", text_document("The HUB is open 8:30am to 5pm.", "The HUB")),
+                agent_message("Open until 5pm."),
+                idle(),
+            ]
+        )
+        citation = self.answer(session)["citations"][0]
+
+        self.assertEqual(citation["url"], "https://www.cmu.edu/hub/")
+        self.assertEqual(citation["source"], "web_fetch")
+        self.assertEqual(citation["snippet"], "The HUB is open 8:30am to 5pm.")
+
+    def test_a_failed_web_search_is_a_note_rather_than_an_exception(self) -> None:
+        session = FakeSession(
+            [
+                tool_use("web_search", event_id="sevt_web", query="anything"),
+                tool_result("sevt_web", result_text("search is rate limited"), is_error=True),
+                agent_message("I could not check the web just now."),
+                idle(),
+            ]
+        )
+        payload = self.answer(session)
+
+        self.assertEqual(payload["citations"], [])
+        # A lane that failed contributed nothing, so it claims no chip.
+        self.assertEqual(payload["modes_used"], [])
+        self.assertIn("web_search: search is rate limited", payload["note"])
+
+    def test_a_web_tool_is_still_unreachable_through_the_registry(self) -> None:
+        # Anthropic runs these. Harvesting their results does not make them ours.
+        with self.assertRaises(ToolError):
+            registry.run_tool("web_search", {"query": "anything"})
+
     def test_a_cited_answer_is_one_piece_of_prose_not_one_paragraph_per_block(self) -> None:
         """Regression: this shredded every web-verified answer on screen.
 
@@ -773,9 +921,9 @@ class SessionLifecycleTests(PlannerTestCase):
         # Overrides replace in full, so the prebuilt toolset has to be listed
         # again or the web lane silently disappears.
         self.assertEqual(reference["tools"][0], client.AGENT_TOOLSET)
-        self.assertEqual(
-            [tool["name"] for tool in reference["tools"][1:]], ["fake_dining"]
-        )
+        # Everything else registered comes along too — the assertion is that the
+        # request's own tool is offered, not that it is the only one.
+        self.assertIn("fake_dining", [tool["name"] for tool in reference["tools"][1:]])
         self.assertTrue(all(tool["type"] == "custom" for tool in reference["tools"][1:]))
 
     @override_settings(PLANNER_AGENT_ID="")
