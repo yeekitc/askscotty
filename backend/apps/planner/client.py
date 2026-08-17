@@ -100,8 +100,18 @@ def agent_reference(tools: Iterable[Tool]) -> dict[str, Any]:
     return {
         "type": "agent_with_overrides",
         "id": settings.PLANNER_AGENT_ID,
-        "tools": [AGENT_TOOLSET, *(_custom_tool(tool) for tool in tools)],
+        "tools": toolset(tools),
     }
+
+
+def toolset(tools: Iterable[Tool]) -> list[dict[str, Any]]:
+    """The tool list an agent or a session is given: the prebuilt one, then ours.
+
+    One definition rather than three, because the prebuilt toolset has to lead
+    every one of them — an override replaces in full, so a list that forgets it
+    silently drops the web lane.
+    """
+    return [AGENT_TOOLSET, *(_custom_tool(tool) for tool in tools)]
 
 
 def _custom_tool(tool: Tool) -> dict[str, Any]:
@@ -165,10 +175,7 @@ def refresh_toolset(session_id: str, tools: Iterable[Tool]) -> None:
     what the model is told in step with what it would actually be allowed to run.
     """
     try:
-        get_client().beta.sessions.update(
-            session_id,
-            agent={"tools": [AGENT_TOOLSET, *(_custom_tool(tool) for tool in tools)]},
-        )
+        get_client().beta.sessions.update(session_id, agent={"tools": toolset(tools)})
     except Exception as exc:  # noqa: BLE001 - never fail an answer over this
         logger.warning("planner_session toolset refresh failed id=%s: %s", session_id, exc)
 

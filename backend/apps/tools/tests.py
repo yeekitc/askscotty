@@ -135,7 +135,18 @@ def _one_page(*docs: dict) -> dict:
     return {"totalDocs": len(docs), "totalPages": 1, "page": 1, "docs": list(docs)}
 
 
+# Which offering counts as current depends on today's date, so the suite pins it
+# rather than going stale on its own in January.
+_NOW = (2026, 2)  # fall 2026
+
+
 class CoursesToolTests(SimpleTestCase):
+    def setUp(self) -> None:
+        super().setUp()
+        term = patch("apps.tools.courses._current_term", return_value=_NOW)
+        term.start()
+        self.addCleanup(term.stop)
+
     def _patch(self, api: _FakeApi):
         patcher = patch("apps.tools.courses.get_json", api)
         patcher.start()
@@ -224,8 +235,8 @@ class CoursesToolTests(SimpleTestCase):
                 pages={1: _one_page(_DOC_213, _DOC_251)},
                 schedules={
                     # 1=Monday … 5=Friday: MWF and TR.
-                    "15-213": [_offering("15-213", "spring", 2026, [1, 3, 5])],
-                    "15-251": [_offering("15-251", "spring", 2026, [2, 4])],
+                    "15-213": [_offering("15-213", "fall", 2026, [1, 3, 5])],
+                    "15-251": [_offering("15-251", "fall", 2026, [2, 4])],
                 },
             )
         )
@@ -252,7 +263,7 @@ class CoursesToolTests(SimpleTestCase):
                 schedules={
                     "15-213": [
                         _offering("15-213", "fall", 2020, [2, 4], instructor="Bryant, Randal"),
-                        _offering("15-213", "spring", 2026, [1, 3], instructor="Andersen, David"),
+                        _offering("15-213", "fall", 2026, [1, 3], instructor="Andersen, David"),
                     ]
                 }
             )
@@ -261,8 +272,8 @@ class CoursesToolTests(SimpleTestCase):
         course = get_course(course_number="15-213")["results"][0]
 
         self.assertEqual(api.scheduled, ["15-213"])
-        # The most recent offering, not six years of rooms flattened together.
-        self.assertEqual(course["semester"], "spring 2026")
+        # This term's offering, not six years of rooms flattened together.
+        self.assertEqual(course["semester"], "fall 2026")
         self.assertEqual(course["instructors"], ["Andersen, David"])
         self.assertEqual(course["meetings"], [
             {
@@ -275,6 +286,43 @@ class CoursesToolTests(SimpleTestCase):
         ])
         self.assertEqual(course["prereqs"], "15122")
 
+    def test_a_course_with_nothing_scheduled_this_term_reports_no_meetings(self) -> None:
+        """Reporting a 2020 room as this term's schedule is worse than silence.
+
+        11-441 is the real case: it exists in the catalog, meets TR whenever it
+        runs, and is not on the Fall 2026 schedule at all.
+        """
+        self._patch(
+            _FakeApi(
+                schedules={"15-213": [_offering("15-213", "spring", 2020, [2, 4])]},
+            )
+        )
+
+        course = get_course(course_number="15-213")["results"][0]
+
+        self.assertEqual(course["meetings"], [])
+        self.assertEqual(course["instructors"], [])
+        self.assertEqual(course["semester"], "")
+        # Enough for an answer to say "not currently offered; last ran in 2020".
+        self.assertEqual(course["last_offered"], "spring 2020")
+
+    def test_the_soonest_unfinished_term_wins_not_the_newest_on_file(self) -> None:
+        self._patch(
+            _FakeApi(
+                schedules={
+                    "15-213": [
+                        _offering("15-213", "fall", 2026, [1, 3]),
+                        _offering("15-213", "spring", 2027, [2, 4]),
+                    ]
+                },
+            )
+        )
+
+        course = get_course(course_number="15-213")["results"][0]
+
+        self.assertEqual(course["semester"], "fall 2026", "this term, not next")
+        self.assertEqual(course["last_offered"], "spring 2027")
+
     def test_a_semester_selects_which_offering_is_reported(self) -> None:
         self._patch(
             _FakeApi(
@@ -282,7 +330,7 @@ class CoursesToolTests(SimpleTestCase):
                 schedules={
                     "15-213": [
                         _offering("15-213", "fall", 2024, [5]),
-                        _offering("15-213", "spring", 2026, [2, 4]),
+                        _offering("15-213", "fall", 2026, [2, 4]),
                     ]
                 },
             )

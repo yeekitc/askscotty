@@ -1061,6 +1061,40 @@ class PersonalToolGatingTests(PlannerTransactionTestCase):
         self.assertEqual(self.tool_calls, [("fake_canvas", {"session_id": "anon-1"})])
 
 
+@override_settings(**PLANNER_DEFAULTS)
+class ProvisionedToolsetTests(PlannerTransactionTestCase):
+    """What the *agent* declares, as opposed to what a session overrides.
+
+    A session opened by anything other than `create_session` — the Console, a
+    script — gets only this. When it held nothing but the prebuilt toolset, a
+    Console question was answered by 23 web calls and $0.86 because the model
+    had no `search_courses` to reach for.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.register("fake_dining", mode="dining")
+        self.register("fake_canvas", mode="personal", requires_connector="canvas")
+
+    def test_the_agent_declares_the_prebuilt_toolset_and_our_public_tools(self) -> None:
+        from .management.commands.provision_planner import agent_tools
+
+        tools = agent_tools()
+
+        self.assertEqual(tools[0], client.AGENT_TOOLSET)
+        names = [tool["name"] for tool in tools[1:]]
+        self.assertIn("fake_dining", names)
+        self.assertTrue(all(tool["type"] == "custom" for tool in tools[1:]))
+
+    def test_a_personal_tool_is_never_declared_on_the_agent(self) -> None:
+        from .management.commands.provision_planner import agent_tools
+
+        # PRD §7: a tool the planner is never told about is a tool it cannot
+        # call. Declaring this one would offer it to every session on earth.
+        names = [tool.get("name") for tool in agent_tools()]
+        self.assertNotIn("fake_canvas", names)
+
+
 class MarkerValidationTests(TestCase):
     def test_only_issued_ids_are_kept(self) -> None:
         cleaned, uncited = validate_markers("A [S1] B [S3].", {"S1", "S2"})

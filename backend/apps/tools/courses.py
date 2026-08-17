@@ -26,6 +26,7 @@ from concurrent.futures import ThreadPoolExecutor
 import httpx  # for httpx.HTTPError / httpx.HTTPStatusError only
 from apps.core.http import get_json
 from apps.tools.registry import ToolError, register_tool
+from django.utils import timezone
 
 _BASE = "https://course-tools.apis.scottylabs.org"
 
@@ -58,6 +59,10 @@ _DAY_CODES = {1: "M", 2: "T", 3: "W", 4: "R", 5: "F"}
 _SEASONS = {"spring": 0, "summer": 1, "fall": 2}
 _SEASON_LETTERS = {"s": "spring", "m": "summer", "u": "summer", "f": "fall"}
 
+# Which season a date falls in, by month. Approximate on purpose — it decides
+# which offering to report, not anything a registrar would sign off on.
+_SEASON_BY_MONTH = ("spring",) * 4 + ("summer",) * 3 + ("fall",) * 5
+
 
 def _normalize_course(raw: dict) -> dict:
     """Pull the fields the planner actually needs; ignore the rest."""
@@ -77,7 +82,11 @@ def _normalize_course(raw: dict) -> dict:
         "meetings": [],
         "prereqs": raw.get("prereqString") or raw.get("prereqs", ""),
         "description": raw.get("desc") or raw.get("description", ""),
+        #: The offering `meetings` and `instructors` describe. Empty when the
+        #: course has nothing scheduled this term or next — `last_offered` then
+        #: says when it last ran, so "not currently offered" is sayable.
         "semester": "",
+        "last_offered": "",
         "source": "CMU Courses API",
         "is_mock": False,
     }
@@ -102,26 +111,43 @@ def _offering_order(entry: dict) -> tuple[int, int]:
     return entry.get("year") or 0, _SEASONS.get((entry.get("semester") or "").lower(), -1)
 
 
-def _pick_offering(entries: list, semester: str | None) -> dict | None:
-    """The one offering to report meeting times from.
+def _current_term() -> tuple[int, int]:
+    """Today, as an `_offering_order` key."""
+    now = timezone.localtime()
+    return now.year, _SEASONS[_SEASON_BY_MONTH[now.month - 1]]
+
+
+def _pick_offering(entries: list, semester: str | None) -> tuple[dict | None, dict | None]:
+    """(the offering to report, the most recent one on file).
 
     `/schedules` returns every semester a course has ever run — 20 entries for
-    15-213, going back to 2020. Flattening them all answers "when does it meet?"
-    with six years of rooms at once, so exactly one is chosen: the semester that
-    was asked for, or the most recent on file.
+    15-213, going back to 2020. Flattening them answers "when does it meet?"
+    with six years of rooms at once, so exactly one is chosen.
+
+    Which one matters more than it looks. Taking the newest on file reports a
+    Spring 2020 room for a course nobody has taught since, dressed as current.
+    So without an explicit semester the choice is the *soonest term that has not
+    already finished* — this one or the next — and a course with nothing in that
+    window reports no meeting times at all rather than an archived guess. The
+    second return value is what lets the answer say "last offered spring 2020"
+    instead of going quiet.
     """
     offerings = [entry for entry in entries if isinstance(entry, dict)]
+    latest = max(offerings, key=_offering_order, default=None)
 
     wanted = _parse_semester(semester) if semester else None
     if wanted is not None:
         season, year = wanted
-        offerings = [
+        matched = [
             entry
             for entry in offerings
             if (entry.get("semester") or "").lower() == season and entry.get("year") == year
         ]
+        return max(matched, key=_offering_order, default=None), latest
 
-    return max(offerings, key=_offering_order, default=None)
+    current = _current_term()
+    upcoming = [entry for entry in offerings if _offering_order(entry) >= current]
+    return min(upcoming, key=_offering_order, default=None), latest
 
 
 def _offering_label(entry: dict | None) -> str:
@@ -162,34 +188,35 @@ def _flatten_schedule(entry: dict | None) -> tuple[list[str], list[dict]]:
     return sorted(instructors), meetings
 
 
-def _offering_for(course_number: str, semester: str | None) -> dict | None:
-    """The chosen `/schedules` offering, or None if there is not one to be had.
+def _offering_for(course_number: str, semester: str | None) -> tuple[dict | None, dict | None]:
+    """The chosen `/schedules` offering and the most recent one on file.
 
     Never called without a `courseID`: bare `/schedules` does not respond at all
-    (docs/b2-courses.md). A failure returns None rather than raising — schedule
-    data is a bonus on top of description/prereqs/units, not the whole result.
+    (docs/b2-courses.md). A failure returns nothing rather than raising —
+    schedule data is a bonus on top of description/prereqs/units.
     """
     try:
         entries = get_json(f"{_BASE}/schedules", params={"courseID": course_number})
     except httpx.HTTPError:
-        return None
+        return None, None
 
     return _pick_offering(entries if isinstance(entries, list) else [], semester)
 
 
 def _add_schedules(courses: list[dict], semester: str | None) -> None:
-    """Fill in instructors, meetings and semester from `/schedules`, in place."""
+    """Fill in instructors, meetings and semesters from `/schedules`, in place."""
     if not courses:
         return
 
     with ThreadPoolExecutor(max_workers=min(len(courses), _MAX_PARALLEL_SCHEDULES)) as pool:
-        offerings = list(
+        picked = list(
             pool.map(lambda course: _offering_for(course["course_number"], semester), courses)
         )
 
-    for course, offering in zip(courses, offerings):
+    for course, (offering, latest) in zip(courses, picked):
         course["instructors"], course["meetings"] = _flatten_schedule(offering)
         course["semester"] = _offering_label(offering)
+        course["last_offered"] = _offering_label(latest)
 
 
 def _course_citation(course: dict) -> dict:

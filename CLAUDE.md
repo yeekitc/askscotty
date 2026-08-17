@@ -82,6 +82,20 @@ scoped to hold these.
 Miss the import and the tool silently never registers. The planner is never told
 it exists, so it looks like the model chose not to use it.
 
+**Then re-provision:**
+
+```
+docker compose exec backend python manage.py provision_planner
+```
+
+A request builds its own toolset from the registry, so this is not what makes
+the tool work — but the *agent* also declares the public tools, and a session
+opened outside the request path (the Console, a script) gets only what the agent
+declares. Skip this and those sessions answer campus questions with nothing but
+a web search, which is slow, expensive and worse. Personal tools are deliberately
+absent from the agent: they are offered per session, only where the connector
+exists.
+
 ## Hard rules from the PRD
 
 These are non-negotiable; see PRD.md §9 and §10.
