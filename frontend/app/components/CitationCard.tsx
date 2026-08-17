@@ -46,7 +46,14 @@ function relativeTime(value: string | null): string | null {
   return months === 1 ? '1 month ago' : `${months} months ago`
 }
 
-export function CitationCard({ citation }: { citation: Citation }) {
+export function CitationCard({
+  citation,
+  hideSource = false,
+}: {
+  citation: Citation
+  /** Set when a group header already names the source, so it isn't said twice. */
+  hideSource?: boolean
+}) {
   const indexedAt = relativeTime(citation.indexed_at)
   const verifiedAt = relativeTime(citation.verified_at)
   const hasLink = Boolean(citation.url)
@@ -57,7 +64,7 @@ export function CitationCard({ citation }: { citation: Citation }) {
         <Text style={[styles.title, hasLink && styles.titleLink]}>{citation.title}</Text>
       </View>
 
-      <Text style={styles.source}>{citation.source}</Text>
+      {hideSource ? null : <Text style={styles.source}>{citation.source}</Text>}
 
       {citation.url ? (
         <Text style={styles.url} numberOfLines={1}>

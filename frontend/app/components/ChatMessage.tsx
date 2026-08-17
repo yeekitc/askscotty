@@ -49,6 +49,16 @@ export function ChatMessage() {
     [content],
   )
 
+  // The list needs the prose to see which sources the answer actually cited.
+  const answer = useMemo(
+    () =>
+      content
+        .filter((part) => part.type === 'text')
+        .map((part) => part.text)
+        .join('\n'),
+    [content],
+  )
+
   const reduceMotion = useReducedMotion()
 
   // Driven off isBlank rather than mount: the assistant message is mounted
@@ -104,7 +114,7 @@ export function ChatMessage() {
                   // return an element rather than nothing.
                   renderSource={() => <></>}
                 />
-                <CitationList citations={citations} />
+                <CitationList citations={citations} answer={answer} />
               </MessageCitations>
             </View>
           </View>

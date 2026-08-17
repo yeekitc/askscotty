@@ -219,13 +219,39 @@ def _add_schedules(courses: list[dict], semester: str | None) -> None:
         course["last_offered"] = _offering_label(latest)
 
 
+#: Sections beyond this go unlisted in a citation — a big lecture has a dozen,
+#: and the snippet is a preview, not the schedule.
+_CITATION_MEETINGS = 2
+
+
+def _meeting_label(meeting: dict) -> str:
+    """"MW 09:30AM-10:50AM", or as much of it as the slot actually carries."""
+    days = "".join(meeting["days"])
+    span = "–".join(part for part in (meeting["begin"], meeting["end"]) if part)
+    return " ".join(part for part in (days, span) if part)
+
+
 def _course_citation(course: dict) -> dict:
-    bits = [course["course_number"], course["title"]]
+    """The card, and the preview behind an inline chip.
+
+    The title already carries the number and the name, so the snippet must not
+    repeat them — it is the only room a citation has to say something the title
+    doesn't, and what a student asking about a course wants there is when it
+    meets and who teaches it.
+    """
+    bits = []
     if course["units"] is not None:
         bits.append(f"{course['units']:g} units")
+    bits.extend(_meeting_label(meeting) for meeting in course["meetings"][:_CITATION_MEETINGS])
+    if course["instructors"]:
+        bits.append(", ".join(course["instructors"][:2]))
+
     return {
         "title": f"{course['course_number']}: {course['title']}",
         "url": "",  # no confirmed public per-course page — don't invent one (docs/b2-courses.md)
+        # Without this the ledger falls back to the tool's name, and the app
+        # groups the cards under "search_courses".
+        "source": course["source"],
         "snippet": " · ".join(bit for bit in bits if bit),
         "indexed_at": None,
     }

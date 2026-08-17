@@ -41,6 +41,23 @@ function segmentMarkers(text: string): Segment[] {
   return segments
 }
 
+/**
+ * The ids an answer actually cites.
+ *
+ * A tool can issue far more sources than the answer uses — one `search_courses`
+ * sweep issues a citation per matching course — so this is what separates the
+ * handful worth showing from the rest of the lookup.
+ */
+export function citedIds(text: string): Set<string> {
+  const ids = new Set<string>()
+
+  MARKER.lastIndex = 0
+  let match: RegExpExecArray | null
+  while ((match = MARKER.exec(text)) !== null) ids.add(`S${match[1]}`)
+
+  return ids
+}
+
 /** A word of prose, plus any citation markers that immediately followed it. */
 export type Word = { text: string; markers: string[] }
 

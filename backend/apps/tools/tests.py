@@ -169,6 +169,40 @@ class CoursesToolTests(SimpleTestCase):
         self.assertEqual(citation["title"], "15-213: Introduction to Computer Systems")
         self.assertIn("12 units", citation["snippet"])
         self.assertEqual(citation["url"], "", "no confirmed per-course page — never invent one")
+        self.assertEqual(
+            citation["source"],
+            "CMU Courses API",
+            "without this the ledger falls back to the tool name and the app "
+            "groups the cards under 'search_courses'",
+        )
+
+    def test_a_citation_snippet_does_not_repeat_its_own_title(self) -> None:
+        # The snippet is the only room a citation has to say something the
+        # title doesn't. It used to be "15-213 · Introduction to Computer
+        # Systems · 12 units" — the title again, plus units — which made every
+        # card three copies of one string.
+        self._patch(_FakeApi(pages={1: _one_page(_DOC_213)}))
+
+        citation = search_courses(query="computer systems")["citations"][0]
+
+        self.assertNotIn("Introduction to Computer Systems", citation["snippet"])
+        self.assertNotIn("15-213", citation["snippet"])
+
+    def test_a_citation_snippet_carries_the_meeting_times_once_known(self) -> None:
+        # Schedules are only fetched when a day filter forces it, so this is
+        # also the only path where the snippet can answer "when does it meet?".
+        self._patch(
+            _FakeApi(
+                pages={1: _one_page(_DOC_213)},
+                schedules={"15-213": [_offering("15-213", "fall", 2026, [2, 4])]},
+            )
+        )
+
+        citation = search_courses(query="computer systems", days_excluded=["F"])["citations"][0]
+
+        self.assertIn("12 units", citation["snippet"])
+        self.assertIn("TR", citation["snippet"], "day codes for the offering")
+        self.assertIn("Andersen, David", citation["snippet"])
 
     def test_the_units_filter_compares_against_the_coerced_number(self) -> None:
         # It used to compare a float parameter against the API's "9.0" string,
