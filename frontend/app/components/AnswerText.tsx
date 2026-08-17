@@ -28,10 +28,12 @@ import { Linking, StyleSheet, Text, View } from 'react-native'
 
 import { colors, fonts, radius, spacing } from '../lib/theme'
 import { listMarker, parseMarkdown, type Block, type InlineSpan } from '../lib/markdown'
+import { toWords, type Word } from '../lib/citations'
 import { FADE_RAMP, FADE_WORDS, splitWords, useBlink, useSmoothReveal } from '../lib/reveal'
+import { CitationMarker } from './CitationMarker'
 
 /** One span's words. */
-type SpanWords = string[]
+type SpanWords = Word[]
 /** The spans making up one `<Text>` — a paragraph, or a single list item. */
 type GroupWords = SpanWords[]
 /** A block's groups. Everything but a list has exactly one. */
@@ -58,11 +60,13 @@ type Reveal = {
 function chunkBlock(block: Block): BlockWords {
   switch (block.type) {
     case 'list':
-      return block.items.map((item) => item.map((span) => splitWords(span.text)))
+      return block.items.map((item) => item.map((span) => toWords(span.text)))
+    // Not `toWords`: a `[S1]` inside a fenced block is something the model
+    // wrote as code, not a citation of its own output.
     case 'code':
-      return [[splitWords(block.text)]]
+      return [[splitWords(block.text).map((text) => ({ text, markers: [] }))]]
     default:
-      return [block.spans.map((span) => splitWords(span.text))]
+      return [block.spans.map((span) => toWords(span.text))]
   }
 }
 
@@ -158,7 +162,12 @@ function BlockView({ block, words, start, first, style, reveal, caretOn }: Block
       const visible = Math.min(chunks.length, reveal.revealed - start)
       return (
         <View style={[styles.codeBlock, spacer]}>
-          <Text style={styles.codeText}>{chunks.slice(0, visible).join('')}</Text>
+          <Text style={styles.codeText}>
+            {chunks
+              .slice(0, visible)
+              .map((word) => word.text)
+              .join('')}
+          </Text>
         </View>
       )
     }
@@ -267,59 +276,70 @@ function Spans({
 }
 
 /**
- * The single place a leaf string becomes renderable content.
+ * The single place a leaf string becomes renderable content — prose, the words
+ * still fading in behind the edge, and the inline `[S1]` chips.
  *
- * A seam, deliberately: F2's inline `[S1]` markers are a transform on exactly
- * these words, and having one means citations do not have to touch the block
- * layout above.
- *
- * Words already settled are emitted as one joined string — one text node for the
- * bulk of the answer, with separate nodes only for the handful still fading.
+ * Settled prose is accumulated into one string and flushed only when something
+ * has to interrupt it, so the bulk of a finished answer is a single text node
+ * however many words it holds. Separate nodes exist only for the handful still
+ * fading and for each chip.
  */
 function renderSpanText(
-  chunks: string[],
+  words: Word[],
   start: number,
   reveal: Reveal,
   caretOn: boolean,
 ): React.ReactNode {
-  const visible = Math.min(chunks.length, reveal.revealed - start)
-  const end = start + chunks.length
+  const visible = Math.min(words.length, reveal.revealed - start)
+  const end = start + words.length
   const showCaret =
-    reveal.caret !== null && reveal.caret > start && reveal.caret <= end && chunks.length > 0
+    reveal.caret !== null && reveal.caret > start && reveal.caret <= end && words.length > 0
 
   // The first index that gets a fade colour. Everything before it is settled.
   const fadeFrom = reveal.fading ? Math.max(0, reveal.revealed - FADE_WORDS - start) : visible
-  const settled = chunks.slice(0, Math.min(fadeFrom, visible)).join('')
 
-  const caret = showCaret ? (
+  const nodes: React.ReactNode[] = []
+  let settled = ''
+  const flush = () => {
+    if (!settled) return
+    nodes.push(settled)
+    settled = ''
+  }
+
+  for (let index = 0; index < visible; index++) {
+    const word = words[index]
+
+    if (index < fadeFrom) {
+      settled += word.text
+    } else {
+      flush()
+      const distance = reveal.revealed - 1 - (start + index)
+      nodes.push(
+        <Text key={`w${index}`} style={{ color: FADE_RAMP[Math.min(distance, FADE_WORDS - 1)] }}>
+          {word.text}
+        </Text>,
+      )
+    }
+
+    for (const id of word.markers) {
+      flush()
+      nodes.push(<CitationMarker key={`m${index}-${id}`} id={id} />)
+    }
+  }
+
+  flush()
+
+  if (showCaret) {
     // Kept in the tree unlit rather than removed, so the line does not reflow on
     // every blink.
-    <Text style={[styles.caret, !caretOn && styles.caretOff]}>▍</Text>
-  ) : null
-
-  if (fadeFrom >= visible) {
-    return (
-      <>
-        {settled}
-        {caret}
-      </>
+    nodes.push(
+      <Text key="caret" style={[styles.caret, !caretOn && styles.caretOff]}>
+        ▍
+      </Text>,
     )
   }
 
-  return (
-    <>
-      {settled}
-      {chunks.slice(fadeFrom, visible).map((chunk, index) => {
-        const distance = reveal.revealed - 1 - (start + fadeFrom + index)
-        return (
-          <Text key={index} style={{ color: FADE_RAMP[Math.min(distance, FADE_WORDS - 1)] }}>
-            {chunk}
-          </Text>
-        )
-      })}
-      {caret}
-    </>
-  )
+  return nodes
 }
 
 const styles = StyleSheet.create({

@@ -37,6 +37,13 @@ export const fonts = {
   mono: Platform.select({ ios: 'Menlo', android: 'monospace', default: 'monospace' }),
 }
 
+/**
+ * Where the layout stops being a phone and starts being a desktop: the sidebar
+ * becomes a column rather than a drawer, and a citation preview anchors to its
+ * chip rather than pinning to the bottom of the screen.
+ */
+export const WIDE_BREAKPOINT = 900
+
 export const spacing = {
   xs: 4,
   sm: 8,

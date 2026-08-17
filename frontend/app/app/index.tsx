@@ -32,6 +32,7 @@ import {
 import type { Mode } from '../lib/types'
 import { AskComposer } from '../components/AskComposer'
 import { ChatMessage } from '../components/ChatMessage'
+import { useCitationOverlay } from '../components/CitationOverlay'
 import { HoverPressable } from '../components/HoverPressable'
 import { TypingIndicator } from '../components/TypingIndicator'
 import { createHttpAdapter } from '../lib/assistantAdapter'
@@ -44,7 +45,7 @@ import {
   threadTitle,
 } from '../lib/chatThreads'
 import { durations, easing, offsets, useReducedMotion } from '../lib/motion'
-import { colors, radius, shadows, spacing } from '../lib/theme'
+import { colors, radius, shadows, spacing, WIDE_BREAKPOINT } from '../lib/theme'
 import { useCurrentUser } from '../lib/user'
 
 /** The PRD's signature multi-hop demo query, pre-filled so demos are one tap. */
@@ -56,7 +57,6 @@ const DISABLED_MODES_KEY = 'askscotty.disabledModes'
 // Everything on until someone unchecks it — an empty deny list.
 const DEFAULT_DISABLED_MODES: Mode[] = []
 const SIDEBAR_WIDTH = 280
-const WIDE_BREAKPOINT = 900
 
 const SAVE_DEBOUNCE_MS = 600
 
@@ -111,6 +111,7 @@ export default function AskScreen() {
   const { width } = useWindowDimensions()
   const isWide = width >= WIDE_BREAKPOINT
   const user = useCurrentUser()
+  const { close: closeCitation } = useCitationOverlay()
 
   const [disabledModes, setDisabledModes] = useState<Mode[]>(DEFAULT_DISABLED_MODES)
   const disabledModesRef = useRef(disabledModes)
@@ -614,6 +615,10 @@ export default function AskScreen() {
                     style={styles.messageList}
                     contentContainerStyle={styles.messageListContent}
                     keyboardShouldPersistTaps="handled"
+                    // The preview is placed against a measurement of where its
+                    // chip was, so it has to go the moment that stops being true.
+                    onScroll={closeCitation}
+                    scrollEventThrottle={16}
                     ListFooterComponent={RunningIndicator}
                     children={() => <ChatMessage />}
                   />

@@ -7,11 +7,18 @@ import { Stack } from 'expo-router'
 import { StatusBar } from 'expo-status-bar'
 import { SafeAreaProvider } from 'react-native-safe-area-context'
 
+import { CitationProvider } from '../components/CitationOverlay'
+
 export default function RootLayout() {
   return (
     <SafeAreaProvider>
       <StatusBar style="dark" />
-      <Stack screenOptions={{ headerShown: false }} />
+      {/* Above the router, not inside a screen: a citation preview is anchored
+          to the window, and one rendered within the message list would be
+          clipped by its row and scroll away with it. */}
+      <CitationProvider>
+        <Stack screenOptions={{ headerShown: false }} />
+      </CitationProvider>
     </SafeAreaProvider>
   )
 }

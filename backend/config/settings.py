@@ -217,9 +217,10 @@ PLANNER_SESSION_BUDGET_CENTS = int(os.getenv("PLANNER_SESSION_BUDGET_CENTS") or 
 PLANNER_REQUEST_TIMEOUT = float(os.getenv("PLANNER_REQUEST_TIMEOUT") or 45)
 PLANNER_MAX_RETRIES = int(os.getenv("PLANNER_MAX_RETRIES") or 1)
 
-# Off until the app can render an [S1] marker as a citation chip (tasklist F2) —
-# with no renderer the user just sees a literal "[S1]" in the prose.
-PLANNER_CITATION_MARKERS = os.getenv("PLANNER_CITATION_MARKERS", "").lower() in {
+# Whether the answer keeps its inline [S1] markers. The app renders each one as
+# a citation chip; with this off `loop.py` strips them and the answer still
+# reads correctly, so it stays a switch rather than a hard dependency.
+PLANNER_CITATION_MARKERS = os.getenv("PLANNER_CITATION_MARKERS", "true").lower() in {
     "1",
     "true",
     "yes",

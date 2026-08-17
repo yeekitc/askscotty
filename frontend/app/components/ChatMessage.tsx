@@ -3,16 +3,21 @@
  * ambient context, so nothing has to be passed in as a prop.
  */
 
-import { useEffect } from 'react'
+import { useEffect, useMemo } from 'react'
 import { Image, StyleSheet, Text, View } from 'react-native'
 import Animated, { useAnimatedStyle, useSharedValue, withTiming } from 'react-native-reanimated'
-import { MessagePrimitive as Message, useAuiState } from '@assistant-ui/react-native'
+import {
+  MessagePrimitive as Message,
+  useAuiState,
+  type SourceMessagePart,
+} from '@assistant-ui/react-native'
 
 import { durations, easing, offsets, useReducedMotion } from '../lib/motion'
 import { colors, radius, spacing } from '../lib/theme'
 import { sourcePartToCitation } from '../lib/assistantAdapter'
 import { AnswerText } from './AnswerText'
 import { CitationCard } from './CitationCard'
+import { MessageCitations } from './CitationOverlay'
 
 const MASCOT = require('../assets/mascot.png')
 
@@ -30,6 +35,18 @@ export function ChatMessage() {
   // turn, so a reloaded thread's earlier answers would each replay their reveal.
   const streaming = useAuiState(
     (state) => state.message.role === 'assistant' && state.message.status?.type === 'running',
+  )
+
+  // Selected as the raw content array and mapped outside the selector: a
+  // selector that built a new array every call would never compare equal to the
+  // last one, and re-render on every state change in the thread.
+  const content = useAuiState((state) => state.message.content)
+  const citations = useMemo(
+    () =>
+      content
+        .filter((part) => part.type === 'source')
+        .map((part) => sourcePartToCitation(part as SourceMessagePart)),
+    [content],
   )
 
   const reduceMotion = useReducedMotion()
@@ -72,12 +89,18 @@ export function ChatMessage() {
                   markdown package is React DOM, and the React Native one ships no
                   renderer at all. Without AnswerText the asterisks show up
                   literally. */}
-              <Message.Content
-                renderText={({ part }) => (
-                  <AnswerText text={part.text} style={styles.assistantText} streaming={streaming} />
-                )}
-                renderSource={({ part }) => <CitationCard citation={sourcePartToCitation(part)} />}
-              />
+              <MessageCitations citations={citations}>
+                <Message.Content
+                  renderText={({ part }) => (
+                    <AnswerText
+                      text={part.text}
+                      style={styles.assistantText}
+                      streaming={streaming}
+                    />
+                  )}
+                  renderSource={({ part }) => <CitationCard citation={sourcePartToCitation(part)} />}
+                />
+              </MessageCitations>
             </View>
           </View>
         </Message.If>

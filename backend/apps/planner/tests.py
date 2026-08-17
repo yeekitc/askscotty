@@ -837,7 +837,7 @@ class SessionDriverTests(PlannerTestCase):
 
     # --- Markers --------------------------------------------------------------
 
-    def test_markers_are_stripped_while_the_app_cannot_render_them(self) -> None:
+    def test_markers_are_stripped_when_the_setting_is_off(self) -> None:
         self.behaviour["fake_dining"] = lambda args: {
             "citations": [{"title": "Rohr Café hours", "url": "https://example.edu"}]
         }
