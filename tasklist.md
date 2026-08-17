@@ -172,8 +172,8 @@ Django 5.1 + DRF + Postgres. Everything lives under `backend/`. Code is bind-mou
 - [ ] BM25 / Postgres full-text index over `Chunk.text`
 - [ ] Vector index (`pgvector` HNSW or IVFFlat)
 - [ ] Hybrid retrieval: combine BM25 + vector scores, de-duplicate by document
-- [ ] `campus_search(query, k, filters)` tool function
-- [ ] Every result returns `url` + `indexed_at` (PRD §4)
+- [x] `campus_search(query, k, filters)` tool function — returns `{citations: [...]}`, not a bare list, or `CitationLedger` drops every hit
+- [x] Every result returns `url` + `indexed_at` (PRD §4) — and the whole chunk as `snippet`, which is the only grounding text the model gets to answer from
 - [ ] Management command `python manage.py reindex`
 - [ ] Ship a pre-built index (fixture or dump) so the demo doesn't depend on a live crawl
 
@@ -186,35 +186,39 @@ Django 5.1 + DRF + Postgres. Everything lives under `backend/`. Code is bind-mou
 
 **Courses** (`course-tools.apis.scottylabs.org`, no auth)
 
-- [ ] Client for `/courses/search`, `/course/{id}`, `/schedules`
-- [ ] Normalize to an internal shape: number, title, units, instructors, meeting times, prereqs
-- [ ] `search_courses(query, units?, days_excluded?, semester?)` tool
-- [ ] `get_course(course_number)` tool
-- [ ] Filter support for "9-unit ML elective, no Friday" (PRD §8)
-- [ ] Handle upstream 4xx/5xx gracefully — degrade, don't crash the answer
+📋 **[docs/b2-courses.md](./docs/b2-courses.md)** — every endpoint fact verified
+live against the real API. Read it before changing anything here; the surprises
+(a 500 for "no such course", string units, int meeting days) are all written down.
+
+- [x] Client for `/courses/search`, `/course/{id}`, `/schedules` — through `apps.core.http.get_json`
+- [x] Normalize to an internal shape: number, title, units, instructors, meeting times, prereqs
+- [x] `search_courses(query, units?, days_excluded?, semester?)` tool
+- [x] `get_course(course_number)` tool — merges `/course/{id}` with `/schedules?courseID=...`, which is the only place instructors and meeting times exist
+- [x] Filter support for "9-unit ML elective, no Friday" (PRD §8) — `units` filters client-side (the API's own `units` param does nothing) and reads three pages, because a 9-unit elective is usually not on page 1
+- [x] Handle upstream 4xx/5xx gracefully — degrade, don't crash the answer
 
 **Dining** (`api.cmueats.com/v2/locations`)
 
-- [ ] Client for the v2 locations endpoint (do **not** use the deprecated `dining.apis` endpoint)
-- [ ] Parse per-location open/close windows into a queryable form
-- [ ] `find_dining(open_at?, near?, limit?)` tool
+- [x] Client for the v2 locations endpoint (do **not** use the deprecated `dining.apis` endpoint)
+- [x] Parse per-location open/close windows into a queryable form
+- [x] `find_dining(open_at?, near?, limit?)` tool
 - [ ] "Open after 8:20 near Wean" works end to end (joins with mock Maps)
 
 **Events** (`tartanconnect.cmu.edu/mobile_ws/v17/mobile_events_list?range=0`)
 
-- [ ] Client for the mobile events JSON feed
-- [ ] Normalize: title, start/end, location, org, categories, link
-- [ ] `find_events(before?, after?, keywords?, limit?)` tool
-- [ ] Keyword match for "startup" / "AI" hits the signature query
+- [x] Client for the mobile events JSON feed
+- [x] Normalize: title, start/end, location, org, categories, link — the feed is JSON in transport only: a row names its columns in a `fields` string and sends the values as `p0`, `p1`, …, with dates as HTML
+- [x] `find_events(before?, after?, keywords?, limit?)` tool
+- [ ] Keyword match for "startup" / "AI" hits the signature query — matching is a plain substring test, so "AI" also matches "the FAIR"
 
 **Maps — Mock**
 
-- [ ] Fixture file with ~10 landmark buildings: name, aliases, lat/lng
-- [ ] Adjacency / walking-minutes table between landmarks
-- [ ] `nearby(building, radius_or_minutes)` tool
-- [ ] `walk_time(a, b)` tool
-- [ ] Every Maps result flagged `is_mock: true`
-- [ ] Cover the buildings the demo needs: Gates, Wean, Doherty, Tepper, UC, Hunt, Baker, Posner, Cohon, Hamerschlag
+- [x] Fixture file with ~10 landmark buildings: name, aliases, lat/lng
+- [x] Adjacency / walking-minutes table between landmarks
+- [x] `nearby(building, radius_or_minutes)` tool
+- [x] `walk_time(a, b)` tool
+- [x] Every Maps result flagged `is_mock: true` — on the result *and* the citation, the latter from the tool's own registration rather than anything the fixture claims
+- [x] Cover the buildings the demo needs: Gates, Wean, Doherty, Tepper, UC, Hunt, Baker, Posner, Cohon, Hamerschlag
 
 **25Live — Mock, P1**
 
@@ -245,19 +249,20 @@ they take `allowed_domains`, `blocked_domains`, `max_uses`,
 > exfiltration control, not a quality one. Everything else here — `verified_at`,
 > `resolve_course_site`, the staleness policy, `CrawlSeed` enqueue — is unaffected.
 
-📋 **Implementation prompt: [docs/b3-web-verify.md](./docs/b3-web-verify.md)** —
-phases, the registry change a server tool forces, the result blocks to parse, and
-what B4 already handles so it does not get rebuilt.
+📋 **[docs/b3-web-verify.md](./docs/b3-web-verify.md)** — the result blocks to
+parse, what B4 already handles so it does not get rebuilt, and its Status
+section for what is still open.
 
 - [ ] ~~`fetch_url(url)` — wrap `web_fetch` with an **allowlist** of public hosts~~ — **dropped**, no domain filters (see the callout above)
 - [ ] ~~Explicit denylist so Canvas / SIO / Stellic can never be fetched here~~ — **dropped**. §6 holds without it: no credentials, nothing behind the wall to reach. Test the *outcome* instead — a Canvas fetch returns no usable content
-- [ ] Return `verified_at` on every fetch — ours to stamp; the API doesn't supply it
+- [x] Harvest `web_search` / `web_fetch` results into the ledger, deduped by url — nothing read them before, so the verify chip lit on an answer that cited nothing. The blocks come back on `agent.tool_result`; under Managed Agents an `agent.message` text block carries no per-sentence citations to prefer
+- [x] Return `verified_at` on every fetch — ours to stamp; the API doesn't supply it
 - [ ] `web_search(query, site?)` — wrap `web_search`; `site` becomes a `site:` prefix in the query, not `allowed_domains`
 - [ ] Cap cost/latency per call (`max_uses`, `max_content_tokens`) — one search measured ~35.9k input tokens / ~26s
 - [ ] Do **not** declare `code_execution` alongside these — dynamic filtering is built in, and a second execution environment confuses the model
 - [x] Handle `pause_turn`: a long search turn ends the loop early and looks like a finished answer. Resume it, or the demo silently truncates. — **done in B4**, capped by `PLANNER_MAX_PAUSE_RESUMES`. Don't rebuild it. *(Disappears once B4 is on Managed Agents — the platform owns the resume.)*
 - [ ] `resolve_course_site(course_number)` — static map from Appendix B
-- [ ] Staleness policy: define what `indexed_at` age triggers a verify fetch (`WEB_VERIFY_STALE_AFTER_DAYS`) — the enforcement half of §1's RAG-first decision
+- [x] Staleness policy: define what `indexed_at` age triggers a verify fetch (`WEB_VERIFY_STALE_AFTER_DAYS`) — the enforcement half of §1's RAG-first decision. The number is also prose in `prompt.py`, because a versioned system prompt cannot read a setting at request time; changing it means re-running `provision_planner`
 - [ ] Confirm web search is **enabled for the org** before demo day: if an admin disabled it in the Console, *declaring* the tool is a 400, so every request fails rather than just searching ones. No kill-switch setting for this (decided) — it is our own org, so the fix is a Console toggle, and a flag nobody remembers to flip is not insurance
 - [ ] Enqueue newly discovered URLs into `CrawlSeed` for the next crawl (PRD §6 planner default)
 
