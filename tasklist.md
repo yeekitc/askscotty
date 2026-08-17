@@ -194,7 +194,7 @@ live against the real API. Read it before changing anything here; the surprises
 - [x] Normalize to an internal shape: number, title, units, instructors, meeting times, prereqs
 - [x] `search_courses(query, units?, days_excluded?, semester?)` tool
 - [x] `get_course(course_number)` tool — merges `/course/{id}` with `/schedules?courseID=...`, which is the only place instructors and meeting times exist
-- [x] Filter support for "9-unit ML elective, no Friday" (PRD §8) — `units` filters client-side (the API's own `units` param does nothing) and reads three pages, because a 9-unit elective is usually not on page 1
+- [x] Filter support for "9-unit ML elective, no Friday" (PRD §8) — `units` filters client-side, because the API's own `units` param does nothing. A filtered search reads every page (~7s, capped at 30): the endpoint pages at 10 *and* shuffles equally-ranked results, so a shallow read answers the same question differently each time
 - [x] Handle upstream 4xx/5xx gracefully — degrade, don't crash the answer
 
 **Dining** (`api.cmueats.com/v2/locations`)
@@ -209,7 +209,7 @@ live against the real API. Read it before changing anything here; the surprises
 - [x] Client for the mobile events JSON feed
 - [x] Normalize: title, start/end, location, org, categories, link — the feed is JSON in transport only: a row names its columns in a `fields` string and sends the values as `p0`, `p1`, …, with dates as HTML
 - [x] `find_events(before?, after?, keywords?, limit?)` tool
-- [ ] Keyword match for "startup" / "AI" hits the signature query — matching is a plain substring test, so "AI" also matches "the FAIR"
+- [ ] Keyword match for "startup" / "AI" hits the signature query — the matching is right (word-start, so "startup" finds "startups" and "AI" no longer fires on "the FAIR"), but **the feed only carries ~21 upcoming events**, about a week out, and `range` slides that window rather than paging it. Neither demo keyword hits anything today. Needs a second events source, not a better matcher
 
 **Maps — Mock**
 

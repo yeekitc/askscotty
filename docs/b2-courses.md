@@ -97,9 +97,16 @@ into this tool.
   downstream carries the encoding.
 - **`units` on `/courses/search` does not filter.** `keywords=machine
   learning&units=9` returns the same 259 `totalDocs` as without it, and the
-  page still contains 6- and 12-unit courses. The filter has to be client-side
-  — and because the endpoint pages at 10, a filtered search reads a few pages
-  rather than one. `semester` is ignored server-side too.
+  page still contains 6- and 12-unit courses. The filter has to be client-side.
+  `semester` is ignored server-side too.
+- **Equally-ranked results shuffle between calls.** Repeating the same query
+  returns the same 10 courses in a different order, so a result can cross a page
+  boundary between two calls. With the endpoint paging at 10, that makes a
+  shallow read non-deterministic: three pages of "machine learning" found 3 of
+  the 37 nine-unit matches, a different 3 each run. A filtered search therefore
+  reads every page — 26 of them here, ~7s at ~0.26s a page — which makes the
+  answer both complete and the same twice running. Capped at 30 pages, and the
+  result says so when it stops early.
 - **"Current semester" is the most recent offering on file.**
   `/schedules?courseID=15-213` returns 20 entries spanning 2020–2026, so
   flattening them answers "when does it meet?" with six years of rooms at

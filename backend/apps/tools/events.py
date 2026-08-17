@@ -154,11 +154,24 @@ def _parse_dt(s: str) -> datetime | None:
     return None
 
 
+# A keyword matches at a word start, so "startup" still finds "startups" —
+# but one this short has to match the whole word. A plain substring test made
+# "AI" fire on "the FAIR" and on the category "Entertainment", which is four
+# false positives out of four on the live feed.
+_WHOLE_WORD_BELOW = 4
+
+
+def _matches_keyword(haystack: str, keyword: str) -> bool:
+    word = keyword.strip()
+    if not word:
+        return True
+    boundary = r"\b" if len(word) < _WHOLE_WORD_BELOW else ""
+    return re.search(rf"\b{re.escape(word)}{boundary}", haystack, re.IGNORECASE) is not None
+
+
 def _matches_keywords(event: dict, keywords: list[str]) -> bool:
-    haystack = " ".join(
-        [event["title"], event["org"], event["location"], *event["categories"]]
-    ).lower()
-    return all(kw.lower() in haystack for kw in keywords)
+    haystack = " ".join([event["title"], event["org"], event["location"], *event["categories"]])
+    return all(_matches_keyword(haystack, keyword) for keyword in keywords)
 
 
 @register_tool(
@@ -188,7 +201,8 @@ def _matches_keywords(event: dict, keywords: list[str]) -> bool:
                 "items": {"type": "string"},
                 "description": (
                     "All keywords must appear somewhere in the event title, org, "
-                    "location, or categories. Case-insensitive."
+                    "location, or categories. Case-insensitive, and matched at "
+                    "the start of a word, so 'startup' finds 'startups'."
                 ),
             },
             "limit": {

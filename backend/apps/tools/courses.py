@@ -31,11 +31,18 @@ _BASE = "https://course-tools.apis.scottylabs.org"
 
 _MAX_RESULTS = 20
 
-# `/courses/search` pages at 10 docs, and neither `units` nor `semester` filters
-# server-side (both verified live), so a client-side filter over one page sees
-# almost nothing — "9-unit ML elective" only reaches 10-601 on page 3. Extra
-# pages are fetched only when there is a filter to feed.
-_MAX_FILTER_PAGES = 3
+# `/courses/search` pages at 10 docs and filters nothing server-side — neither
+# `units` nor `semester` changes the result set, both verified live — so a
+# client-side filter only ever sees the pages we ask for. It also shuffles
+# equally-ranked results between calls, which means a shallow read answers the
+# same question differently each time: "machine learning" has 259 matches over
+# 26 pages, 37 of them 9-unit, and three pages found 3 of those 37 — a different
+# 3 on each run.
+#
+# So a filtered search reads the lot. Measured at ~0.26s a page (the 250ms
+# per-host gate in apps.core.http dominates), which is ~7s at this ceiling. Paid
+# only when there is a filter to feed; an ordinary search still costs one page.
+_MAX_FILTER_PAGES = 30
 
 # Enriching a candidate costs one `/schedules` request, and apps.core.http gates
 # a host to one request every 250ms, so this is a stagger rather than true
@@ -197,25 +204,31 @@ def _course_citation(course: dict) -> dict:
     }
 
 
-def _search_docs(query: str, pages: int) -> list[dict]:
+def _search_docs(query: str, pages: int) -> tuple[list[dict], int]:
+    """Search docs, and how many matches were left unread behind the page cap."""
     try:
         payload = get_json(f"{_BASE}/courses/search", params={"keywords": query})
     except httpx.HTTPError as exc:
         raise ToolError(f"CMU Courses API unreachable for query {query!r}: {exc}") from exc
 
     if not isinstance(payload, dict):
-        return []
+        return [], 0
 
     docs = list(payload.get("docs") or [])
-    for page in range(2, min(pages, payload.get("totalPages") or 1) + 1):
+    total_pages = payload.get("totalPages") or 1
+    read = 1
+
+    for page in range(2, min(pages, total_pages) + 1):
         try:
             more = get_json(f"{_BASE}/courses/search", params={"keywords": query, "page": page})
         except httpx.HTTPError:
             # A later page failing still leaves the earlier ones worth returning.
             break
         docs.extend(more.get("docs") or [] if isinstance(more, dict) else [])
+        read = page
 
-    return [doc for doc in docs if isinstance(doc, dict)]
+    unread = max(0, (payload.get("totalDocs") or 0) - len(docs)) if read < total_pages else 0
+    return [doc for doc in docs if isinstance(doc, dict)], unread
 
 
 @register_tool(
@@ -265,10 +278,8 @@ def search_courses(
     semester: str | None = None,
 ) -> dict:
     filtering = units is not None or bool(days_excluded)
-    normalized = [
-        _normalize_course(doc)
-        for doc in _search_docs(query, pages=_MAX_FILTER_PAGES if filtering else 1)
-    ]
+    docs, unread = _search_docs(query, pages=_MAX_FILTER_PAGES if filtering else 1)
+    normalized = [_normalize_course(doc) for doc in docs]
 
     if units is not None:
         normalized = [course for course in normalized if course["units"] == units]
@@ -289,10 +300,17 @@ def search_courses(
             if not any(excluded.intersection(meeting["days"]) for meeting in course["meetings"])
         ]
 
-    return {
+    result = {
         "results": normalized,
         "citations": [_course_citation(course) for course in normalized],
     }
+    if unread:
+        # Say so rather than let a partial sweep read as the whole catalog.
+        result["note"] = (
+            f"Searched the {len(docs)} best matches for {query!r}; {unread} more were not "
+            "read. Narrow the query if the answer needs to be exhaustive."
+        )
+    return result
 
 
 @register_tool(

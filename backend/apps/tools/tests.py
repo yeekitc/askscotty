@@ -170,9 +170,10 @@ class CoursesToolTests(SimpleTestCase):
         self.assertEqual(len(payload["citations"]), 1)
         self.assertEqual(api.scheduled, [], "no schedule lookup is needed to filter on units")
 
-    def test_a_filtered_search_reads_past_the_first_page(self) -> None:
-        # `/courses/search` pages at 10 and does not filter server-side, so a
-        # 9-unit elective on page 3 is invisible to a one-page fetch.
+    def test_a_filtered_search_reads_every_page(self) -> None:
+        # `/courses/search` pages at 10, filters nothing server-side, and
+        # shuffles equally-ranked results between calls — so a shallow read
+        # answers the same question differently each time.
         api = self._patch(
             _FakeApi(
                 pages={
@@ -187,6 +188,24 @@ class CoursesToolTests(SimpleTestCase):
 
         self.assertEqual(api.search_pages, [1, 2, 3])
         self.assertEqual([c["course_number"] for c in payload["results"]], ["10-301"])
+        self.assertNotIn("note", payload, "nothing was left unread")
+
+    def test_a_search_too_broad_to_finish_says_so(self) -> None:
+        # Silently filtering 300 of 8395 matches reads as the whole catalog.
+        self._patch(
+            _FakeApi(
+                pages={
+                    page: {"totalDocs": 8395, "totalPages": 840, "page": page, "docs": [_DOC_251]}
+                    for page in range(1, 31)
+                }
+            )
+        )
+
+        payload = search_courses(query="a", units=9)
+
+        # 30 pages of one doc read, out of 8395 matches.
+        self.assertIn("Searched the 30 best matches", payload["note"])
+        self.assertIn("8365 more were not read", payload["note"])
 
     def test_an_unfiltered_search_costs_one_request(self) -> None:
         api = self._patch(
@@ -424,6 +443,34 @@ class EventsToolTests(SimpleTestCase):
 
         self.assertEqual(event["start"], "Mon, Aug 10, 2026 8:00 AM")
         self.assertEqual(event["end"], "Fri, Aug 28, 2026 9:00 AM")
+
+    def test_a_short_keyword_matches_a_whole_word_only(self) -> None:
+        # A plain substring test made "AI" fire on all four of these.
+        self._patch(
+            [
+                _event_row("1", "The FAIR 2026", _SINGLE_DAY, category="Member Recruitment"),
+                _event_row("2", "Saturday Board Games", _SINGLE_DAY, category="Entertainment"),
+                _event_row("3", "Student Employment Fair", _SINGLE_DAY, club="CPDC"),
+                _event_row("4", "AI Research Talk", _SINGLE_DAY, club="SCS"),
+            ]
+        )
+
+        results = find_events(keywords=["AI"])["results"]
+
+        self.assertEqual([event["title"] for event in results], ["AI Research Talk"])
+
+    def test_a_longer_keyword_matches_a_word_it_starts(self) -> None:
+        self._patch(
+            [
+                _event_row("1", "Startups on Tap", _SINGLE_DAY),
+                _event_row("2", "Restart Your Résumé", _SINGLE_DAY),
+            ]
+        )
+
+        # "startup" reaches "Startups"; it does not reach "Restart".
+        results = find_events(keywords=["startup"])["results"]
+
+        self.assertEqual([event["title"] for event in results], ["Startups on Tap"])
 
     def test_keyword_filter_reads_the_tags_out_of_their_markup(self) -> None:
         self._patch(
