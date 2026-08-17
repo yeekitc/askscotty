@@ -186,6 +186,11 @@ export default function AskScreen() {
   const sidebarEffectiveOpen = sidebarOpen ?? isWide
   const [searchQuery, setSearchQuery] = useState('')
 
+  // Threads whose answer landed while the reader was somewhere else. In memory
+  // only: a run cannot outlive a reload, so a marker that did would point at an
+  // arrival nobody could have missed.
+  const [unread, setUnread] = useState<ReadonlySet<string>>(() => new Set())
+
   const reduceMotion = useReducedMotion()
 
   // One 0→1 value drives both layouts: the track's width when the sidebar is
@@ -363,6 +368,15 @@ export default function AskScreen() {
     })
   }, [runtime, schedulePersist])
 
+  const markRead = useCallback((id: string) => {
+    setUnread((prev) => {
+      if (!prev.has(id)) return prev
+      const next = new Set(prev)
+      next.delete(id)
+      return next
+    })
+  }, [])
+
   /**
    * Put a thread's messages in the runtime, stopping whatever was running.
    *
@@ -400,9 +414,13 @@ export default function AskScreen() {
       setThreads((prev) => prev.map((t) => (t.id === updated.id ? updated : t)))
       schedulePersist(updated)
 
-      // Reopened while it was still working: the runtime is showing the stored
-      // messages, which do not include the answer that just landed.
-      if (run.threadId === activeThreadIdRef.current) openInRuntime(updated.messages)
+      if (run.threadId === activeThreadIdRef.current) {
+        // Reopened while it was still working: the runtime is showing the stored
+        // messages, which do not include the answer that just landed.
+        openInRuntime(updated.messages)
+      } else {
+        setUnread((prev) => new Set(prev).add(run.threadId))
+      }
 
       clearRun(run.threadId)
     },
@@ -488,6 +506,7 @@ export default function AskScreen() {
         if (!mostRecent) remaining.push(next) // deleted the last one — fall back to a fresh chat
         activeThreadIdRef.current = next.id
         setActiveThreadId(next.id)
+        markRead(next.id)
         openInRuntime(next.messages)
       }
 
@@ -498,7 +517,7 @@ export default function AskScreen() {
         // failed delete reappears on the next load rather than as a banner.
       })
     },
-    [threads, openInRuntime],
+    [threads, openInRuntime, markRead],
   )
 
   const switchToThread = useCallback(
@@ -512,10 +531,11 @@ export default function AskScreen() {
       const target = threads.find((t) => t.id === id)
       activeThreadIdRef.current = id
       setActiveThreadId(id)
+      markRead(id)
       openInRuntime(target?.messages ?? [])
       if (!isWide) setSidebarOpen(false)
     },
-    [threads, openInRuntime, isWide],
+    [threads, openInRuntime, markRead, isWide],
   )
 
   const renderRunningIndicator = useCallback(
@@ -610,7 +630,7 @@ export default function AskScreen() {
                   >
                     {({ hovered }) => (
                       <>
-                        <ThreadActivity threadId={t.id} />
+                        <ThreadActivity threadId={t.id} unread={unread.has(t.id)} />
                         <Text
                           style={[styles.recentItemText, active && styles.recentItemTextActive]}
                           numberOfLines={1}
@@ -786,12 +806,14 @@ export default function AskScreen() {
 }
 
 /**
- * A pulsing dot on a conversation that is still being answered.
+ * A dot on a conversation you are not reading: pulsing while its answer is
+ * still coming, solid once it has arrived.
  *
- * The whole point of detaching a run is that you can walk away from it, which
- * leaves no other sign anywhere that an answer is still coming.
+ * Two states rather than two dots, because a dot that simply vanished said
+ * nothing — an answer that landed and a run that died looked identical, and
+ * walking away is the whole point of detaching a run.
  */
-function ThreadActivity({ threadId }: { threadId: string }) {
+function ThreadActivity({ threadId, unread }: { threadId: string; unread: boolean }) {
   const run = useSyncExternalStore(subscribeToRuns, () => getRun(threadId), getNoRun)
   const reduceMotion = useReducedMotion()
   const busy = Boolean(run && !run.done)
@@ -807,13 +829,13 @@ function ThreadActivity({ threadId }: { threadId: string }) {
 
   const style = useAnimatedStyle(() => ({ opacity: pulse.value }))
 
-  if (!busy) return null
+  if (!busy && !unread) return null
 
   return (
     <Animated.View
-      style={[styles.activityDot, style]}
-      accessibilityLabel="Still answering"
-      accessibilityRole="progressbar"
+      style={[styles.activityDot, !busy && styles.activityDotUnread, style]}
+      accessibilityLabel={busy ? 'Still answering' : 'Answer ready'}
+      accessibilityRole={busy ? 'progressbar' : 'image'}
     />
   )
 }
@@ -1004,6 +1026,11 @@ const styles = StyleSheet.create({
     borderRadius: radius.pill,
     marginRight: spacing.xs + 2,
     backgroundColor: colors.textMuted,
+  },
+  // Arrived rather than arriving — darker, so a finished answer reads as
+  // something to go and look at rather than something still happening.
+  activityDotUnread: {
+    backgroundColor: colors.accent,
   },
   recentItemText: {
     // Shrinks so a long title truncates rather than pushing the delete
