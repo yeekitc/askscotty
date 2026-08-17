@@ -22,13 +22,16 @@
  * them.
  */
 
-import { useMemo, useState } from 'react'
-import { Pressable, StyleSheet, Text, View } from 'react-native'
+import { useEffect, useMemo, useState } from 'react'
+import { StyleSheet, Text, View } from 'react-native'
+import Animated, { useAnimatedStyle, useSharedValue, withTiming } from 'react-native-reanimated'
 
 import { citedIds } from '../lib/citations'
+import { durations, easing, useReducedMotion } from '../lib/motion'
 import { colors, spacing } from '../lib/theme'
 import type { Citation } from '../lib/types'
 import { CitationCard } from './CitationCard'
+import { HoverPressable } from './HoverPressable'
 
 /** Groups in first-appearance order, so the numbering still climbs down the page. */
 function groupBySource(citations: Citation[]): [string, Citation[]][] {
@@ -44,7 +47,11 @@ function groupBySource(citations: Citation[]): [string, Citation[]][] {
 }
 
 export function CitationList({ citations, answer }: { citations: Citation[]; answer: string }) {
-  const [expanded, setExpanded] = useState(false)
+  // Null until the reader says otherwise, so the default can still change under
+  // it: a message is rendered before its sources arrive, and `hasChips` only
+  // becomes true when they do.
+  const [override, setOverride] = useState<boolean | null>(null)
+  const reduceMotion = useReducedMotion()
 
   const groups = useMemo(() => groupBySource(citations), [citations])
 
@@ -56,54 +63,62 @@ export function CitationList({ citations, answer }: { citations: Citation[]; ans
     return citations.some((citation) => cited.has(citation.id))
   }, [citations, answer])
 
+  const open = override ?? !hasChips
+
+  const turn = useSharedValue(open ? 1 : 0)
+  useEffect(() => {
+    turn.value = reduceMotion
+      ? open
+        ? 1
+        : 0
+      : withTiming(open ? 1 : 0, { duration: durations.fast, easing })
+  }, [open, reduceMotion, turn])
+
+  const caretStyle = useAnimatedStyle(() => ({
+    transform: [{ rotate: `${turn.value * 180}deg` }],
+  }))
+
   if (citations.length === 0) return null
 
-  const open = expanded || !hasChips
   const summary = `${citations.length} ${citations.length === 1 ? 'source' : 'sources'} · ${groups
     .map(([source]) => source)
     .join(', ')}`
 
-  if (!open) {
-    return (
-      <Pressable
-        onPress={() => setExpanded(true)}
+  return (
+    <View style={styles.list}>
+      <HoverPressable
+        onPress={() => setOverride(!open)}
         accessibilityRole="button"
-        accessibilityState={{ expanded: false }}
+        accessibilityState={{ expanded: open }}
+        accessibilityLabel={open ? 'Hide sources' : 'Show sources'}
         hitSlop={8}
         style={styles.toggle}
       >
-        {/* Named, not just counted: "12 sources" says nothing about whether to
-            trust them, "12 sources · CMU Courses API" does. */}
-        <Text style={styles.summary} numberOfLines={1}>
-          {summary}
-        </Text>
-      </Pressable>
-    )
-  }
+        {({ hovered }) => (
+          <>
+            {/* Named, not just counted: "20 sources" says nothing about whether
+                to trust them, "20 sources · CMU Courses API" does. */}
+            <Text style={[styles.summary, hovered && styles.summaryHovered]} numberOfLines={1}>
+              {summary}
+            </Text>
+            <Animated.View style={caretStyle}>
+              <Text style={[styles.caret, hovered && styles.summaryHovered]}>▾</Text>
+            </Animated.View>
+          </>
+        )}
+      </HoverPressable>
 
-  return (
-    <View style={styles.list}>
-      {groups.map(([source, items]) => (
-        <View key={source}>
-          <Text style={styles.groupLabel}>{source}</Text>
-          {items.map((citation) => (
-            // The group header above already names the source.
-            <CitationCard key={citation.id} citation={citation} hideSource />
-          ))}
-        </View>
-      ))}
-
-      {hasChips ? (
-        <Pressable
-          onPress={() => setExpanded(false)}
-          accessibilityRole="button"
-          accessibilityState={{ expanded: true }}
-          hitSlop={8}
-          style={styles.toggle}
-        >
-          <Text style={styles.toggleText}>Hide sources</Text>
-        </Pressable>
-      ) : null}
+      {open
+        ? groups.map(([source, items]) => (
+            <View key={source}>
+              <Text style={styles.groupLabel}>{source}</Text>
+              {items.map((citation) => (
+                // The group header above already names the source.
+                <CitationCard key={citation.id} citation={citation} hideSource />
+              ))}
+            </View>
+          ))
+        : null}
     </View>
   )
 }
@@ -122,14 +137,20 @@ const styles = StyleSheet.create({
   },
   toggle: {
     alignSelf: 'flex-start',
-  },
-  toggleText: {
-    fontSize: 12,
-    color: colors.textMuted,
-    textDecorationLine: 'underline',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.xs,
   },
   summary: {
     fontSize: 12,
+    color: colors.textFaint,
+    flexShrink: 1,
+  },
+  summaryHovered: {
+    color: colors.textMuted,
+  },
+  caret: {
+    fontSize: 9,
     color: colors.textFaint,
   },
 })
