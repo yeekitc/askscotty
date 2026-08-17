@@ -26,6 +26,12 @@ export function ChatMessage() {
       !state.message.content.some((part) => part.type !== 'text' || part.text.length > 0),
   )
 
+  // Per-message, not `thread.isRunning`: the latter stays true for the whole
+  // turn, so a reloaded thread's earlier answers would each replay their reveal.
+  const streaming = useAuiState(
+    (state) => state.message.role === 'assistant' && state.message.status?.type === 'running',
+  )
+
   const reduceMotion = useReducedMotion()
 
   // Driven off isBlank rather than mount: the assistant message is mounted
@@ -68,7 +74,7 @@ export function ChatMessage() {
                   literally. */}
               <Message.Content
                 renderText={({ part }) => (
-                  <AnswerText text={part.text} style={styles.assistantText} />
+                  <AnswerText text={part.text} style={styles.assistantText} streaming={streaming} />
                 )}
                 renderSource={({ part }) => <CitationCard citation={sourcePartToCitation(part)} />}
               />
