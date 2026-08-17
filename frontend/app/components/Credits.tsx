@@ -1,15 +1,18 @@
 /**
- * The wording below is verbatim from PRD §8 and must not be paraphrased — the
- * "not affiliated with ScottyLabs" line is a hard requirement.
+ * The footer credit — attribution only, one line.
+ *
+ * **Known deviation.** PRD §9 quotes a two-sentence credits copy ending "We are
+ * not affiliated with ScottyLabs.", and §1 makes not implying a partnership a
+ * rule. That sentence is deliberately not shown in the app; it survives in
+ * README.md, which covers the "submission" half of §1's "credit in app +
+ * submission" but not the in-app half.
  */
 
 import { StyleSheet, Text } from 'react-native'
 
 import { colors, spacing } from '../lib/theme'
 
-export const CREDITS_TEXT =
-  'Uses publicly available CMU web pages and public campus APIs, including open ' +
-  'APIs published by ScottyLabs (e.g. Courses). We are not affiliated with ScottyLabs.'
+export const CREDITS_TEXT = "Public CMU pages and ScottyLabs' open APIs."
 
 export function Credits({ style }: { style?: React.ComponentProps<typeof Text>['style'] }) {
   return <Text style={[styles.credits, style]}>{CREDITS_TEXT}</Text>
