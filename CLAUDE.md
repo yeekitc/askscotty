@@ -82,19 +82,11 @@ scoped to hold these.
 Miss the import and the tool silently never registers. The planner is never told
 it exists, so it looks like the model chose not to use it.
 
-**Then re-provision:**
+**No re-provisioning, ever, for a tool.** `provision_planner` declares only the
+prebuilt toolset; every session gets ours from the registry at request time. That
+is what keeps a new tool a two-line change.
 
-```
-docker compose exec backend python manage.py provision_planner
-```
-
-A request builds its own toolset from the registry, so this is **not** what makes
-the tool work — skipping it costs you nothing in the app. It only keeps the
-agent's own declaration in step, which is what a session opened outside the
-request path sees. Personal tools are deliberately absent from the agent: they
-are offered per session, only where the connector exists.
-
-If a question comes back answered entirely off the open web, this is not the
+If a question comes back answered entirely off the open web, the agent is not the
 cause. Check what is actually registered first:
 
 ```

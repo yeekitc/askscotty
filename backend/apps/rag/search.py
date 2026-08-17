@@ -60,19 +60,41 @@ def campus_search(query: str, k: int = 6) -> list[dict]:
     all_rows = {row["id"]: row for row in vector_rows + fts_rows}
     top_ids = sorted(scores, key=lambda cid: -scores[cid])[:k]
 
-    results = []
-    for cid in top_ids:
-        row = all_rows[cid]
+    return _merge_by_document(all_rows[cid] for cid in top_ids)
+
+
+def _merge_by_document(rows) -> list[dict]:
+    """Chunk rows → one result per source page, best-ranked first.
+
+    Several chunks of one page are several passages of one source, not several
+    sources: a question about the registrar's rules matched five chunks of the
+    same page and produced five identical-looking citations. They are joined
+    instead, so the model keeps every passage and the reader sees one card.
+
+    The whole text goes in `snippet`, not a preview: CitationLedger forwards
+    `snippet` and drops `text`, so it is the only grounding content the model
+    gets to answer from. The chunker already bounds each one (tasklist B1).
+    """
+    merged: dict[str, dict] = {}
+    results: list[dict] = []
+
+    for row in rows:
+        url = row["document__url"]
+        seen = merged.get(url)
+        if seen is not None:
+            seen["text"] += "\n\n" + row["text"]
+            seen["snippet"] = seen["text"]
+            continue
+
         indexed_at = row["indexed_at"]
-        results.append({
+        entry = {
             "text": row["text"],
-            "url": row["document__url"],
-            "title": row["document__title"] or row["document__url"],
+            "url": url,
+            "title": row["document__title"] or url,
             "indexed_at": indexed_at.isoformat() if indexed_at else None,
-            # The whole chunk, not a preview: CitationLedger forwards `snippet`
-            # and drops `text`, so this is the only grounding content the model
-            # gets to answer from. The chunker already bounds it (tasklist B1).
             "snippet": row["text"],
-        })
+        }
+        merged[url] = entry
+        results.append(entry)
 
     return results

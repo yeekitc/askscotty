@@ -29,6 +29,12 @@ MARKER = re.compile(r"\[S\d[\d\s,S-]*\]")
 MARKER_ID = re.compile(r"S(\d+)")
 
 
+def _one_line(text: Any) -> str:
+    """Collapse whitespace. A crawled `<title>` arrives with newlines in it, and
+    a citation card renders the title on one line whatever it contains."""
+    return " ".join(str(text).split())
+
+
 class CitationLedger:
     """Numbers citations as they arrive and keeps them in issue order."""
 
@@ -62,7 +68,7 @@ class CitationLedger:
                 continue
             citation = {
                 "id": f"S{len(self._citations) + 1}",
-                "title": str(item.get("title") or tool.name),
+                "title": _one_line(item.get("title") or tool.name),
                 "url": str(item.get("url") or ""),
                 "snippet": str(item.get("snippet") or ""),
                 "indexed_at": item.get("indexed_at"),
@@ -105,7 +111,7 @@ class CitationLedger:
 
         citation = {
             "id": f"S{len(self._citations) + 1}",
-            "title": str(title or url or source),
+            "title": _one_line(title or url or source),
             "url": str(url or ""),
             "snippet": str(snippet or ""),
             "indexed_at": None,
