@@ -10,6 +10,7 @@ import type {
   AskRequest,
   AskResponse,
   Citation,
+  Mode,
   StoredThread,
   ThreadListResponse,
 } from './types'
@@ -151,12 +152,12 @@ function normalizeAskResponse(raw: RawAskResponse): AskResponse {
  * lets the planner use this person's connected sources. Omitting it silently
  * drops every personal tool.
  */
-async function askBody(query: string, sources?: string[], threadId?: string) {
-  const body: AskRequest & { sources?: string[] } = {
+async function askBody(query: string, disabledModes?: Mode[], threadId?: string) {
+  const body: AskRequest = {
     query,
     session_id: await getSessionId(),
   }
-  if (sources) body.sources = sources
+  if (disabledModes?.length) body.disabled_modes = disabledModes
   if (threadId) body.thread_id = threadId
   return body
 }
@@ -170,12 +171,12 @@ async function askBody(query: string, sources?: string[], threadId?: string) {
  */
 export async function ask(
   query: string,
-  sources?: string[],
+  disabledModes?: Mode[],
   threadId?: string,
 ): Promise<AskResponse> {
   const raw = await request<RawAskResponse>('/api/ask/', {
     method: 'POST',
-    body: await askBody(query, sources, threadId),
+    body: await askBody(query, disabledModes, threadId),
   })
   return normalizeAskResponse(raw)
 }
@@ -193,10 +194,10 @@ export async function ask(
  */
 export async function* askEvents(
   query: string,
-  options: { sources?: string[]; threadId?: string; signal?: AbortSignal } = {},
+  options: { disabledModes?: Mode[]; threadId?: string; signal?: AbortSignal } = {},
 ): AsyncGenerator<AskEvent, void> {
   const sessionId = await getSessionId()
-  const body = await askBody(query, options.sources, options.threadId)
+  const body = await askBody(query, options.disabledModes, options.threadId)
 
   const queue: AskEvent[] = []
   let failure: ApiError | null = null

@@ -19,5 +19,7 @@ class Command(BaseCommand):
             elif seed.label != label:
                 seed.label = label
                 seed.save(update_fields=["label"])
+
+        self.stdout.write(
             self.style.SUCCESS(f"Done. {created} new seeds added ({len(SEEDS)} total).")
         )

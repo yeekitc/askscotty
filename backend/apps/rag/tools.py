@@ -37,7 +37,9 @@ from apps.tools.registry import register_tool
     mode="rag",
     is_mock=False,
 )
-def campus_search(query: str, k: int = 6) -> list[dict]:
+def campus_search(query: str, k: int = 6) -> dict:
+    # Wrapped in a `citations` key rather than returned bare: CitationLedger
+    # ignores anything that is not a dict, so a list reaches the model uncited.
     from apps.rag.search import campus_search as _search
 
-    return _search(query, k=min(k, 20))
+    return {"citations": _search(query, k=min(k, 20))}

@@ -82,6 +82,29 @@ scoped to hold these.
 Miss the import and the tool silently never registers. The planner is never told
 it exists, so it looks like the model chose not to use it.
 
+**Then re-provision:**
+
+```
+docker compose exec backend python manage.py provision_planner
+```
+
+A request builds its own toolset from the registry, so this is **not** what makes
+the tool work — skipping it costs you nothing in the app. It only keeps the
+agent's own declaration in step, which is what a session opened outside the
+request path sees. Personal tools are deliberately absent from the agent: they
+are offered per session, only where the connector exists.
+
+If a question comes back answered entirely off the open web, this is not the
+cause. Check what is actually registered first:
+
+```
+docker compose exec backend python manage.py shell -c \
+  "from apps.tools.registry import tools_for_session; print([t.name for t in tools_for_session(None)])"
+```
+
+An empty list there means a tool module never imported, and every question is
+being handed a toolset of nothing.
+
 ## Hard rules from the PRD
 
 These are non-negotiable; see PRD.md §9 and §10.

@@ -13,11 +13,25 @@ logger = logging.getLogger(__name__)
 
 _BATCH_SIZE = 100  # well under OpenAI's 2048-input-per-call limit
 
+# OpenAI answers "too fast" and "out of credits" with the same 429. Only the
+# first is worth waiting out; the second cannot become true by trying again, and
+# retrying it costs 15 seconds of backoff on the way to the same failure. That
+# is paid inside a planner turn, because `campus_search` embeds the query.
+_TERMINAL_429 = ("insufficient_quota", "credit_balance_exhausted", "billing_hard_limit_reached")
+
+
+def _is_terminal(error: Exception) -> bool:
+    body = getattr(error, "body", None) or {}
+    detail = body.get("error", body) if isinstance(body, dict) else {}
+    code = str(detail.get("code") or detail.get("type") or "") if isinstance(detail, dict) else ""
+    return code in _TERMINAL_429 or any(marker in str(error) for marker in _TERMINAL_429)
+
 
 def embed_texts(texts: list[str]) -> list[list[float]]:
     """Return one embedding vector per input text.
 
-    Batches calls and retries with exponential backoff on rate-limit errors.
+    Batches calls and retries with exponential backoff on rate-limit errors —
+    but not on a quota failure, which no amount of waiting fixes.
     """
     from openai import OpenAI, RateLimitError
 
@@ -37,8 +51,8 @@ def embed_texts(texts: list[str]) -> list[list[float]]:
                 )
                 results.extend(item.embedding for item in response.data)
                 break
-            except RateLimitError:
-                if attempt == 4:
+            except RateLimitError as exc:
+                if attempt == 4 or _is_terminal(exc):
                     raise
                 wait = 2**attempt
                 logger.warning("embed rate-limited, retrying in %ds", wait)

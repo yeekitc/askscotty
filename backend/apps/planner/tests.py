@@ -7,10 +7,10 @@ the driver has answered the previous round's tool calls, which is the same
 ordering a real session enforces. A driver that forgets to send a tool result
 fails here instead of hanging in the demo.
 
-Every tool in the real registry currently raises `ToolError` (the lanes are
-tasklist B1–B3), so the success path brings its own tool. That is not a
-workaround: the registry is the planner's only view of what exists, so a tool
-registered here exercises exactly the code a real one will.
+The success path brings its own tool rather than driving a real one, because the
+real ones reach live campus APIs and a suite must not. That is not a workaround:
+the registry is the planner's only view of what exists, so a tool registered here
+exercises exactly the code a real one will.
 
     docker compose exec backend python manage.py test apps.planner
 """
@@ -83,15 +83,69 @@ def custom_tool_use(name: str, event_id: str = "", **arguments) -> SimpleNamespa
     )
 
 
-def tool_use(name: str, event_id: str = "") -> SimpleNamespace:
+def tool_use(name: str, event_id: str = "", **arguments) -> SimpleNamespace:
     """A built-in tool — Anthropic runs these, we only watch."""
-    return SimpleNamespace(type="agent.tool_use", id=event_id or _next_id(), name=name, input={})
-
-
-def tool_result(tool_use_id: str, is_error: bool = False) -> SimpleNamespace:
     return SimpleNamespace(
-        type="agent.tool_result", id=_next_id(), tool_use_id=tool_use_id, is_error=is_error
+        type="agent.tool_use", id=event_id or _next_id(), name=name, input=arguments
     )
+
+
+def tool_result(tool_use_id: str, *content, is_error: bool = False) -> SimpleNamespace:
+    """A built-in tool's result. `content` is the blocks it came back with.
+
+    None rather than `[]` when there are none, matching the SDK: the field is
+    optional on `BetaManagedAgentsAgentToolResultEvent`.
+    """
+    return SimpleNamespace(
+        type="agent.tool_result",
+        id=_next_id(),
+        tool_use_id=tool_use_id,
+        is_error=is_error,
+        content=list(content) or None,
+    )
+
+
+# The three result-block shapes the web tools come back with. Field names are
+# the SDK's, because the harvest in loop.py reads them by name.
+
+
+def search_result(url: str, title: str, *texts: str) -> SimpleNamespace:
+    """One web_search hit: the url is `source`, the snippet is in `content`."""
+    return SimpleNamespace(
+        type="search_result",
+        source=url,
+        title=title,
+        content=[SimpleNamespace(type="text", text=text) for text in texts],
+        citations=SimpleNamespace(enabled=True),
+    )
+
+
+def url_document(url: str, title: str = "") -> SimpleNamespace:
+    """web_fetch's result when the block names the page it read."""
+    return SimpleNamespace(
+        type="document",
+        source=SimpleNamespace(type="url", url=url),
+        title=title,
+        context=None,
+    )
+
+
+def text_document(text: str, title: str = "") -> SimpleNamespace:
+    """web_fetch's result when the block carries only the page's text.
+
+    There is no url anywhere on it, so a citation can only come from the one the
+    matching `agent.tool_use` asked for.
+    """
+    return SimpleNamespace(
+        type="document",
+        source=SimpleNamespace(type="text", media_type="text/plain", data=text),
+        title=title,
+        context=None,
+    )
+
+
+def result_text(text: str) -> SimpleNamespace:
+    return SimpleNamespace(type="text", text=text)
 
 
 def idle(reason: str = "end_turn") -> SimpleNamespace:
@@ -137,11 +191,11 @@ class FakeSession:
 
     # The three calls the driver makes, recorded and answered.
 
-    def create_session(self, tools, *, title=""):
-        self.created.append({"tools": list(tools), "title": title})
+    def create_session(self, tools, *, title="", web=True):
+        self.created.append({"tools": list(tools), "title": title, "web": web})
         return self.session_id
 
-    def refresh_toolset(self, session_id, tools):
+    def refresh_toolset(self, session_id, tools, *, web=True):
         self.refreshed.append(session_id)
 
     def send_events(self, session_id, events):
@@ -489,6 +543,159 @@ class SessionDriverTests(PlannerTestCase):
         self.assertEqual(events[0]["data"], {"mode": "web_verify", "tool": "web_search"})
         self.assertEqual(events[1]["data"], {"mode": "web_verify", "tool": "web_search", "ok": True})
 
+    def test_a_web_search_result_becomes_a_citation(self) -> None:
+        """The chip lit long before this did — a verified answer cited nothing."""
+        session = FakeSession(
+            [
+                tool_use("web_search", event_id="sevt_web", query="CMU startup week"),
+                tool_result(
+                    "sevt_web",
+                    search_result(
+                        "https://www.cmu.edu/events/",
+                        "CMU Events Calendar",
+                        # Escaped and ragged, the way a real excerpt arrives.
+                        "Startup   Week runs\nSeptember 14&#x2013;18.",
+                    ),
+                ),
+                agent_message("Startup Week runs September 14–18."),
+                idle(),
+            ]
+        )
+        payload = self.answer(session)
+
+        citation = payload["citations"][0]
+        self.assertEqual(citation["id"], "S1")
+        self.assertEqual(citation["url"], "https://www.cmu.edu/events/")
+        self.assertEqual(citation["title"], "CMU Events Calendar")
+        self.assertEqual(citation["snippet"], "Startup Week runs September 14–18.")
+        # The producing tool's name, the same convention our own tools follow.
+        self.assertEqual(citation["source"], "web_search")
+        self.assertFalse(citation["is_mock"], "nothing on this path is a fixture")
+        self.assertIsNone(citation["indexed_at"], "a live fetch was never crawled")
+        self.assertTrue(citation["verified_at"], "stamped by us at harvest time")
+        self.assertEqual(payload["modes_used"], ["web_verify"])
+        self.assertIsNone(payload["note"], "a cited answer has nothing to flag")
+
+    def test_the_same_url_cited_twice_is_one_citation(self) -> None:
+        hub = "https://www.cmu.edu/hub/"
+        session = FakeSession(
+            [
+                tool_use("web_search", event_id="sevt_a"),
+                tool_result(
+                    "sevt_a",
+                    search_result(hub, "The HUB", "Open 8:30am–5pm."),
+                    search_result("https://www.cmu.edu/sio/", "SIO", "Student Information Online."),
+                ),
+                tool_use("web_fetch", event_id="sevt_b", url=hub),
+                tool_result("sevt_b", url_document(hub, "The HUB")),
+                agent_message("The HUB is open until 5pm."),
+                idle(),
+            ]
+        )
+        citations = self.answer(session)["citations"]
+
+        # S3 has to mean one source everywhere it is referenced.
+        self.assertEqual([citation["id"] for citation in citations], ["S1", "S2"])
+        self.assertEqual(
+            [citation["url"] for citation in citations], [hub, "https://www.cmu.edu/sio/"]
+        )
+
+    def test_a_fetched_page_falls_back_to_the_url_it_was_asked_for(self) -> None:
+        # A document block carrying only text has no url of its own, and a
+        # citation nobody can open is barely a citation.
+        session = FakeSession(
+            [
+                tool_use("web_fetch", event_id="sevt_web", url="https://www.cmu.edu/hub/"),
+                tool_result("sevt_web", text_document("The HUB is open 8:30am to 5pm.", "The HUB")),
+                agent_message("Open until 5pm."),
+                idle(),
+            ]
+        )
+        citation = self.answer(session)["citations"][0]
+
+        self.assertEqual(citation["url"], "https://www.cmu.edu/hub/")
+        self.assertEqual(citation["source"], "web_fetch")
+        self.assertEqual(citation["snippet"], "The HUB is open 8:30am to 5pm.")
+
+    def test_a_fetched_page_is_quoted_from_its_prose_not_its_metadata(self) -> None:
+        """The head of a real page is CMS front matter and nav, not content.
+
+        Verbatim from a live `web_fetch` of www.cmu.edu/news: 400 characters of
+        Drupal `meta-` keys before anything a reader would recognise.
+        """
+        page = (
+            "---\n"
+            "canonical: https://www.cmu.edu/news\n"
+            "meta-Generator: Drupal 10 (https://www.drupal.org)\n"
+            "meta-og:site_name: News\n"
+            "title: CMU - News - Carnegie Mellon University\n"
+            "---\n"
+            "[https://www.googletagmanager.com/ns.html?id=GTM-5Q36JQ]"
+            "(https://www.googletagmanager.com/ns.html?id=GTM-5Q36JQ)\n"
+            "\n"
+            "[Skip to main content](#main)\n"
+            "[CMU to Lead National Study of AI in Arts Education]"
+            "(https://www.cmu.edu/news/stories/archives/2026/august/ai-arts)\n"
+        )
+        session = FakeSession(
+            [
+                tool_use("web_fetch", event_id="sevt_web", url="https://www.cmu.edu/news/"),
+                tool_result("sevt_web", text_document(page, "CMU - News")),
+                agent_message("The latest is a study of AI in arts education."),
+                idle(),
+            ]
+        )
+        citation = self.answer(session)["citations"][0]
+
+        self.assertEqual(citation["snippet"], "CMU to Lead National Study of AI in Arts Education")
+
+    def test_a_broad_search_is_capped_rather_than_returning_a_wall(self) -> None:
+        """One live question came back with 96 citations before this.
+
+        A search returns about ten results and the model searches several times,
+        so the ceiling is what keeps the source list readable. Results arrive in
+        the search's own relevance order, so the ones kept are the best ones.
+        """
+        session = FakeSession(
+            [
+                tool_use("web_search", event_id="sevt_web"),
+                tool_result(
+                    "sevt_web",
+                    *[
+                        search_result(f"https://example.edu/{index}", f"Result {index}", "…")
+                        for index in range(30)
+                    ],
+                ),
+                agent_message("Plenty of coverage."),
+                idle(),
+            ]
+        )
+        citations = self.answer(session)["citations"]
+
+        self.assertEqual(len(citations), loop._MAX_WEB_CITATIONS)
+        self.assertEqual(citations[0]["url"], "https://example.edu/0")
+
+    def test_a_failed_web_search_is_a_note_rather_than_an_exception(self) -> None:
+        session = FakeSession(
+            [
+                tool_use("web_search", event_id="sevt_web", query="anything"),
+                tool_result("sevt_web", result_text("search is rate limited"), is_error=True),
+                agent_message("I could not check the web just now."),
+                idle(),
+            ]
+        )
+        payload = self.answer(session)
+
+        self.assertEqual(payload["citations"], [])
+        # A lane that failed contributed nothing, so it claims no chip.
+        self.assertEqual(payload["modes_used"], [])
+        self.assertIn("web_search: search is rate limited", payload["note"])
+
+    def test_a_web_tool_is_still_unreachable_through_the_registry(self) -> None:
+        # Anthropic runs these. Harvesting their results does not make them ours.
+        with self.assertRaises(ToolError):
+            registry.run_tool("web_search", {"query": "anything"})
+
     def test_a_cited_answer_is_one_piece_of_prose_not_one_paragraph_per_block(self) -> None:
         """Regression: this shredded every web-verified answer on screen.
 
@@ -578,6 +785,24 @@ class SessionDriverTests(PlannerTestCase):
     def test_an_uncited_answer_says_so(self) -> None:
         session = FakeSession([agent_message("Probably Wean."), idle()])
         self.assertIn("No campus source", self.answer(session)["note"])
+
+    def test_a_lookup_that_found_nothing_still_counts_as_a_campus_source(self) -> None:
+        """Nothing open at 4am is a live answer, not general knowledge.
+
+        The tool ran, CMU Eats replied, and the reply was "none" — so there is
+        nothing to cite and everything to stand behind.
+        """
+        self.behaviour["fake_dining"] = lambda args: {"results": [], "citations": []}
+
+        session = FakeSession(
+            [custom_tool_use("fake_dining", open_at="4:00am"), waiting()],
+            [agent_message("Nothing is open at 4am."), idle()],
+        )
+        payload = self.answer(session)
+
+        self.assertEqual(payload["citations"], [])
+        self.assertEqual(payload["modes_used"], ["dining"])
+        self.assertIsNone(payload["note"])
 
     def test_the_budget_is_the_runaway_bound_and_it_says_so(self) -> None:
         session = FakeSession([agent_message("Partial, sorry."), idle("budget_reached")])
@@ -773,9 +998,9 @@ class SessionLifecycleTests(PlannerTestCase):
         # Overrides replace in full, so the prebuilt toolset has to be listed
         # again or the web lane silently disappears.
         self.assertEqual(reference["tools"][0], client.AGENT_TOOLSET)
-        self.assertEqual(
-            [tool["name"] for tool in reference["tools"][1:]], ["fake_dining"]
-        )
+        # Everything else registered comes along too — the assertion is that the
+        # request's own tool is offered, not that it is the only one.
+        self.assertIn("fake_dining", [tool["name"] for tool in reference["tools"][1:]])
         self.assertTrue(all(tool["type"] == "custom" for tool in reference["tools"][1:]))
 
     @override_settings(PLANNER_AGENT_ID="")
@@ -834,6 +1059,98 @@ class PersonalToolGatingTests(PlannerTransactionTestCase):
         # The session reaches the tool from the request, never from the model:
         # it passes arguments, not whose data to read.
         self.assertEqual(self.tool_calls, [("fake_canvas", {"session_id": "anon-1"})])
+
+
+@override_settings(**PLANNER_DEFAULTS)
+class DisabledLaneTests(PlannerTestCase):
+    """The app's source picker, honoured server-side.
+
+    A lane the reader unchecked is applied by *not offering* its tools, the same
+    mechanism that gates a personal tool — not by refusing them afterwards.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.register("fake_dining", mode="dining")
+        self.register("fake_events", mode="events")
+        self.behaviour["fake_dining"] = lambda args: {"open_now": []}
+        self.behaviour["fake_events"] = lambda args: {"events": []}
+
+    def test_an_unchecked_lane_is_never_offered(self) -> None:
+        session = FakeSession([agent_message("Hi."), idle()])
+        self.drive(session, disabled_modes=["dining"])
+
+        names = [tool.name for tool in session.created[0]["tools"]]
+        self.assertNotIn("fake_dining", names)
+        self.assertIn("fake_events", names)
+
+    def test_unchecking_web_verification_switches_off_the_built_in_pair(self) -> None:
+        # Ours come off by being left out of the list. The prebuilt toolset is
+        # one opaque entry, so its own per-tool config is the only way in.
+        session = FakeSession([agent_message("Hi."), idle()])
+        self.drive(session, disabled_modes=["web_verify"])
+
+        self.assertFalse(session.created[0]["web"])
+        prebuilt = client.toolset([], web=False)[0]
+        self.assertEqual(
+            prebuilt["configs"],
+            [{"name": "web_fetch", "enabled": False}, {"name": "web_search", "enabled": False}],
+        )
+
+    def test_everything_is_on_when_nothing_is_unchecked(self) -> None:
+        session = FakeSession([agent_message("Hi."), idle()])
+        self.drive(session)
+
+        names = [tool.name for tool in session.created[0]["tools"]]
+        self.assertIn("fake_dining", names)
+        self.assertTrue(session.created[0]["web"])
+
+    def test_a_stale_session_asking_for_an_unchecked_tool_is_refused(self) -> None:
+        # A thread's session outlives the turn, so one opened before the reader
+        # unchecked dining is still holding the old offer.
+        session = FakeSession(
+            [custom_tool_use("fake_dining"), waiting()],
+            [agent_message("I could not check dining."), idle()],
+        )
+        payload = self.answer(session, disabled_modes=["dining"])
+
+        self.assertEqual(self.tool_calls, [], "it must not reach the tool at all")
+        self.assertTrue(session.dispatches[0][0]["is_error"])
+        self.assertEqual(payload["modes_used"], [])
+
+
+@override_settings(**PLANNER_DEFAULTS)
+class ProvisionedToolsetTests(PlannerTransactionTestCase):
+    """What the *agent* declares, as opposed to what a session overrides.
+
+    A session opened by anything other than `create_session` — the Console, a
+    script — gets only this. When it held nothing but the prebuilt toolset, a
+    Console question was answered by 23 web calls and $0.86 because the model
+    had no `search_courses` to reach for.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.register("fake_dining", mode="dining")
+        self.register("fake_canvas", mode="personal", requires_connector="canvas")
+
+    def test_the_agent_declares_the_prebuilt_toolset_and_our_public_tools(self) -> None:
+        from .management.commands.provision_planner import agent_tools
+
+        tools = agent_tools()
+
+        self.assertEqual(tools[0], client.AGENT_TOOLSET)
+        names = [tool["name"] for tool in tools[1:]]
+        self.assertIn("fake_dining", names)
+        self.assertTrue(all(tool["type"] == "custom" for tool in tools[1:]))
+
+    def test_a_personal_tool_is_never_declared_on_the_agent(self) -> None:
+        from .management.commands.provision_planner import agent_tools
+
+        # PRD §7: a tool the planner is never told about is a tool it cannot
+        # call. Declaring this one would offer it to every session on earth.
+        names = [tool.get("name") for tool in agent_tools()]
+        self.assertNotIn("fake_canvas", names)
 
 
 class MarkerValidationTests(TestCase):

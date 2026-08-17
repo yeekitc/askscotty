@@ -38,8 +38,10 @@ rather than its slowest member — see `_dispatch`.
 
 from __future__ import annotations
 
+import html
 import json
 import logging
+import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -87,15 +89,24 @@ def run_planner(
     session_id: str = "",
     thread_id: str = "",
     history: Iterable[dict[str, str]] = (),
+    disabled_modes: Iterable[str] = (),
     now: datetime | None = None,
 ) -> Iterator[dict[str, Any]]:
-    """Answer `query`, yielding progress events and finally the `AskResponse`."""
+    """Answer `query`, yielding progress events and finally the `AskResponse`.
+
+    `disabled_modes` are the lanes this reader unchecked in the app. They are
+    applied by *not offering* the tools rather than by refusing them later: a
+    tool the model is never told about is one it cannot call, which is the same
+    mechanism that gates personal tools (PRD §7).
+    """
     now = now or timezone.localtime()
-    tools = tools_for_session(session_id or None)
+    off = set(disabled_modes)
+    tools = [tool for tool in tools_for_session(session_id or None) if tool.mode not in off]
+    web = "web_verify" not in off
     turn = _Turn(tools={tool.name: tool for tool in tools}, session_id=session_id)
 
     thread = _thread_for(session_id, thread_id)
-    cma_session_id, is_new = _resolve_session(thread, tools, title=query)
+    cma_session_id, is_new = _resolve_session(thread, tools, title=query, web=web)
 
     # A reused session already holds the conversation, so replaying `history`
     # into it would say everything twice. A new one has never seen the thread,
@@ -116,7 +127,7 @@ def run_planner(
         if is_new:
             raise
         logger.info("planner_session gone id=%s; starting a new one", cma_session_id)
-        cma_session_id = _reopen_session(thread, tools, title=query)
+        cma_session_id = _reopen_session(thread, tools, title=query, web=web)
         is_new = True
         turn = _Turn(tools=turn.tools, session_id=session_id)
         message = prompt.user_turn(query, now, history=history)
@@ -140,12 +151,13 @@ def run_planner(
     }
 
     logger.info(
-        "planner_answer session=%s new=%s tools=%s failures=%s citations=%s uncited=%s",
+        "planner_answer session=%s new=%s tools=%s failures=%s citations=%s dropped=%s uncited=%s",
         cma_session_id,
         is_new,
         ",".join(turn.ran) or "-",
         len(turn.failures),
         len(turn.ledger.citations),
+        turn.web_dropped,
         ",".join(sorted(uncited)) or "-",
     )
 
@@ -187,12 +199,16 @@ class _Turn:
     #: Calls we have already sent a result for, so a later `requires_action`
     #: naming them reads as "still catching up" rather than "stuck".
     answered: set[str] = field(default_factory=set)
-    #: Built-in tool_use id -> tool name, so `agent.tool_result` can close the
-    #: lane the matching `agent.tool_use` opened.
-    lanes: dict[str, str] = field(default_factory=dict)
+    #: Built-in tool_use id -> (tool name, its input), so `agent.tool_result` can
+    #: close the lane the matching `agent.tool_use` opened — and reach the url it
+    #: was asked for, which a result block does not always carry.
+    lanes: dict[str, tuple[str, dict[str, Any]]] = field(default_factory=dict)
     #: Whether a built-in web tool actually returned something. `web_verify` is
     #: the one mode `run_tool` cannot report, because Anthropic runs those two.
     web_verified: bool = False
+    #: Web sources turned away by `_MAX_WEB_CITATIONS`, so the ceiling shows up
+    #: in the logs rather than looking like the search found less than it did.
+    web_dropped: int = 0
     #: Event ids already handled, so a reconnect cannot double-count one.
     seen: set[str] = field(default_factory=set)
     finished: bool = False
@@ -218,7 +234,7 @@ def _thread_for(session_id: str, thread_id: str) -> Thread | None:
 
 
 def _resolve_session(
-    thread: Thread | None, tools: list[Tool], *, title: str
+    thread: Thread | None, tools: list[Tool], *, title: str, web: bool = True
 ) -> tuple[str, bool]:
     """This thread's session, opened if it has none. Returns (id, is_new).
 
@@ -228,24 +244,26 @@ def _resolve_session(
     if thread is not None and thread.cma_session_id:
         # The toolset was fixed when the session opened, and a thread outlives
         # the turn — somebody may have connected or disconnected a source since.
-        client.refresh_toolset(thread.cma_session_id, tools)
+        client.refresh_toolset(thread.cma_session_id, tools, web=web)
         return thread.cma_session_id, False
 
-    cma_session_id = client.create_session(tools, title=title)
+    cma_session_id = client.create_session(tools, title=title, web=web)
     if thread is not None:
         thread.cma_session_id = cma_session_id
         thread.save(update_fields=["cma_session_id"])
     return cma_session_id, True
 
 
-def _reopen_session(thread: Thread | None, tools: list[Tool], *, title: str) -> str:
+def _reopen_session(
+    thread: Thread | None, tools: list[Tool], *, title: str, web: bool = True
+) -> str:
     """Replace a session id that no longer resolves.
 
     Ours is not the only store: a session can be archived or deleted on
     Anthropic's side while the thread row still points at it. That should cost
     the conversation's memory, not the answer.
     """
-    cma_session_id = client.create_session(tools, title=title)
+    cma_session_id = client.create_session(tools, title=title, web=web)
     if thread is not None:
         thread.cma_session_id = cma_session_id
         thread.save(update_fields=["cma_session_id"])
@@ -355,14 +373,19 @@ def _handle(turn: _Turn, cma_session_id: str, event: Any) -> Iterator[dict[str, 
         # because the planner has any use for them.
         turn.answer = ""
         if event.name in client.WEB_TOOLS:
-            turn.lanes[event.id] = event.name
+            turn.lanes[event.id] = (event.name, dict(event.input or {}))
             yield _event("mode_start", {"mode": "web_verify", "tool": event.name})
 
     elif kind == "agent.tool_result":
-        name = turn.lanes.pop(event.tool_use_id, None)
-        if name is not None:
+        lane = turn.lanes.pop(event.tool_use_id, None)
+        if lane is not None:
+            name, arguments = lane
             ok = not event.is_error
             turn.web_verified = turn.web_verified or ok
+            if ok:
+                _harvest_web(turn, name, arguments, event)
+            else:
+                turn.failures.append(f"{name}: {_result_text(event) or 'the lookup failed'}")
             yield _event("mode_end", {"mode": "web_verify", "tool": name, "ok": ok})
 
     elif kind == "session.error":
@@ -421,6 +444,120 @@ def _on_idle(turn: _Turn, cma_session_id: str, event: Any) -> Iterator[dict[str,
     turn.finished = True
 
 
+# --- Web verify ---------------------------------------------------------------
+
+# A citation snippet is a preview on a card, so a fetched page is trimmed to fit
+# one. Deliberately unlike a RAG hit, where the snippet *is* the model's
+# grounding: here the model already has the full content in its own context,
+# because Anthropic ran the tool.
+_WEB_SNIPPET_CHARS = 400
+
+# How many citations one turn's web lane may issue. A search returns about ten
+# results and the model searches several times over a broad question — one live
+# question came back with 96, which is not a source list, it is a wall. They
+# arrive in the search's own relevance order, so a ceiling keeps the best of
+# them; what it turned away is logged rather than silently dropped.
+_MAX_WEB_CITATIONS = 10
+
+# A fetched page arrives as markdown behind a block of CMS metadata, then nav
+# chrome, before any prose — confirmed live on www.cmu.edu/news, whose first 400
+# characters are Drupal `meta-` keys. Taking the head of the page verbatim puts
+# that on the citation card.
+_FRONT_MATTER = re.compile(r"\A---\n.*?\n---\n", re.DOTALL)
+_MD_LINK = re.compile(r"\[([^\]]*)\]\([^)]*\)")
+
+# Short lines are usually nav ("Skip to main content"), so a line long enough to
+# be a sentence is preferred — but only preferred. A page whose whole answer is
+# one short line still deserves a snippet.
+_PROSE_CHARS = 40
+
+
+def _page_snippet(text: str) -> str:
+    """The first line of a fetched page that reads like prose rather than chrome."""
+    fallback = ""
+    for raw in _FRONT_MATTER.sub("", text).splitlines():
+        line = " ".join(_MD_LINK.sub(r"\1", raw).split())
+        # A bullet or heading marker is a nav list, not the page's own prose.
+        if not line or line.startswith(("http://", "https://", "*", "-", "#", "|")):
+            continue
+        if len(line) >= _PROSE_CHARS:
+            return line[:_WEB_SNIPPET_CHARS]
+        fallback = fallback or line
+    return fallback[:_WEB_SNIPPET_CHARS]
+
+
+def _harvest_web(turn: _Turn, name: str, arguments: dict[str, Any], event: Any) -> None:
+    """Turn a built-in web tool's result into citations.
+
+    `agent.tool_result.content` is a list of blocks. `search_result` carries
+    `source` (the url), `title` and a `content` list of text blocks; `document`
+    carries `source.url` plus an optional `title`; a bare `text` block carries no
+    url at all, so it falls back to the one the matching `agent.tool_use` asked
+    for. Field names are the SDK's `BetaManagedAgentsAgentToolResultEvent`.
+
+    Nothing here reads `agent.message`. On the raw Messages API its text blocks
+    carry per-sentence `web_search_result_location` citations, which would be the
+    better source; under Managed Agents they carry only `text`.
+    """
+    verified_at = timezone.now()
+    requested_url = str(arguments.get("url") or "")
+
+    for block in getattr(event, "content", None) or []:
+        kind = getattr(block, "type", "")
+
+        if kind == "search_result":
+            url = str(getattr(block, "source", "") or "")
+            title = str(getattr(block, "title", "") or "")
+            snippet = " ".join(
+                getattr(part, "text", "")
+                for part in getattr(block, "content", None) or []
+                if getattr(part, "type", "") == "text"
+            )
+        elif kind == "document":
+            source = getattr(block, "source", None)
+            # web_fetch comes back as a *plain-text* document — no url on the
+            # block at all — so the one the tool_use asked for is the only one
+            # there is. Confirmed live; the `url` source variant is untested.
+            url = str(getattr(source, "url", "") or requested_url)
+            title = str(getattr(block, "title", "") or "")
+            snippet = _page_snippet(
+                str(getattr(source, "data", "") or getattr(block, "context", "") or "")
+            )
+        elif kind == "text":
+            url, title = requested_url, ""
+            snippet = str(getattr(block, "text", "") or "")
+        else:
+            continue
+
+        # A source with no url is one nobody can check, which is most of what a
+        # citation is for.
+        if not url:
+            continue
+
+        if turn.ledger.web_count >= _MAX_WEB_CITATIONS and not turn.ledger.cites(url):
+            turn.web_dropped += 1
+            continue
+
+        turn.ledger.record_web(
+            title=title or url,
+            url=url,
+            # Search excerpts arrive HTML-escaped — "Carnegie Mellon&#x27;s"
+            # renders as exactly that on a citation card.
+            snippet=" ".join(html.unescape(snippet).split())[:_WEB_SNIPPET_CHARS],
+            verified_at=verified_at,
+            source=name,
+        )
+
+
+def _result_text(event: Any) -> str:
+    """The text blocks of a tool result, joined — what a failed one says."""
+    return " ".join(
+        getattr(block, "text", "")
+        for block in getattr(event, "content", None) or []
+        if getattr(block, "type", "") == "text"
+    ).strip()
+
+
 # --- Tool dispatch ------------------------------------------------------------
 
 
@@ -449,7 +586,9 @@ def _dispatch(turn: _Turn, cma_session_id: str) -> Iterator[dict[str, Any]]:
     # only unreachable because the one caller guards it.
     with ThreadPoolExecutor(max_workers=max(1, min(len(calls), _MAX_PARALLEL))) as pool:
         futures = {
-            pool.submit(_call_tool, call.name, dict(call.input or {}), turn.session_id): index
+            pool.submit(
+                _call_tool, call.name, dict(call.input or {}), turn.session_id, set(turn.tools)
+            ): index
             for index, call in enumerate(calls)
         }
 
@@ -492,13 +631,22 @@ def _dispatch(turn: _Turn, cma_session_id: str) -> Iterator[dict[str, Any]]:
     client.send_events(cma_session_id, results)
 
 
-def _call_tool(name: str, arguments: dict[str, Any], session_id: str) -> tuple[bool, Any]:
+def _call_tool(
+    name: str, arguments: dict[str, Any], session_id: str, offered: set[str]
+) -> tuple[bool, Any]:
     """Run one tool in a pool thread. Never raises — a failure is a value here.
 
     A failure has to come back as a value rather than an exception: the model
     reads it and routes around a dead upstream, which is what makes "degrade,
     don't crash" real.
+
+    `offered` is what this turn was told about. A thread's session outlives the
+    turn, so one opened before a lane was unchecked is still holding the old
+    offer — refusing here is the same belt-and-braces as re-checking a connector.
     """
+    if name not in offered:
+        return False, f"{name} is not available for this question."
+
     try:
         return True, run_tool(name, arguments, session_id=session_id or None)
     except ToolError as exc:
@@ -533,7 +681,11 @@ def _note(turn: _Turn) -> str | None:
 
     if turn.failures:
         parts.append("Some sources did not respond — " + "; ".join(turn.failures))
-    elif not turn.ledger.citations:
+    elif not (turn.ledger.citations or turn.ran or turn.web_verified):
+        # Only when nothing ran at all. A lookup that succeeded and found
+        # nothing — no dining open at 4am — is still a live campus check, and
+        # calling that "general knowledge" tells the reader the opposite of
+        # what happened.
         parts.append(
             "No campus source backed this answer, so treat it as general knowledge "
             "rather than live CMU data."

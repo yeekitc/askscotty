@@ -1,18 +1,23 @@
 """Dining tool — CMU Eats public API v2.
 
-find_dining(open_at?, near?, limit?) → list of locations with hours.
+find_dining(open_at?, near?, limit?) → {results: locations with hours, citations}.
 
-The upstream is api.cmueats.com/v2/locations (no auth). Outages are caught and
-surfaced as ToolError so the planner degrades gracefully (PRD §3).
+The upstream is api.cmueats.com/v2/locations (no auth), reached through
+`apps.core.http.get_json`. Outages are caught and surfaced as ToolError so the
+planner degrades gracefully (PRD §3).
+
+`results` and `citations` are two views of the same lookup: the ledger rebuilds
+each citation from title/url/snippet alone, so a location's hours only reach the
+model through `results`.
 """
 
 from __future__ import annotations
 
 import re
-from datetime import datetime, timezone
 
-import httpx
+import httpx  # for httpx.HTTPError only
 
+from apps.core.http import get_json
 from apps.tools.registry import ToolError, register_tool
 
 _URL = "https://api.cmueats.com/v2/locations"
@@ -71,6 +76,17 @@ def _time_str_to_minutes(t: str) -> int | None:
     elif meridiem == "am" and h == 12:
         h = 0
     return h * 60 + mn
+
+
+def _dining_citation(location: dict) -> dict:
+    status = "open now" if location["is_open"] else "closed now"
+    concept = f" ({location['concept_title']})" if location["concept_title"] else ""
+    return {
+        "title": location["name"],
+        "url": "",  # CMU Eats has no public per-location page
+        "snippet": f"{location['name']}{concept} — {status}",
+        "indexed_at": None,
+    }
 
 
 def _is_open_at(location: dict, target_minutes: int) -> bool:
@@ -135,20 +151,16 @@ def find_dining(
     open_at: str | None = None,
     near: str | None = None,
     limit: int = 8,
-) -> list[dict]:
+) -> dict:
     try:
-        resp = httpx.get(_URL, timeout=_TIMEOUT)
-        resp.raise_for_status()
-        data = resp.json()
-        raw_locations: list[dict] = data.get("locations", []) if isinstance(data, dict) else data
-    except httpx.HTTPStatusError as exc:
-        raise ToolError(f"CMU Eats API returned {exc.response.status_code}.") from exc
-    except httpx.RequestError as exc:
+        data = get_json(_URL, timeout=_TIMEOUT)
+    except httpx.HTTPError as exc:
         raise ToolError(f"CMU Eats API unreachable: {exc}") from exc
-    except (ValueError, TypeError) as exc:
-        raise ToolError(f"CMU Eats API returned invalid JSON: {exc}") from exc
 
-    locations = [_normalize_location(loc) for loc in raw_locations]
+    raw_locations: list[dict] = data.get("locations", []) if isinstance(data, dict) else data
+
+    # A nameless location has nothing to cite and nothing to tell anyone.
+    locations = [loc for loc in map(_normalize_location, raw_locations) if loc["name"]]
 
     if open_at:
         target = _time_str_to_minutes(open_at)
@@ -163,4 +175,8 @@ def find_dining(
         for loc in locations:
             loc["near_building"] = resolved_near
 
-    return locations[: min(limit, 20)]
+    locations = locations[: min(limit, 20)]
+    return {
+        "results": locations,
+        "citations": [_dining_citation(location) for location in locations],
+    }

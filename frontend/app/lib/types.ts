@@ -43,6 +43,21 @@ export type Mode =
   | 'web_verify'
   | 'personal'
 
+/**
+ * The lanes a reader can switch off, in the order the picker shows them.
+ *
+ * `personal` is deliberately absent: it appears only where someone has connected
+ * the source, so it is gated by the connector rather than by preference.
+ */
+export const LANES: { mode: Mode; label: string; mock?: boolean }[] = [
+  { mode: 'rag', label: 'Campus index' },
+  { mode: 'courses', label: 'Courses' },
+  { mode: 'dining', label: 'Dining' },
+  { mode: 'events', label: 'Events' },
+  { mode: 'maps', label: 'Maps', mock: true },
+  { mode: 'web_verify', label: 'Web verification' },
+]
+
 /** One earlier turn, replayed so follow-up questions have context. */
 export type HistoryMessage = {
   role: 'user' | 'assistant'
@@ -65,6 +80,12 @@ export type AskRequest = {
   thread_id?: string
   /** Prior turns, oldest first. */
   history?: HistoryMessage[]
+  /**
+   * Lanes the reader unchecked in the source picker. A deny list, not an allow
+   * list: a lane this build has never heard of stays on, which is what keeps
+   * "everything is checked unless you uncheck it" true after a backend adds one.
+   */
+  disabled_modes?: Mode[]
 }
 
 export type AskResponse = {

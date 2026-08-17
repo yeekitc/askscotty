@@ -4,8 +4,8 @@ No public REST API exists for CMU building coordinates or walking distances, so
 this module uses a hardcoded fixture. Every result carries is_mock=True per PRD §9.
 
 Two tools:
-  nearby(building, radius_minutes?) → buildings within walking distance
-  walk_time(a, b) → estimated walking minutes between two buildings
+  nearby(building, radius_minutes?) → {results: buildings in range, citations}
+  walk_time(a, b) → {results: [one estimate], citations}
 """
 
 from __future__ import annotations
@@ -126,6 +126,15 @@ _WALK: dict[tuple[str, str], int] = {
 }
 
 
+def _map_citation(title: str, snippet: str) -> dict:
+    """A citation for fixture data — no source page exists, so `url` is empty.
+
+    `is_mock` is not set here: it comes from the tool's own registration, which
+    is what stops a mock result ever citing itself as live (PRD §9).
+    """
+    return {"title": title, "url": "", "snippet": snippet, "indexed_at": None}
+
+
 def _resolve_building(name: str) -> str | None:
     """Return the canonical building name, matching aliases case-insensitively."""
     key = name.lower().strip()
@@ -168,7 +177,7 @@ def _walk_minutes(a: str, b: str) -> int | None:
     mode="maps",
     is_mock=True,
 )
-def nearby(building: str, radius_minutes: int = 8) -> list[dict]:
+def nearby(building: str, radius_minutes: int = 8) -> dict:
     canon = _resolve_building(building)
     if canon is None:
         raise ToolError(
@@ -194,7 +203,16 @@ def nearby(building: str, radius_minutes: int = 8) -> list[dict]:
             )
 
     results.sort(key=lambda r: r["walk_minutes"])
-    return results
+    return {
+        "results": results,
+        "citations": [
+            _map_citation(
+                result["name"],
+                f"{result['name']}: {result['walk_minutes']} min walk from {canon} (mock data)",
+            )
+            for result in results
+        ],
+    }
 
 
 @register_tool(
@@ -236,9 +254,10 @@ def walk_time(from_building: str, to_building: str) -> dict:
             "This is a gap in the mock data."
         )
 
+    result = {"from": a, "to": b, "walk_minutes": minutes, "is_mock": True}
     return {
-        "from": a,
-        "to": b,
-        "walk_minutes": minutes,
-        "is_mock": True,
+        "results": [result],
+        "citations": [
+            _map_citation(f"{a} → {b}", f"{a} to {b}: {minutes} min walk (mock data)")
+        ],
     }

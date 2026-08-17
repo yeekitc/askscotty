@@ -12,17 +12,16 @@ import { ComposerPrimitive as Composer } from '@assistant-ui/react-native'
 
 import { PRESS_SCALE, pressSpring, useReducedMotion } from '../lib/motion'
 import { colors, radius, shadows, spacing } from '../lib/theme'
+import { LANES, type Mode } from '../lib/types'
 import { HoverPressable } from './HoverPressable'
 
-/** The sources the backend can eventually filter by (PRD §4–§7). */
-export const SOURCE_OPTIONS = ['Course Catalog', 'Directory', 'Piazza', 'Canvas', 'Handshake']
-
 type Props = {
-  sources: string[]
-  onSourcesChange: (sources: string[]) => void
+  /** Lanes the reader has unchecked. Everything not listed here is on. */
+  disabledModes: Mode[]
+  onDisabledModesChange: (modes: Mode[]) => void
 }
 
-export function AskComposer({ sources, onSourcesChange }: Props) {
+export function AskComposer({ disabledModes, onDisabledModesChange }: Props) {
   const [showSources, setShowSources] = useState(false)
   const [sendHovered, setSendHovered] = useState(false)
   const reduceMotion = useReducedMotion()
@@ -36,9 +35,11 @@ export function AskComposer({ sources, onSourcesChange }: Props) {
     sendScale.value = reduceMotion ? 1 : withSpring(to, pressSpring)
   }
 
-  function toggleSource(name: string) {
-    onSourcesChange(
-      sources.includes(name) ? sources.filter((s) => s !== name) : [...sources, name],
+  function toggleLane(mode: Mode) {
+    onDisabledModesChange(
+      disabledModes.includes(mode)
+        ? disabledModes.filter((m) => m !== mode)
+        : [...disabledModes, mode],
     )
   }
 
@@ -82,20 +83,23 @@ export function AskComposer({ sources, onSourcesChange }: Props) {
 
       {showSources ? (
         <View style={styles.menu}>
-          {SOURCE_OPTIONS.map((name) => {
-            const checked = sources.includes(name)
+          {LANES.map(({ mode, label, mock }) => {
+            const checked = !disabledModes.includes(mode)
             return (
               <HoverPressable
-                key={name}
+                key={mode}
                 style={({ hovered }) => [styles.menuItem, hovered && styles.menuItemHovered]}
-                onPress={() => toggleSource(name)}
+                onPress={() => toggleLane(mode)}
                 accessibilityRole="checkbox"
                 accessibilityState={{ checked }}
+                accessibilityLabel={mock ? `${label}, placeholder data` : label}
               >
                 <View style={[styles.checkbox, checked && styles.checkboxChecked]}>
                   {checked ? <Text style={styles.checkmark}>✓</Text> : null}
                 </View>
-                <Text style={styles.menuText}>{name}</Text>
+                <Text style={styles.menuText}>{label}</Text>
+                {/* PRD §9: a fixture lane must say so wherever it is shown. */}
+                {mock ? <Text style={styles.menuBadge}>mock</Text> : null}
               </HoverPressable>
             )
           })}
@@ -203,5 +207,11 @@ const styles = StyleSheet.create({
   menuText: {
     color: colors.text,
     fontSize: 14,
+  },
+  menuBadge: {
+    marginLeft: spacing.xs,
+    color: colors.textMuted,
+    fontSize: 11,
+    textTransform: 'uppercase',
   },
 })
