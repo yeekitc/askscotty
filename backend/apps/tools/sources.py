@@ -158,18 +158,21 @@ register_source(
     "25Live room availability",
     tier="public",
     access="Mock",
+    implemented=True,
     note="Mock fixture. The real system is behind SSO and we do not scrape it.",
 )
 register_source(
     "FCE ratings",
     tier="public",
     access="Mock",
+    implemented=True,
     note="Mock subset. The real ratings are behind an Andrew login.",
 )
 register_source(
     "Handshake events",
     tier="public",
     access="Mock",
+    implemented=True,
     note="Mock fixture or deep link. The real feed needs SSO.",
 )
 register_source(

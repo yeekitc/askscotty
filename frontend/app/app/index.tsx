@@ -547,6 +547,22 @@ export default function AskScreen() {
     [threads, openInRuntime, markRead, isWide],
   )
 
+  const activeRun = useSyncExternalStore(
+    subscribeToRuns,
+    () => getRun(activeThreadId),
+    getNoRun,
+  )
+  const isRunning = activeRun != null && !activeRun.done
+
+  const handleStop = useCallback(() => {
+    const run = getRun(activeThreadId)
+    const query = run?.query ?? ''
+    cancelRun(activeThreadId)
+    const thread = threads.find((t) => t.id === activeThreadId)
+    openInRuntime(thread?.messages ?? [])
+    if (query) runtime.thread.composer.setText(query)
+  }, [activeThreadId, threads, openInRuntime, runtime])
+
   const renderRunningIndicator = useCallback(
     () => <RunningIndicator threadId={activeThreadId} />,
     [activeThreadId],
@@ -748,7 +764,7 @@ export default function AskScreen() {
               {isEmpty ? (
                 <View style={styles.emptyState}>
                   <Text style={styles.hero}>Ask Scotty, {user.displayName}!</Text>
-                  <AskComposer disabledModes={disabledModes} onDisabledModesChange={setDisabledModes} />
+                  <AskComposer disabledModes={disabledModes} onDisabledModesChange={setDisabledModes} isRunning={isRunning} onStop={handleStop} />
                 </View>
               ) : (
                 <Animated.View style={[styles.activeThread, threadEnterStyle]}>
@@ -769,7 +785,7 @@ export default function AskScreen() {
                   {/* The credits below are the bottom-most element now, so the
                       safe-area inset belongs to them rather than here. */}
                   <View style={[styles.pinnedComposer, { paddingBottom: spacing.sm }]}>
-                    <AskComposer disabledModes={disabledModes} onDisabledModesChange={setDisabledModes} />
+                    <AskComposer disabledModes={disabledModes} onDisabledModesChange={setDisabledModes} isRunning={isRunning} onStop={handleStop} />
                   </View>
                 </Animated.View>
               )}

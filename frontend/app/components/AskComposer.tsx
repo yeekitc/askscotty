@@ -19,9 +19,11 @@ type Props = {
   /** Lanes the reader has unchecked. Everything not listed here is on. */
   disabledModes: Mode[]
   onDisabledModesChange: (modes: Mode[]) => void
+  isRunning: boolean
+  onStop: () => void
 }
 
-export function AskComposer({ disabledModes, onDisabledModesChange }: Props) {
+export function AskComposer({ disabledModes, onDisabledModesChange, isRunning, onStop }: Props) {
   const [showSources, setShowSources] = useState(false)
   const [sendHovered, setSendHovered] = useState(false)
   const reduceMotion = useReducedMotion()
@@ -65,20 +67,41 @@ export function AskComposer({ disabledModes, onDisabledModesChange }: Props) {
           <Text style={styles.sourcesText}>Sources ▾</Text>
         </HoverPressable>
 
-        <Animated.View style={sendStyle}>
-          <Composer.Send
-            onHoverIn={() => setSendHovered(true)}
-            onHoverOut={() => setSendHovered(false)}
-            onPressIn={() => springSend(PRESS_SCALE)}
-            onPressOut={() => springSend(1)}
-            style={({ pressed }) => [
-              styles.sendButton,
-              (pressed || sendHovered) && styles.sendButtonActive,
-            ]}
-          >
-            <Text style={styles.sendText}>↑</Text>
-          </Composer.Send>
-        </Animated.View>
+        {isRunning ? (
+          <Animated.View style={sendStyle}>
+            <HoverPressable
+              onHoverIn={() => setSendHovered(true)}
+              onHoverOut={() => setSendHovered(false)}
+              onPressIn={() => springSend(PRESS_SCALE)}
+              onPressOut={() => springSend(1)}
+              onPress={onStop}
+              style={({ pressed }) => [
+                styles.sendButton,
+                styles.stopButton,
+                (pressed || sendHovered) && styles.sendButtonActive,
+              ]}
+              accessibilityRole="button"
+              accessibilityLabel="Stop generating"
+            >
+              <Text style={styles.sendText}>■</Text>
+            </HoverPressable>
+          </Animated.View>
+        ) : (
+          <Animated.View style={sendStyle}>
+            <Composer.Send
+              onHoverIn={() => setSendHovered(true)}
+              onHoverOut={() => setSendHovered(false)}
+              onPressIn={() => springSend(PRESS_SCALE)}
+              onPressOut={() => springSend(1)}
+              style={({ pressed }) => [
+                styles.sendButton,
+                (pressed || sendHovered) && styles.sendButtonActive,
+              ]}
+            >
+              <Text style={styles.sendText}>↑</Text>
+            </Composer.Send>
+          </Animated.View>
+        )}
       </Composer.Root>
 
       {showSources ? (
@@ -157,6 +180,9 @@ const styles = StyleSheet.create({
   },
   sendButtonActive: {
     opacity: 0.8,
+  },
+  stopButton: {
+    opacity: 0.85,
   },
   sendText: {
     color: colors.accentText,
