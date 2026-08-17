@@ -225,6 +225,15 @@ PLANNER_CITATION_MARKERS = os.getenv("PLANNER_CITATION_MARKERS", "").lower() in 
     "yes",
 }
 
+# Tools to switch off, by name — the per-tool "unchecked" switch. Custom tools
+# have no `enabled` flag on the Managed Agents API (the built-in toolset does),
+# so a name here is what removes one from what the model is offered and refuses
+# it if an older session asks anyway. Takes effect on restart for the app;
+# re-run `provision_planner` to drop it from the agent as well.
+PLANNER_DISABLED_TOOLS = [
+    name.strip() for name in os.getenv("PLANNER_DISABLED_TOOLS", "").split(",") if name.strip()
+]
+
 # How old an indexed page may be before a time-sensitive question should be
 # checked against the live web instead. The system prompt is frozen on the agent
 # version and cannot read this at request time, so the number is also written out
