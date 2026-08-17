@@ -1134,37 +1134,26 @@ class DisabledLaneTests(PlannerTestCase):
 
 
 @override_settings(**PLANNER_DEFAULTS)
-class ProvisionedToolsetTests(PlannerTransactionTestCase):
-    """What the *agent* declares, as opposed to what a session overrides.
-
-    A session opened by anything other than `create_session` — the Console, a
-    script — gets only this. When it held nothing but the prebuilt toolset, a
-    Console question was answered by 23 web calls and $0.86 because the model
-    had no `search_courses` to reach for.
-    """
+class ProvisionedToolsetTests(PlannerTestCase):
+    """What the *agent* declares, as opposed to what a session overrides."""
 
     def setUp(self) -> None:
         super().setUp()
         self.register("fake_dining", mode="dining")
-        self.register("fake_canvas", mode="personal", requires_connector="canvas")
 
-    def test_the_agent_declares_the_prebuilt_toolset_and_our_public_tools(self) -> None:
-        from .management.commands.provision_planner import agent_tools
+    def test_the_agent_declares_the_prebuilt_toolset_and_nothing_of_ours(self) -> None:
+        """Regression: declaring them made a new tool a re-provision.
 
-        tools = agent_tools()
+        A session gets ours from the registry at request time, so putting them
+        on the agent too buys nothing — nothing outside the request path can
+        execute a custom tool anyway — and costs a second place for a tool
+        definition to go stale.
+        """
+        from .management.commands.provision_planner import TOOLS
 
-        self.assertEqual(tools[0], client.AGENT_TOOLSET)
-        names = [tool["name"] for tool in tools[1:]]
-        self.assertIn("fake_dining", names)
-        self.assertTrue(all(tool["type"] == "custom" for tool in tools[1:]))
+        self.assertEqual(TOOLS, [client.AGENT_TOOLSET])
+        self.assertNotIn("fake_dining", [tool.get("name") for tool in TOOLS])
 
-    def test_a_personal_tool_is_never_declared_on_the_agent(self) -> None:
-        from .management.commands.provision_planner import agent_tools
-
-        # PRD §7: a tool the planner is never told about is a tool it cannot
-        # call. Declaring this one would offer it to every session on earth.
-        names = [tool.get("name") for tool in agent_tools()]
-        self.assertNotIn("fake_canvas", names)
 
 
 class MarkerValidationTests(TestCase):
