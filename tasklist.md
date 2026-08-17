@@ -365,7 +365,7 @@ Freshness and honesty are the product's differentiator (PRD §3, §9). Don't cut
 - [x] Every citation renders as a clickable link to its `url`
 - [x] Show `indexed_at` and/or `verified_at` as human-relative text ("indexed 3 days ago", "verified just now") — hand-rolled in `CitationCard.tsx`; `Intl.RelativeTimeFormat` is not in Hermes
 - [ ] Visible **Mock data** badge on any citation with `is_mock: true` — **deliberately not built.** `is_mock` reaches the console and nothing else. A knowing deviation from §9, not an oversight
-- [x] Group citations by source type — `components/CitationList.tsx`, rendered after the content because `renderSource` emits each source at its own position in the part list
+- [x] Group citations by source type — `components/CitationList.tsx`, rendered after the content because `renderSource` emits each source at its own position in the part list. **Folded by default** once the answer carries chips, to a row naming the count and the sources; open when it carries none, since there is then no inline route to a source. Freshness is a tap away rather than on screen — a knowing §9 deviation
 - [x] Numbered inline markers in the answer body — **a chip that opens a source preview, not a jump link.** Tapping scrolls nobody anywhere; it opens the card over the answer, which is what a reader mid-sentence actually wants. `PLANNER_CITATION_MARKERS` is on
 - [x] Credits footer — **attribution only, not the exact PRD §9 wording.** "We are not affiliated with ScottyLabs." is deliberately cut from the app for brevity and survives only in README.md. A knowing deviation from §9 and §1's "credit in app", alongside the mock badge
 - [x] Footer is present on every screen, including mobile

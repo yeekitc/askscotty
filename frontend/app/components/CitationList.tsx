@@ -6,11 +6,16 @@
  * the open web is neither. Run together as one list they read as equally
  * authoritative, which is the impression PRD §9 exists to prevent.
  *
- * **Only what the answer cited, by default.** A tool issues a citation per row
- * it returns — one course search can issue a dozen — and rendering all of them
- * buries the four the answer actually leaned on. The rest stay one tap away
- * rather than being dropped, because which sources were consulted and not used
- * is still true and still the reader's to see.
+ * **Folded, once the answer carries inline chips.** A tool issues a citation per
+ * row it returns — one course search can issue a dozen — and a wall of cards
+ * under an answer whose every claim already links to its source is the same job
+ * done twice, worse. Collapsed, the row still names the count and where the
+ * sources came from, so provenance is legible without being exhaustive.
+ *
+ * **It only folds when there is something to fold behind.** An answer with no
+ * markers — the setting off, or a model that wrote none — has no inline route
+ * to a source, so the list stays open. PRD §9's freshness is then a tap away
+ * rather than on screen, which is the deviation this makes knowingly.
  *
  * Rendered here rather than through `Message.Content`'s `renderSource` slot,
  * which emits each source where it appears in the part list and so cannot group
@@ -41,19 +46,40 @@ function groupBySource(citations: Citation[]): [string, Citation[]][] {
 export function CitationList({ citations, answer }: { citations: Citation[]; answer: string }) {
   const [expanded, setExpanded] = useState(false)
 
-  const shown = useMemo(() => {
-    if (expanded) return citations
-    const cited = citedIds(answer)
-    const used = citations.filter((citation) => cited.has(citation.id))
-    // Nothing cited means there is no signal to filter on — an answer written
-    // without markers, or the setting turned off — so show the lot.
-    return used.length > 0 ? used : citations
-  }, [citations, answer, expanded])
+  const groups = useMemo(() => groupBySource(citations), [citations])
 
-  const groups = useMemo(() => groupBySource(shown), [shown])
-  const hidden = citations.length - shown.length
+  // Whether any chip in the prose actually resolves to one of these. Not just
+  // "are there markers" — a marker for an id we do not hold renders nothing,
+  // and folding behind a chip that never drew would hide the sources outright.
+  const hasChips = useMemo(() => {
+    const cited = citedIds(answer)
+    return citations.some((citation) => cited.has(citation.id))
+  }, [citations, answer])
 
   if (citations.length === 0) return null
+
+  const open = expanded || !hasChips
+  const summary = `${citations.length} ${citations.length === 1 ? 'source' : 'sources'} · ${groups
+    .map(([source]) => source)
+    .join(', ')}`
+
+  if (!open) {
+    return (
+      <Pressable
+        onPress={() => setExpanded(true)}
+        accessibilityRole="button"
+        accessibilityState={{ expanded: false }}
+        hitSlop={8}
+        style={styles.toggle}
+      >
+        {/* Named, not just counted: "12 sources" says nothing about whether to
+            trust them, "12 sources · CMU Courses API" does. */}
+        <Text style={styles.summary} numberOfLines={1}>
+          {summary}
+        </Text>
+      </Pressable>
+    )
+  }
 
   return (
     <View style={styles.list}>
@@ -67,18 +93,15 @@ export function CitationList({ citations, answer }: { citations: Citation[]; ans
         </View>
       ))}
 
-      {hidden > 0 || expanded ? (
+      {hasChips ? (
         <Pressable
-          onPress={() => setExpanded(!expanded)}
+          onPress={() => setExpanded(false)}
           accessibilityRole="button"
+          accessibilityState={{ expanded: true }}
           hitSlop={8}
           style={styles.toggle}
         >
-          <Text style={styles.toggleText}>
-            {expanded
-              ? 'Show only cited sources'
-              : `Show ${hidden} more ${hidden === 1 ? 'source' : 'sources'} that were checked`}
-          </Text>
+          <Text style={styles.toggleText}>Hide sources</Text>
         </Pressable>
       ) : null}
     </View>
@@ -104,5 +127,9 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: colors.textMuted,
     textDecorationLine: 'underline',
+  },
+  summary: {
+    fontSize: 12,
+    color: colors.textFaint,
   },
 })
