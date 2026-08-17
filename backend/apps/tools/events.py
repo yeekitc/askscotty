@@ -1,59 +1,133 @@
 """Events tool — TartanConnect public mobile feed.
 
-find_events(before?, after?, keywords?, limit?) → list of campus events.
+find_events(before?, after?, keywords?, limit?) → {results: events, citations}.
 
-The upstream is the mobile_events_list JSON feed (no auth). Outages are caught
-and surfaced as ToolError (PRD §3 — "Live" access).
+The upstream is the mobile_events_list JSON feed (no auth), reached through
+`apps.core.http.get_json`. Outages are caught and surfaced as ToolError (PRD §3
+— "Live" access).
+
+It is JSON in transport only: a row names its columns in a `fields` string and
+sends the values as `p0`, `p1`, …, with several of them HTML fragments rather
+than data. `_decode` and `_text` are what turn that back into an event.
+
+`results` and `citations` are two views of the same lookup: the ledger rebuilds
+each citation from title/url/snippet alone, so an event's times and location
+only reach the model through `results`.
 """
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+import html
+import re
+from datetime import datetime
 
-import httpx
+import httpx  # for httpx.HTTPError only
 
+from apps.core.http import get_json
 from apps.tools.registry import ToolError, register_tool
+from django.utils import timezone as dj_timezone
 
 _URL = "https://tartanconnect.cmu.edu/mobile_ws/v17/mobile_events_list"
+_SITE = "https://tartanconnect.cmu.edu"
 _TIMEOUT = 15.0
+
+_PARAGRAPH = re.compile(r"<p[^>]*>(.*?)</p>", re.DOTALL)
+_MARKUP = re.compile(r"<[^>]+>")
+_TAG_LABEL = re.compile(r'aria-label="([^"]+)"')
 
 
 def _fetch_events() -> list[dict]:
     try:
-        resp = httpx.get(_URL, params={"range": 0}, timeout=_TIMEOUT)
-        resp.raise_for_status()
-        data = resp.json()
-    except httpx.HTTPStatusError as exc:
-        raise ToolError(f"TartanConnect returned {exc.response.status_code}.") from exc
-    except httpx.RequestError as exc:
+        data = get_json(_URL, params={"range": 0}, timeout=_TIMEOUT)
+    except httpx.HTTPError as exc:
         raise ToolError(f"TartanConnect unreachable: {exc}") from exc
-    except (ValueError, TypeError) as exc:
-        raise ToolError(f"TartanConnect returned invalid JSON: {exc}") from exc
 
-    # The feed returns {"event": [...]} or a bare list depending on the version.
     if isinstance(data, list):
         return data
     return data.get("event", data.get("events", []))
 
 
+def _decode(raw: dict) -> dict:
+    """One feed row, un-positioned.
+
+    The feed sends no named JSON: every row carries a comma-separated `fields`
+    list and its values as `p0`, `p1`, … in that order. Reading it by the field
+    names an ordinary API would have used returns nothing but empty strings.
+    """
+    names = [name for name in (raw.get("fields") or "").split(",") if name]
+    return {name: raw.get(f"p{index}") for index, name in enumerate(names)}
+
+
+def _text(value: str | None) -> str:
+    """Feed markup → plain text. Most string fields arrive as HTML fragments."""
+    return " ".join(html.unescape(_MARKUP.sub(" ", value or "")).split())
+
+
+def _window(value: str | None) -> tuple[str, str]:
+    """`eventDates` → (start, end) as strings `_parse_dt` can read.
+
+    Two shapes come back, one paragraph each:
+
+        "Mon, Aug 10, 2026 8:00 AM –" / "Fri, Aug 28, 2026 9:00 AM"  multi-day
+        "Wed, Aug 19, 2026"           / "1 PM – 2 PM"                single day
+    """
+    blocks = [_text(block) for block in _PARAGRAPH.findall(value or "")]
+    if not blocks:
+        return "", ""
+
+    date = blocks[0].rstrip("–- ")
+    rest = blocks[1] if len(blocks) > 1 else ""
+
+    if "–" in rest:
+        begin, _, finish = rest.partition("–")
+        return f"{date} {begin.strip()}".strip(), f"{date} {finish.strip()}".strip()
+
+    return date, rest
+
+
+def _categories(row: dict) -> list[str]:
+    """The event's own category plus its topic tags, read off the tag markup."""
+    labels = [_text(label) for label in _TAG_LABEL.findall(row.get("eventTags") or "")]
+    category = _text(row.get("eventCategory"))
+    return list(dict.fromkeys([category, *labels] if category else labels))
+
+
 def _normalize_event(raw: dict) -> dict:
+    row = _decode(raw)
+    start, end = _window(row.get("eventDates"))
+    link = row.get("eventUrl") or ""
+
     return {
-        "id": raw.get("id") or raw.get("event_id", ""),
-        "title": raw.get("name") or raw.get("event_name") or raw.get("title", ""),
-        "start": raw.get("starts_at") or raw.get("start_date") or raw.get("start", ""),
-        "end": raw.get("ends_at") or raw.get("end_date") or raw.get("end", ""),
-        "location": raw.get("location", ""),
-        "org": raw.get("organization_name") or raw.get("org", ""),
-        "categories": raw.get("categories", []),
-        "link": raw.get("permalink") or raw.get("url", ""),
-        "description": (raw.get("description", "") or "")[:500],
+        "id": row.get("eventId") or "",
+        "title": _text(row.get("eventName")),
+        "start": start,
+        "end": end,
+        "location": _text(row.get("eventLocation")),
+        "org": _text(row.get("clubName")),
+        "categories": _categories(row),
+        "link": f"{_SITE}{link}" if link.startswith("/") else link,
         "source": "TartanConnect events",
         "is_mock": False,
     }
 
 
+def _event_citation(event: dict) -> dict:
+    where = " · ".join(bit for bit in (event["org"], event["location"]) if bit)
+    return {
+        "title": event["title"],
+        "url": event["link"],  # the one live tool with a real permalink to point at
+        "snippet": " — ".join(bit for bit in (event["start"], where) if bit),
+        "indexed_at": None,
+    }
+
+
 def _parse_dt(s: str) -> datetime | None:
-    """Try a few common datetime formats from the feed."""
+    """The feed's own date formats, plus the ISO ones a caller passes in.
+
+    A value with no offset is read as campus time, not UTC. Both the feed and
+    the caller's `after`/`before` come through here, so a four-hour drift would
+    apply to one side of the comparison only.
+    """
     if not s:
         return None
 
@@ -66,21 +140,23 @@ def _parse_dt(s: str) -> datetime | None:
         "%Y-%m-%dT%H:%M:%S",
         "%Y-%m-%d %H:%M:%S",
         "%Y-%m-%d",
+        "%a, %b %d, %Y %I:%M %p",
+        "%a, %b %d, %Y %I %p",
+        "%a, %b %d, %Y",
     ):
         try:
             dt = datetime.strptime(cleaned, fmt)
-            if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=timezone.utc)
-            return dt
         except ValueError:
             continue
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=dj_timezone.get_current_timezone())
+        return dt
     return None
 
 
 def _matches_keywords(event: dict, keywords: list[str]) -> bool:
-    haystack = (
-        event["title"] + " " + event["org"] + " " + event["description"] + " "
-        + " ".join(str(c) for c in event["categories"])
+    haystack = " ".join(
+        [event["title"], event["org"], event["location"], *event["categories"]]
     ).lower()
     return all(kw.lower() in haystack for kw in keywords)
 
@@ -112,7 +188,7 @@ def _matches_keywords(event: dict, keywords: list[str]) -> bool:
                 "items": {"type": "string"},
                 "description": (
                     "All keywords must appear somewhere in the event title, org, "
-                    "description, or categories. Case-insensitive."
+                    "location, or categories. Case-insensitive."
                 ),
             },
             "limit": {
@@ -131,9 +207,9 @@ def find_events(
     before: str | None = None,
     keywords: list[str] | None = None,
     limit: int = 10,
-) -> list[dict]:
-    raw_events = _fetch_events()
-    events = [_normalize_event(e) for e in raw_events]
+) -> dict:
+    # A titleless row is one of the feed's date separators, not an event.
+    events = [event for event in map(_normalize_event, _fetch_events()) if event["title"]]
 
     after_dt = _parse_dt(after) if after else None
     before_dt = _parse_dt(before) if before else None
@@ -152,4 +228,5 @@ def find_events(
             continue
         filtered.append(event)
 
-    return filtered[: min(limit, 30)]
+    filtered = filtered[: min(limit, 30)]
+    return {"results": filtered, "citations": [_event_citation(e) for e in filtered]}
