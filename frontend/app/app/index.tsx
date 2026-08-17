@@ -354,10 +354,19 @@ export default function AskScreen() {
       setIsEmpty(messages.length === 0)
       const snapshot: ThreadMessageLike[] = messages.map((m) => ({ role: m.role, content: m.content }))
       const id = activeThreadIdRef.current
+      const current = threadsRef.current.find((t) => t.id === id)
+
+      // The runtime notifies on far more than a new message — opening a thread
+      // resets it, and a reset notifies. Stamping `updatedAt` on every one of
+      // those sorted "Recents" by when you last *looked* at a conversation
+      // rather than when it last said anything, so simply reading the oldest
+      // thread moved it to the top.
+      if (current && JSON.stringify(current.messages) === JSON.stringify(snapshot)) return
+
       const updatedAt = Date.now()
       // Carried through rather than defaulted, or every answer would overwrite
       // a rename with an empty title.
-      const title = threadsRef.current.find((t) => t.id === id)?.title ?? ''
+      const title = current?.title ?? ''
 
       setThreads((prev) =>
         prev.map((t) => (t.id === id ? { ...t, messages: snapshot, updatedAt } : t)),
