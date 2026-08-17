@@ -362,22 +362,29 @@ surfaces at once. See [CLAUDE.md](./CLAUDE.md) for the component rules (`<View>`
 
 Freshness and honesty are the product's differentiator (PRD §3, §9). Don't cut these.
 
-- [ ] Every citation renders as a clickable link to its `url`
-- [ ] Show `indexed_at` and/or `verified_at` as human-relative text ("indexed 3 days ago", "verified just now")
-- [ ] Visible **Mock data** badge on any citation with `is_mock: true`
-- [ ] Group citations by source type
-- [ ] Numbered inline markers in the answer body that link down to the citation list
-- [ ] Credits footer with the exact PRD §9 wording, including "**We are not affiliated with ScottyLabs.**"
-- [ ] Footer is present on every screen, including mobile
+- [x] Every citation renders as a clickable link to its `url`
+- [x] Show `indexed_at` and/or `verified_at` as human-relative text ("indexed 3 days ago", "verified just now") — hand-rolled in `CitationCard.tsx`; `Intl.RelativeTimeFormat` is not in Hermes
+- [ ] Visible **Mock data** badge on any citation with `is_mock: true` — **deliberately not built.** `is_mock` reaches the console and nothing else. A knowing deviation from §9, not an oversight
+- [x] Group citations by source type — `components/CitationList.tsx`, rendered after the content because `renderSource` emits each source at its own position in the part list
+- [x] Numbered inline markers in the answer body — **a chip that opens a source preview, not a jump link.** Tapping scrolls nobody anywhere; it opens the card over the answer, which is what a reader mid-sentence actually wants. `PLANNER_CITATION_MARKERS` is on
+- [x] Credits footer with the exact PRD §9 wording, including "**We are not affiliated with ScottyLabs.**"
+- [x] Footer is present on every screen, including mobile
 
-**Markdown now renders** (`lib/markdown.ts` + `components/AnswerText.tsx`). The
-model writes bold, bullets and numbered lists and nothing was rendering them —
-assistant-ui's markdown package is React DOM, and `@assistant-ui/react-native`
-ships no renderer, so the asterisks were reaching the screen. No new dependency;
+**Markdown renders** (`lib/markdown.ts` + `components/AnswerText.tsx`). The model
+writes bold, bullets and numbered lists and nothing rendered them — assistant-ui's
+markdown package is React DOM, and `@assistant-ui/react-native` ships no renderer,
+so the asterisks reached the screen. No new dependency;
 [dependencies.md](./docs/dependencies.md) records why the three RN markdown
-libraries were all rejected. **The seam for the box above is `renderSpanText` in
-`AnswerText.tsx`** — every leaf string passes through it, so inline `[S1]` chips
-slot in there without touching block layout.
+libraries were all rejected.
+
+**Everything above shares one seam**: `renderSpanText` in `AnswerText.tsx`, where
+every leaf string becomes content. Both the word-at-a-time reveal and the `[S1]`
+chips are transforms on exactly those words, so neither touches block layout. A
+marker rides with the word before it rather than taking a reveal slot of its own,
+so a citation never lands a tick ahead of the claim it supports.
+
+**Still open on the chip:** its vertical nudge is unverified on a physical Android
+device. Correct on iOS and web.
 
 ## F3. Web — polish — P0/P1
 
@@ -385,7 +392,8 @@ slot in there without touching block layout.
 - [ ] Keyboard accessible: focus states, labelled form controls, `aria-live` on the answer region (partly done)
 - [ ] Sensible `<title>` and favicon
 - [ ] Skeleton or shimmer while the answer loads
-- [ ] Answer text renders line breaks / lists readably (the planner will return structured prose)
+- [x] Answer text renders line breaks / lists readably (the planner will return structured prose)
+- [x] Streamed answers arrive a word at a time (`lib/reveal.ts`) — the API batches its own output into a handful of lumpy chunks, so the smoothing is faked client-side. Ported from assistant-ui's `StreamingText`, which is DOM and cannot be installed
 - [ ] Copy-answer-to-clipboard button — **P1**
 
 ## F4. Web — connectors UI — P0/P1

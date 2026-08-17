@@ -954,7 +954,37 @@ endpoint. `stream_message` yields text as it arrives and finally yields the
   generation speeds up. Coalescing tiny deltas server-side is still worth it
   (each one costs an SSE frame, a re-render, and a full re-serialisation of the
   thread in `index.tsx`'s save path), but nothing makes the API's own batching
-  finer. If a smooth typewriter is ever wanted, it has to be faked client-side.
+  finer. The smooth reveal is therefore faked client-side, in `lib/reveal.ts`:
+  words per tick is the backlog over a constant, so a 205-char chunk drains fast
+  while the tail still arrives one word at a time. A fixed rate cannot do both.
+
+### The reveal (React Native)
+
+Same story as the inline-citation element, and worth writing down once.
+assistant-ui ships a `StreamingText` element that does exactly this, and it is
+unusable for the same first reason: shadcn + Tailwind on DOM nodes, no DOM on
+iOS/Android, `className` inert in RN, and no Tailwind pipeline even for web.
+
+What ports is the idea underneath it — **a controlled word count**. The component
+does not smooth anything itself; the caller owns `count` and the component renders
+that many words. That separation between arrival rate and display rate is the
+whole trick, and it survives the move off the DOM intact.
+
+Two deliberate departures:
+
+- **Their leading edge is tinted blue. Ours fades up from `textFaint`.** The
+  palette has no blue, and a coloured band moving through dark prose reads as
+  noise rather than as arrival. Five precomputed steps, not five animation
+  drivers — the reveal re-renders every tick anyway.
+- **The budget has to be able to shrink.** Their demo streams once, forward. Ours
+  has three ways to run past the end of the text: a `mode_start` discards what
+  streamed, `done` swaps in a validated answer that can be shorter than the
+  draft, and a reloaded thread has no draft at all. Clamping the count down
+  whenever the total drops covers all three.
+
+Gated per-message on `status.running`, not `thread.isRunning` — the latter stays
+true for the whole turn, so every earlier answer in a reloaded thread would
+replay its own reveal.
 
 ### The guideline worth committing to now
 
@@ -1172,22 +1202,37 @@ Zero new dependencies. Everything needed is RN core + react-native-web.
 
 - [ ] 🔬 **Smoke-test the chip's vertical alignment on a real Android device** —
       decides marker form only; the rest is unaffected
-- [ ] `CitationMarker` — inline `Pressable` chip, **direct child of the outermost
+- [x] `CitationMarker` — inline `Pressable` chip, **direct child of the outermost
       `<Text>`**, explicit `width`/`height` for Android, `hitSlop`,
       `accessibilityRole="button"`, `accessibilityLabel="Source 1: <title>"`
-- [ ] Marker segmentation + `AnswerText` component
-- [ ] Swap the `renderText` arrow at `ChatMessage.tsx:36` for `<AnswerText>`
-- [ ] Read sibling sources via `useAuiState((s) => s.message.content)` —
-      `renderText` can't see them from its own args
-- [ ] Open-citation context (which id, plus an anchor rect **on web only**)
-- [ ] Screen-level overlay + backdrop, mirroring the drawer at `index.tsx:392-403`
-- [ ] Card body — **reuse `CitationCard`**, it already renders the required
+- [x] Marker segmentation (`lib/citations.ts`) + `AnswerText` component
+- [x] Read sibling sources via `useAuiState((s) => s.message.content)` —
+      `renderText` can't see them from its own args. Selected as the raw array
+      and mapped outside the selector, or it never compares equal to the last one
+- [x] Open-citation context, plus an anchor rect from `measureInWindow`
+- [x] Screen-level overlay + backdrop. Above the router in `_layout.tsx`, not in
+      the screen: inside the message list the card is clipped by its own row and
+      scrolls away with it. The backdrop is rendered only for a *pinned* card —
+      over a hover-opened one it sits on the chip and swallows the hover-out
+- [x] Card body — **reuse `CitationCard`**, it already renders the required
       `indexed_at`/`verified_at` freshness line
-- [ ] Phone placement (bottom-pinned, no measurement) / wide placement (anchored)
-- [ ] Close on scroll (web)
-- [ ] Mock badge in the avatar slot — closes the PRD §9 gap
-- [ ] Hover on web (`onHoverIn`/`onHoverOut`, safe to pass unguarded)
-- [ ] `npx tsc --noEmit` clean
+- [x] Phone placement (bottom-pinned, no measurement) / wide placement (anchored).
+      The card's bottom is pinned above the chip, which avoids measuring its height
+- [x] Close on scroll
+- [ ] Mock badge in the avatar slot — **not built.** `is_mock` reaches the console
+      and nothing else; the PRD §9 gap is left open knowingly
+- [x] Hover on web (`onHoverIn`/`onHoverOut`, safe to pass unguarded)
+- [x] `npx tsc --noEmit` clean
+
+**Markers are on.** `PLANNER_CITATION_MARKERS` defaults to true now that there is
+a renderer; with it off `loop.py` still strips them and the answer reads normally,
+so it stays a switch rather than a hard dependency.
+
+**One thing the plan did not anticipate.** The chip cannot render mid-stream. The
+source parts only arrive with the final `done` event, so a chip shown earlier has
+nothing to resolve against — and the ids have not yet been checked for ones the
+model invented. `provisional()` already stripped markers while streaming for the
+second reason; the first makes it load-bearing rather than cosmetic.
 
 ---
 
