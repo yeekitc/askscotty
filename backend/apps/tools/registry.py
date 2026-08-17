@@ -161,33 +161,14 @@ def all_tools() -> list[Tool]:
     return sorted(_TOOLS.values(), key=lambda tool: tool.name)
 
 
-def disabled_tools() -> frozenset[str]:
-    """Tool names switched off by configuration.
-
-    Read per call rather than cached, so switching one off is an env var and a
-    restart. The Managed Agents API has no `enabled` flag for a custom tool — the
-    built-in toolset has one, ours are on or off by being in the list — so this
-    is where a per-tool switch has to live to reach anybody.
-
-    A session's toolset is overridden per request and overrides replace in full,
-    so this takes effect for students as soon as the backend restarts. Re-run
-    `provision_planner` as well to drop the tool from the agent itself, which is
-    what a session opened outside the request path sees.
-    """
-    from django.conf import settings
-
-    return frozenset(getattr(settings, "PLANNER_DISABLED_TOOLS", ()) or ())
-
-
 def tools_for_session(session_id: str | None) -> list[Tool]:
     """The tools this particular request is allowed to use.
 
     Public tools always; a personal tool only once the session has connected
-    that provider; neither if it has been switched off. The load-bearing half of
-    PRD §7: a tool the planner is never told about is a tool it cannot call.
+    that provider. The load-bearing half of PRD §7: a tool the planner is never
+    told about is a tool it cannot call.
     """
-    off = disabled_tools()
-    public = [tool for tool in all_tools() if not tool.is_personal and tool.name not in off]
+    public = [tool for tool in all_tools() if not tool.is_personal]
 
     if not session_id:
         return public
@@ -200,7 +181,7 @@ def tools_for_session(session_id: str | None) -> list[Tool]:
     personal = [
         tool
         for tool in all_tools()
-        if tool.is_personal and tool.requires_connector in connected and tool.name not in off
+        if tool.is_personal and tool.requires_connector in connected
     ]
 
     return public + personal
@@ -229,12 +210,6 @@ def run_tool(
     leakage is impossible here rather than merely unlikely.
     """
     tool = get_tool(name)
-
-    # Re-checked here and not only where the toolset is built, for the same
-    # reason the connector is: a session opened before the switch was flipped is
-    # still holding the old offer.
-    if name in disabled_tools():
-        raise ToolError(f"{name} is switched off.")
 
     if tool.is_personal:
         if not session_id:

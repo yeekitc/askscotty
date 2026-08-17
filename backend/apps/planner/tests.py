@@ -1144,22 +1144,6 @@ class ProvisionedToolsetTests(PlannerTransactionTestCase):
         self.assertIn("fake_dining", names)
         self.assertTrue(all(tool["type"] == "custom" for tool in tools[1:]))
 
-    @override_settings(PLANNER_DISABLED_TOOLS=["fake_dining"])
-    def test_a_switched_off_tool_leaves_the_agent_and_the_session(self) -> None:
-        from .management.commands.provision_planner import agent_tools
-
-        self.assertNotIn("fake_dining", [tool.get("name") for tool in agent_tools()])
-        self.assertNotIn(
-            "fake_dining", [tool.name for tool in registry.tools_for_session(None)]
-        )
-
-    @override_settings(PLANNER_DISABLED_TOOLS=["fake_dining"])
-    def test_a_session_that_still_asks_for_it_gets_an_error_not_a_result(self) -> None:
-        # A session opened before the switch was flipped still holds the old
-        # offer, so the check has to be at execution too.
-        with self.assertRaises(ToolError):
-            registry.run_tool("fake_dining", {})
-
     def test_a_personal_tool_is_never_declared_on_the_agent(self) -> None:
         from .management.commands.provision_planner import agent_tools
 
