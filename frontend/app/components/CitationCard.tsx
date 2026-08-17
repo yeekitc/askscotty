@@ -2,9 +2,12 @@
  * Renders one citation, always surfacing indexed_at / verified_at when present
  * because the PRD requires showing freshness.
  *
- * Mock sources are deliberately NOT badged here — `is_mock` is only logged to
- * the console by lib/api.ts. PRD §9 asks for a visible label, so this is a
- * knowing deviation; the badge markup is still in git history if it comes back.
+ * Used twice over: in the grouped list below an answer, and as the body of the
+ * preview a `[S1]` chip opens.
+ *
+ * Mock sources are deliberately NOT badged here — `is_mock` only reaches the
+ * console, via lib/api.ts. PRD §9 asks for a visible label, so this is a known
+ * and accepted deviation rather than an oversight.
  */
 
 import { Linking, Pressable, StyleSheet, Text, View } from 'react-native'
@@ -12,22 +15,40 @@ import { Linking, Pressable, StyleSheet, Text, View } from 'react-native'
 import { colors, radius, spacing } from '../lib/theme'
 import type { Citation } from '../lib/types'
 
-/** "2026-08-12T14:03:00Z" -> "Aug 12, 2:03 PM". Falls back to raw text. */
-function formatTimestamp(value: string | null): string | null {
+const MINUTE = 60
+const HOUR = 60 * MINUTE
+const DAY = 24 * HOUR
+
+/**
+ * "2026-08-12T14:03:00Z" -> "3 days ago". Falls back to the raw text.
+ *
+ * Relative rather than a date, because the question a reader actually has is
+ * how stale this is, and answering it with "Aug 12" makes them do the
+ * subtraction. Hand-rolled: `Intl.RelativeTimeFormat` is not in Hermes.
+ *
+ * A timestamp in the future is clock skew between us and the source, not a
+ * prediction, so it clamps to "just now" rather than counting down.
+ */
+function relativeTime(value: string | null): string | null {
   if (!value) return null
-  const parsed = new Date(value)
-  if (Number.isNaN(parsed.getTime())) return value
-  return parsed.toLocaleString(undefined, {
-    month: 'short',
-    day: 'numeric',
-    hour: 'numeric',
-    minute: '2-digit',
-  })
+  const at = new Date(value).getTime()
+  if (Number.isNaN(at)) return value
+
+  const seconds = Math.max(0, Math.round((Date.now() - at) / 1000))
+  if (seconds < 45) return 'just now'
+  if (seconds < 90 * MINUTE) return `${Math.round(seconds / MINUTE)} min ago`
+  if (seconds < 36 * HOUR) return `${Math.round(seconds / HOUR)} hr ago`
+
+  const days = Math.round(seconds / DAY)
+  if (days < 30) return days === 1 ? '1 day ago' : `${days} days ago`
+
+  const months = Math.round(days / 30)
+  return months === 1 ? '1 month ago' : `${months} months ago`
 }
 
 export function CitationCard({ citation }: { citation: Citation }) {
-  const indexedAt = formatTimestamp(citation.indexed_at)
-  const verifiedAt = formatTimestamp(citation.verified_at)
+  const indexedAt = relativeTime(citation.indexed_at)
+  const verifiedAt = relativeTime(citation.verified_at)
   const hasLink = Boolean(citation.url)
 
   const body = (
@@ -49,6 +70,12 @@ export function CitationCard({ citation }: { citation: Citation }) {
           {indexedAt ? `Indexed ${indexedAt}` : null}
           {indexedAt && verifiedAt ? ' · ' : null}
           {verifiedAt ? `Verified ${verifiedAt}` : null}
+        </Text>
+      ) : null}
+
+      {citation.snippet ? (
+        <Text style={styles.snippet} numberOfLines={3}>
+          {citation.snippet}
         </Text>
       ) : null}
     </View>
@@ -102,5 +129,13 @@ const styles = StyleSheet.create({
   freshness: {
     fontSize: 12,
     color: colors.textFaint,
+  },
+  // The supporting excerpt. Capped at three lines: this is the evidence for one
+  // claim, not the page.
+  snippet: {
+    fontSize: 13,
+    lineHeight: 18,
+    color: colors.textMuted,
+    fontStyle: 'italic',
   },
 })

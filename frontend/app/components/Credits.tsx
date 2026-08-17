@@ -11,8 +11,8 @@ export const CREDITS_TEXT =
   'Uses publicly available CMU web pages and public campus APIs, including open ' +
   'APIs published by ScottyLabs (e.g. Courses). We are not affiliated with ScottyLabs.'
 
-export function Credits() {
-  return <Text style={styles.credits}>{CREDITS_TEXT}</Text>
+export function Credits({ style }: { style?: React.ComponentProps<typeof Text>['style'] }) {
+  return <Text style={[styles.credits, style]}>{CREDITS_TEXT}</Text>
 }
 
 const styles = StyleSheet.create({
@@ -23,6 +23,5 @@ const styles = StyleSheet.create({
     borderTopWidth: 1,
     borderTopColor: colors.border,
     paddingTop: spacing.md,
-    marginTop: spacing.xl,
   },
 })

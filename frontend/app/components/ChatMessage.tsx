@@ -16,7 +16,7 @@ import { durations, easing, offsets, useReducedMotion } from '../lib/motion'
 import { colors, radius, spacing } from '../lib/theme'
 import { sourcePartToCitation } from '../lib/assistantAdapter'
 import { AnswerText } from './AnswerText'
-import { CitationCard } from './CitationCard'
+import { CitationList } from './CitationList'
 import { MessageCitations } from './CitationOverlay'
 
 const MASCOT = require('../assets/mascot.png')
@@ -98,8 +98,13 @@ export function ChatMessage() {
                       streaming={streaming}
                     />
                   )}
-                  renderSource={({ part }) => <CitationCard citation={sourcePartToCitation(part)} />}
+                  // Suppressed here and rendered below instead: this slot emits
+                  // each source at its own position in the part list, which
+                  // cannot group them. The slot is not optional, so it has to
+                  // return an element rather than nothing.
+                  renderSource={() => <></>}
                 />
+                <CitationList citations={citations} />
               </MessageCitations>
             </View>
           </View>

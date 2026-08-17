@@ -31,6 +31,7 @@ import {
 
 import type { Mode } from '../lib/types'
 import { AskComposer } from '../components/AskComposer'
+import { Credits } from '../components/Credits'
 import { ChatMessage } from '../components/ChatMessage'
 import { useCitationOverlay } from '../components/CitationOverlay'
 import { HoverPressable } from '../components/HoverPressable'
@@ -622,12 +623,21 @@ export default function AskScreen() {
                     ListFooterComponent={RunningIndicator}
                     children={() => <ChatMessage />}
                   />
-                  <View style={[styles.pinnedComposer, { paddingBottom: insets.bottom + spacing.sm }]}>
+                  {/* The credits below are the bottom-most element now, so the
+                      safe-area inset belongs to them rather than here. */}
+                  <View style={[styles.pinnedComposer, { paddingBottom: spacing.sm }]}>
                     <AskComposer disabledModes={disabledModes} onDisabledModesChange={setDisabledModes} />
                   </View>
                 </Animated.View>
               )}
             </KeyboardAvoidingView>
+
+            {/* Outside the KeyboardAvoidingView, so it stays put under the
+                keyboard instead of being shoved up with the composer. PRD §9
+                requires this on every screen. */}
+            <View style={[styles.footer, { paddingBottom: insets.bottom + spacing.sm }]}>
+              <Credits />
+            </View>
           </View>
         </View>
 
@@ -954,6 +964,10 @@ const styles = StyleSheet.create({
   pinnedComposer: {
     paddingHorizontal: spacing.xl,
     paddingTop: spacing.sm,
+    backgroundColor: colors.background,
+  },
+  footer: {
+    paddingHorizontal: spacing.xl,
     backgroundColor: colors.background,
   },
 })
