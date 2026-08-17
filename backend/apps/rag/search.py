@@ -69,7 +69,10 @@ def campus_search(query: str, k: int = 6) -> list[dict]:
             "url": row["document__url"],
             "title": row["document__title"] or row["document__url"],
             "indexed_at": indexed_at.isoformat() if indexed_at else None,
-            "snippet": row["text"][:300],
+            # The whole chunk, not a preview: CitationLedger forwards `snippet`
+            # and drops `text`, so this is the only grounding content the model
+            # gets to answer from. The chunker already bounds it (tasklist B1).
+            "snippet": row["text"],
         })
 
     return results
