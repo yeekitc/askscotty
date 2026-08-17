@@ -5,21 +5,24 @@
  */
 
 import { useState } from 'react'
-import { Pressable, type PressableProps, type StyleProp, type ViewStyle } from 'react-native'
+import { Pressable, type PressableProps, type StyleProp, type View, type ViewStyle } from 'react-native'
 
 type RenderState = { pressed: boolean; hovered: boolean }
 
 type Props = Omit<PressableProps, 'style' | 'children'> & {
   style?: StyleProp<ViewStyle> | ((state: RenderState) => StyleProp<ViewStyle>)
   children?: React.ReactNode | ((state: RenderState) => React.ReactNode)
+  /** For `measureInWindow` — a source card anchors its preview to itself. */
+  ref?: React.Ref<View>
 }
 
-export function HoverPressable({ style, children, onHoverIn, onHoverOut, ...props }: Props) {
+export function HoverPressable({ style, children, onHoverIn, onHoverOut, ref, ...props }: Props) {
   const [hovered, setHovered] = useState(false)
 
   return (
     <Pressable
       {...props}
+      ref={ref}
       onHoverIn={(e) => {
         setHovered(true)
         onHoverIn?.(e)

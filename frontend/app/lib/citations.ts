@@ -16,6 +16,37 @@
 
 import { splitWords } from './reveal'
 
+const MINUTE = 60
+const HOUR = 60 * MINUTE
+const DAY = 24 * HOUR
+
+/**
+ * "2026-08-12T14:03:00Z" -> "3 days ago". Falls back to the raw text.
+ *
+ * Relative rather than a date, because the question a reader actually has is
+ * how stale this is, and answering it with "Aug 12" makes them do the
+ * subtraction. Hand-rolled: `Intl.RelativeTimeFormat` is not in Hermes.
+ *
+ * A timestamp in the future is clock skew between us and the source, not a
+ * prediction, so it clamps to "just now" rather than counting down.
+ */
+export function relativeTime(value: string | null): string | null {
+  if (!value) return null
+  const at = new Date(value).getTime()
+  if (Number.isNaN(at)) return value
+
+  const seconds = Math.max(0, Math.round((Date.now() - at) / 1000))
+  if (seconds < 45) return 'just now'
+  if (seconds < 90 * MINUTE) return `${Math.round(seconds / MINUTE)} min ago`
+  if (seconds < 36 * HOUR) return `${Math.round(seconds / HOUR)} hr ago`
+
+  const days = Math.round(seconds / DAY)
+  if (days < 30) return days === 1 ? '1 day ago' : `${days} days ago`
+
+  const months = Math.round(days / 30)
+  return months === 1 ? '1 month ago' : `${months} months ago`
+}
+
 /**
  * One id per bracket. `validate_markers` (apps/planner/citations.py) rewrites a
  * multi-id marker into adjacent single-id ones, so the wide pattern the adapter
