@@ -321,6 +321,24 @@ export default function AskScreen() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
+  /**
+   * Put a thread's messages in the runtime, stopping whatever was running.
+   *
+   * `reset()` alone is not enough, and the way it falls short is quiet:
+   * it swaps the message repository but leaves `abortController` untouched, so
+   * the run's `for await` loop carries on calling `updateMessage` against the
+   * thread that is now open. Every one of those writes notifies the mirror
+   * below, which reads `activeThreadIdRef` — so the answer to a question asked
+   * in one conversation gets written into another, and saved there.
+   */
+  const openInRuntime = useCallback(
+    (messages: ThreadMessageLike[]) => {
+      runtime.thread.cancelRun()
+      runtime.thread.reset(messages)
+    },
+    [runtime],
+  )
+
   const startNewChat = useCallback(() => {
     setMenuThreadId(null)
     setRenamingId(null)
@@ -330,9 +348,9 @@ export default function AskScreen() {
     setThreads((prev) => [next, ...prev])
     activeThreadIdRef.current = next.id
     setActiveThreadId(next.id)
-    runtime.thread.reset([])
+    openInRuntime([])
     if (!isWide) setSidebarOpen(false)
-  }, [threads, runtime, isWide])
+  }, [threads, openInRuntime, isWide])
 
   const startRename = useCallback((thread: ChatThread) => {
     setMenuThreadId(null)
@@ -380,7 +398,7 @@ export default function AskScreen() {
         if (!mostRecent) remaining.push(next) // deleted the last one — fall back to a fresh chat
         activeThreadIdRef.current = next.id
         setActiveThreadId(next.id)
-        runtime.thread.reset(next.messages)
+        openInRuntime(next.messages)
       }
 
       setThreads(remaining)
@@ -390,7 +408,7 @@ export default function AskScreen() {
         // failed delete reappears on the next load rather than as a banner.
       })
     },
-    [threads, runtime],
+    [threads, openInRuntime],
   )
 
   const switchToThread = useCallback(
@@ -404,10 +422,10 @@ export default function AskScreen() {
       const target = threads.find((t) => t.id === id)
       activeThreadIdRef.current = id
       setActiveThreadId(id)
-      runtime.thread.reset(target?.messages ?? [])
+      openInRuntime(target?.messages ?? [])
       if (!isWide) setSidebarOpen(false)
     },
-    [threads, runtime, isWide],
+    [threads, openInRuntime, isWide],
   )
 
   const visibleThreads = useMemo(() => {
