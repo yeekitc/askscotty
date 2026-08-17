@@ -14,7 +14,7 @@ from io import StringIO
 from unittest import mock
 
 from django.core.management import call_command
-from django.test import SimpleTestCase, TestCase
+from django.test import SimpleTestCase, TestCase, override_settings
 
 from apps.rag.models import CrawlSeed
 from apps.rag.seed_urls import SEEDS
@@ -43,6 +43,48 @@ class CampusSearchToolTests(SimpleTestCase):
             campus_search(query="drop deadline", k=500)
 
         self.assertEqual(search.call_args.kwargs["k"], 20)
+
+
+class EmbedRetryTests(SimpleTestCase):
+    """A 429 that says "out of credits" is not a rate limit."""
+
+    def _client(self, error):
+        client = mock.MagicMock()
+        client.embeddings.create.side_effect = error
+        return mock.patch("openai.OpenAI", return_value=client), client
+
+    def _rate_limit_error(self, code: str):
+        from openai import RateLimitError
+
+        return RateLimitError(
+            f"Error code: 429 - {{'error': {{'code': '{code}'}}}}",
+            response=mock.MagicMock(status_code=429, headers={}),
+            body={"error": {"code": code}},
+        )
+
+    @override_settings(OPENAI_API_KEY="sk-test")
+    def test_a_quota_failure_does_not_burn_fifteen_seconds_of_backoff(self) -> None:
+        from apps.rag.embedder import embed_texts
+
+        patcher, client = self._client(self._rate_limit_error("insufficient_quota"))
+        with patcher, mock.patch("time.sleep") as slept:
+            with self.assertRaises(Exception):
+                embed_texts(["anything"])
+
+        # `campus_search` embeds the query, so this backoff is paid mid-answer.
+        self.assertEqual(client.embeddings.create.call_count, 1)
+        slept.assert_not_called()
+
+    @override_settings(OPENAI_API_KEY="sk-test")
+    def test_a_real_rate_limit_is_still_retried(self) -> None:
+        from apps.rag.embedder import embed_texts
+
+        patcher, client = self._client(self._rate_limit_error("rate_limit_exceeded"))
+        with patcher, mock.patch("time.sleep"):
+            with self.assertRaises(Exception):
+                embed_texts(["anything"])
+
+        self.assertEqual(client.embeddings.create.call_count, 5)
 
 
 class LoadSeedsCommandTests(TestCase):
