@@ -786,6 +786,24 @@ class SessionDriverTests(PlannerTestCase):
         session = FakeSession([agent_message("Probably Wean."), idle()])
         self.assertIn("No campus source", self.answer(session)["note"])
 
+    def test_a_lookup_that_found_nothing_still_counts_as_a_campus_source(self) -> None:
+        """Nothing open at 4am is a live answer, not general knowledge.
+
+        The tool ran, CMU Eats replied, and the reply was "none" — so there is
+        nothing to cite and everything to stand behind.
+        """
+        self.behaviour["fake_dining"] = lambda args: {"results": [], "citations": []}
+
+        session = FakeSession(
+            [custom_tool_use("fake_dining", open_at="4:00am"), waiting()],
+            [agent_message("Nothing is open at 4am."), idle()],
+        )
+        payload = self.answer(session)
+
+        self.assertEqual(payload["citations"], [])
+        self.assertEqual(payload["modes_used"], ["dining"])
+        self.assertIsNone(payload["note"])
+
     def test_the_budget_is_the_runaway_bound_and_it_says_so(self) -> None:
         session = FakeSession([agent_message("Partial, sorry."), idle("budget_reached")])
         payload = self.answer(session)

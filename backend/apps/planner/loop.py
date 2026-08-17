@@ -659,7 +659,11 @@ def _note(turn: _Turn) -> str | None:
 
     if turn.failures:
         parts.append("Some sources did not respond — " + "; ".join(turn.failures))
-    elif not turn.ledger.citations:
+    elif not (turn.ledger.citations or turn.ran or turn.web_verified):
+        # Only when nothing ran at all. A lookup that succeeded and found
+        # nothing — no dining open at 4am — is still a live campus check, and
+        # calling that "general knowledge" tells the reader the opposite of
+        # what happened.
         parts.append(
             "No campus source backed this answer, so treat it as general knowledge "
             "rather than live CMU data."
