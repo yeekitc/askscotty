@@ -59,6 +59,20 @@ class AskSerializer(serializers.Serializer):
         max_length=40,
     )
 
+    # Lanes this person has switched off in the app's source picker. A *deny*
+    # list rather than an allow list on purpose: a lane added after their app
+    # last cached the list is on by default, which is the behaviour the picker
+    # promises ("everything is checked unless you uncheck it").
+    #
+    # ChoiceField over MODES, so a typo is a 400 here rather than a silently
+    # ignored preference — which is what the old `sources` field was, a body key
+    # the serializer never declared and DRF therefore dropped.
+    disabled_modes = serializers.ListField(
+        child=serializers.ChoiceField(choices=MODES),
+        required=False,
+        default=list,
+    )
+
 
 # --- Response -----------------------------------------------------------------
 

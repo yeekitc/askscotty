@@ -58,6 +58,7 @@ def _planner_events(request: Request):
         session_id=serializer.validated_data["session_id"],
         thread_id=serializer.validated_data["thread_id"],
         history=serializer.validated_data["history"],
+        disabled_modes=serializer.validated_data["disabled_modes"],
     )
 
 

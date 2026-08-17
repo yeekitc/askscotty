@@ -117,7 +117,7 @@ function provisional(streamed: string): string {
  * current?" reuses the previous turn's lookups instead of starting over.
  */
 export function createHttpAdapter(
-  getSources: () => string[] | undefined,
+  getDisabledModes: () => Mode[] | undefined,
   getThreadId: () => string | undefined,
 ): ChatModelAdapter {
   return {
@@ -135,7 +135,7 @@ export function createHttpAdapter(
 
       try {
         for await (const event of askEvents(text, {
-          sources: getSources(),
+          disabledModes: getDisabledModes(),
           threadId: getThreadId(),
           signal: abortSignal,
         })) {

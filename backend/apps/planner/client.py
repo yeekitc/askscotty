@@ -86,7 +86,7 @@ def get_client() -> anthropic.Anthropic:
     )
 
 
-def agent_reference(tools: Iterable[Tool]) -> dict[str, Any]:
+def agent_reference(tools: Iterable[Tool], *, web: bool = True) -> dict[str, Any]:
     """This request's agent, with its toolset overridden for this session.
 
     `tools_for_session()` still decides what exists; it is applied here as an
@@ -100,18 +100,29 @@ def agent_reference(tools: Iterable[Tool]) -> dict[str, Any]:
     return {
         "type": "agent_with_overrides",
         "id": settings.PLANNER_AGENT_ID,
-        "tools": toolset(tools),
+        "tools": toolset(tools, web=web),
     }
 
 
-def toolset(tools: Iterable[Tool]) -> list[dict[str, Any]]:
+def toolset(tools: Iterable[Tool], *, web: bool = True) -> list[dict[str, Any]]:
     """The tool list an agent or a session is given: the prebuilt one, then ours.
 
     One definition rather than three, because the prebuilt toolset has to lead
     every one of them — an override replaces in full, so a list that forgets it
     silently drops the web lane.
+
+    `web=False` is how a reader who unchecked web verification actually gets it.
+    Ours can be dropped by leaving them out of the list; the built-in pair cannot,
+    because the prebuilt toolset is one opaque entry — so they are switched off
+    through its own per-tool config instead.
     """
-    return [AGENT_TOOLSET, *(_custom_tool(tool) for tool in tools)]
+    prebuilt = AGENT_TOOLSET
+    if not web:
+        prebuilt = {
+            **AGENT_TOOLSET,
+            "configs": [{"name": name, "enabled": False} for name in sorted(WEB_TOOLS)],
+        }
+    return [prebuilt, *(_custom_tool(tool) for tool in tools)]
 
 
 def _custom_tool(tool: Tool) -> dict[str, Any]:
@@ -137,7 +148,7 @@ def _budget() -> dict[str, Any] | None:
     return {"type": "limit", "max_list_cost": {"amount": str(cents), "currency": "USD"}}
 
 
-def create_session(tools: Iterable[Tool], *, title: str = "") -> str:
+def create_session(tools: Iterable[Tool], *, title: str = "", web: bool = True) -> str:
     """Open a session for one conversation and return its id.
 
     Note what is *not* here: `agents.create` and `environments.create`. Those ran
@@ -148,7 +159,7 @@ def create_session(tools: Iterable[Tool], *, title: str = "") -> str:
 
     offered = list(tools)
     kwargs: dict[str, Any] = {
-        "agent": agent_reference(offered),
+        "agent": agent_reference(offered, web=web),
         "environment_id": settings.PLANNER_ENVIRONMENT_ID,
     }
     if title:
@@ -165,7 +176,7 @@ def create_session(tools: Iterable[Tool], *, title: str = "") -> str:
     return session.id
 
 
-def refresh_toolset(session_id: str, tools: Iterable[Tool]) -> None:
+def refresh_toolset(session_id: str, tools: Iterable[Tool], *, web: bool = True) -> None:
     """Re-apply this request's toolset to a session we are reusing.
 
     A thread's session outlives the turn, so the toolset it was opened with can
@@ -175,7 +186,7 @@ def refresh_toolset(session_id: str, tools: Iterable[Tool]) -> None:
     what the model is told in step with what it would actually be allowed to run.
     """
     try:
-        get_client().beta.sessions.update(session_id, agent={"tools": toolset(tools)})
+        get_client().beta.sessions.update(session_id, agent={"tools": toolset(tools, web=web)})
     except Exception as exc:  # noqa: BLE001 - never fail an answer over this
         logger.warning("planner_session toolset refresh failed id=%s: %s", session_id, exc)
 

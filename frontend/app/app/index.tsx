@@ -29,6 +29,7 @@ import {
   type ThreadMessageLike,
 } from '@assistant-ui/react-native'
 
+import type { Mode } from '../lib/types'
 import { AskComposer } from '../components/AskComposer'
 import { ChatMessage } from '../components/ChatMessage'
 import { HoverPressable } from '../components/HoverPressable'
@@ -51,8 +52,9 @@ const DEMO_QUERY =
   'I get out of 15-213 at 4:20 tomorrow. Find somewhere nearby to eat and then ' +
   'an interesting startup or AI event before 8.'
 
-const SOURCES_KEY = 'askscotty.sources'
-const DEFAULT_SOURCES = ['Course Catalog', 'Directory', 'Piazza', 'Canvas']
+const DISABLED_MODES_KEY = 'askscotty.disabledModes'
+// Everything on until someone unchecks it — an empty deny list.
+const DEFAULT_DISABLED_MODES: Mode[] = []
 const SIDEBAR_WIDTH = 280
 const WIDE_BREAKPOINT = 900
 
@@ -87,18 +89,18 @@ function hiddenWhenClosed(open: boolean) {
 // AsyncStorage, not localStorage, because `window` does not exist on a phone.
 // Conversations are not stored here: they live in the backend, scoped to this
 // session (see lib/chatThreads.ts).
-async function loadSources(): Promise<string[]> {
+async function loadDisabledModes(): Promise<Mode[]> {
   try {
-    const raw = await AsyncStorage.getItem(SOURCES_KEY)
-    return raw ? (JSON.parse(raw) as string[]) : DEFAULT_SOURCES
+    const raw = await AsyncStorage.getItem(DISABLED_MODES_KEY)
+    return raw ? (JSON.parse(raw) as Mode[]) : DEFAULT_DISABLED_MODES
   } catch (e) {
-    return DEFAULT_SOURCES
+    return DEFAULT_DISABLED_MODES
   }
 }
 
-async function saveSources(sources: string[]): Promise<void> {
+async function saveDisabledModes(modes: Mode[]): Promise<void> {
   try {
-    await AsyncStorage.setItem(SOURCES_KEY, JSON.stringify(sources))
+    await AsyncStorage.setItem(DISABLED_MODES_KEY, JSON.stringify(modes))
   } catch (e) {
     // Storage full or unavailable — a forgotten filter is not worth an error.
   }
@@ -110,24 +112,24 @@ export default function AskScreen() {
   const isWide = width >= WIDE_BREAKPOINT
   const user = useCurrentUser()
 
-  const [sources, setSources] = useState<string[]>(DEFAULT_SOURCES)
-  const sourcesRef = useRef(sources)
+  const [disabledModes, setDisabledModes] = useState<Mode[]>(DEFAULT_DISABLED_MODES)
+  const disabledModesRef = useRef(disabledModes)
   useEffect(() => {
-    sourcesRef.current = sources
-  }, [sources])
+    disabledModesRef.current = disabledModes
+  }, [disabledModes])
 
   // Without the flag, the write effect would immediately save back whatever the
   // read just returned — harmless, but confusing to follow in the storage log.
-  const sourcesLoaded = useRef(false)
+  const disabledModesLoaded = useRef(false)
   useEffect(() => {
-    loadSources().then((stored) => {
-      sourcesLoaded.current = true
-      setSources(stored)
+    loadDisabledModes().then((stored) => {
+      disabledModesLoaded.current = true
+      setDisabledModes(stored)
     })
   }, [])
   useEffect(() => {
-    if (sourcesLoaded.current) void saveSources(sources)
-  }, [sources])
+    if (disabledModesLoaded.current) void saveDisabledModes(disabledModes)
+  }, [disabledModes])
 
   // `null` means "no explicit choice yet": follow the width-based default until
   // the toggle is tapped, so resizing doesn't fight a stale manual override.
@@ -191,7 +193,7 @@ export default function AskScreen() {
   // adapter sees the current filter and the current conversation without being
   // rebuilt — which would drop the in-flight answer.
   const adapter = useMemo(
-    () => createHttpAdapter(() => sourcesRef.current, () => activeThreadIdRef.current),
+    () => createHttpAdapter(() => disabledModesRef.current, () => activeThreadIdRef.current),
     [],
   )
   const runtime = useLocalRuntime(adapter, { initialMessages: [] })
@@ -601,7 +603,7 @@ export default function AskScreen() {
               {isEmpty ? (
                 <View style={styles.emptyState}>
                   <Text style={styles.hero}>Ask Scotty, {user.displayName}!</Text>
-                  <AskComposer sources={sources} onSourcesChange={setSources} />
+                  <AskComposer disabledModes={disabledModes} onDisabledModesChange={setDisabledModes} />
                 </View>
               ) : (
                 <Animated.View style={[styles.activeThread, threadEnterStyle]}>
@@ -616,7 +618,7 @@ export default function AskScreen() {
                     children={() => <ChatMessage />}
                   />
                   <View style={[styles.pinnedComposer, { paddingBottom: insets.bottom + spacing.sm }]}>
-                    <AskComposer sources={sources} onSourcesChange={setSources} />
+                    <AskComposer disabledModes={disabledModes} onDisabledModesChange={setDisabledModes} />
                   </View>
                 </Animated.View>
               )}

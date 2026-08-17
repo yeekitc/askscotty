@@ -89,15 +89,24 @@ def run_planner(
     session_id: str = "",
     thread_id: str = "",
     history: Iterable[dict[str, str]] = (),
+    disabled_modes: Iterable[str] = (),
     now: datetime | None = None,
 ) -> Iterator[dict[str, Any]]:
-    """Answer `query`, yielding progress events and finally the `AskResponse`."""
+    """Answer `query`, yielding progress events and finally the `AskResponse`.
+
+    `disabled_modes` are the lanes this reader unchecked in the app. They are
+    applied by *not offering* the tools rather than by refusing them later: a
+    tool the model is never told about is one it cannot call, which is the same
+    mechanism that gates personal tools (PRD §7).
+    """
     now = now or timezone.localtime()
-    tools = tools_for_session(session_id or None)
+    off = set(disabled_modes)
+    tools = [tool for tool in tools_for_session(session_id or None) if tool.mode not in off]
+    web = "web_verify" not in off
     turn = _Turn(tools={tool.name: tool for tool in tools}, session_id=session_id)
 
     thread = _thread_for(session_id, thread_id)
-    cma_session_id, is_new = _resolve_session(thread, tools, title=query)
+    cma_session_id, is_new = _resolve_session(thread, tools, title=query, web=web)
 
     # A reused session already holds the conversation, so replaying `history`
     # into it would say everything twice. A new one has never seen the thread,
@@ -118,7 +127,7 @@ def run_planner(
         if is_new:
             raise
         logger.info("planner_session gone id=%s; starting a new one", cma_session_id)
-        cma_session_id = _reopen_session(thread, tools, title=query)
+        cma_session_id = _reopen_session(thread, tools, title=query, web=web)
         is_new = True
         turn = _Turn(tools=turn.tools, session_id=session_id)
         message = prompt.user_turn(query, now, history=history)
@@ -225,7 +234,7 @@ def _thread_for(session_id: str, thread_id: str) -> Thread | None:
 
 
 def _resolve_session(
-    thread: Thread | None, tools: list[Tool], *, title: str
+    thread: Thread | None, tools: list[Tool], *, title: str, web: bool = True
 ) -> tuple[str, bool]:
     """This thread's session, opened if it has none. Returns (id, is_new).
 
@@ -235,24 +244,26 @@ def _resolve_session(
     if thread is not None and thread.cma_session_id:
         # The toolset was fixed when the session opened, and a thread outlives
         # the turn — somebody may have connected or disconnected a source since.
-        client.refresh_toolset(thread.cma_session_id, tools)
+        client.refresh_toolset(thread.cma_session_id, tools, web=web)
         return thread.cma_session_id, False
 
-    cma_session_id = client.create_session(tools, title=title)
+    cma_session_id = client.create_session(tools, title=title, web=web)
     if thread is not None:
         thread.cma_session_id = cma_session_id
         thread.save(update_fields=["cma_session_id"])
     return cma_session_id, True
 
 
-def _reopen_session(thread: Thread | None, tools: list[Tool], *, title: str) -> str:
+def _reopen_session(
+    thread: Thread | None, tools: list[Tool], *, title: str, web: bool = True
+) -> str:
     """Replace a session id that no longer resolves.
 
     Ours is not the only store: a session can be archived or deleted on
     Anthropic's side while the thread row still points at it. That should cost
     the conversation's memory, not the answer.
     """
-    cma_session_id = client.create_session(tools, title=title)
+    cma_session_id = client.create_session(tools, title=title, web=web)
     if thread is not None:
         thread.cma_session_id = cma_session_id
         thread.save(update_fields=["cma_session_id"])
@@ -575,7 +586,9 @@ def _dispatch(turn: _Turn, cma_session_id: str) -> Iterator[dict[str, Any]]:
     # only unreachable because the one caller guards it.
     with ThreadPoolExecutor(max_workers=max(1, min(len(calls), _MAX_PARALLEL))) as pool:
         futures = {
-            pool.submit(_call_tool, call.name, dict(call.input or {}), turn.session_id): index
+            pool.submit(
+                _call_tool, call.name, dict(call.input or {}), turn.session_id, set(turn.tools)
+            ): index
             for index, call in enumerate(calls)
         }
 
@@ -618,13 +631,22 @@ def _dispatch(turn: _Turn, cma_session_id: str) -> Iterator[dict[str, Any]]:
     client.send_events(cma_session_id, results)
 
 
-def _call_tool(name: str, arguments: dict[str, Any], session_id: str) -> tuple[bool, Any]:
+def _call_tool(
+    name: str, arguments: dict[str, Any], session_id: str, offered: set[str]
+) -> tuple[bool, Any]:
     """Run one tool in a pool thread. Never raises — a failure is a value here.
 
     A failure has to come back as a value rather than an exception: the model
     reads it and routes around a dead upstream, which is what makes "degrade,
     don't crash" real.
+
+    `offered` is what this turn was told about. A thread's session outlives the
+    turn, so one opened before a lane was unchecked is still holding the old
+    offer — refusing here is the same belt-and-braces as re-checking a connector.
     """
+    if name not in offered:
+        return False, f"{name} is not available for this question."
+
     try:
         return True, run_tool(name, arguments, session_id=session_id or None)
     except ToolError as exc:

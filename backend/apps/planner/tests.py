@@ -191,11 +191,11 @@ class FakeSession:
 
     # The three calls the driver makes, recorded and answered.
 
-    def create_session(self, tools, *, title=""):
-        self.created.append({"tools": list(tools), "title": title})
+    def create_session(self, tools, *, title="", web=True):
+        self.created.append({"tools": list(tools), "title": title, "web": web})
         return self.session_id
 
-    def refresh_toolset(self, session_id, tools):
+    def refresh_toolset(self, session_id, tools, *, web=True):
         self.refreshed.append(session_id)
 
     def send_events(self, session_id, events):
@@ -1059,6 +1059,64 @@ class PersonalToolGatingTests(PlannerTransactionTestCase):
         # The session reaches the tool from the request, never from the model:
         # it passes arguments, not whose data to read.
         self.assertEqual(self.tool_calls, [("fake_canvas", {"session_id": "anon-1"})])
+
+
+@override_settings(**PLANNER_DEFAULTS)
+class DisabledLaneTests(PlannerTestCase):
+    """The app's source picker, honoured server-side.
+
+    A lane the reader unchecked is applied by *not offering* its tools, the same
+    mechanism that gates a personal tool — not by refusing them afterwards.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.register("fake_dining", mode="dining")
+        self.register("fake_events", mode="events")
+        self.behaviour["fake_dining"] = lambda args: {"open_now": []}
+        self.behaviour["fake_events"] = lambda args: {"events": []}
+
+    def test_an_unchecked_lane_is_never_offered(self) -> None:
+        session = FakeSession([agent_message("Hi."), idle()])
+        self.drive(session, disabled_modes=["dining"])
+
+        names = [tool.name for tool in session.created[0]["tools"]]
+        self.assertNotIn("fake_dining", names)
+        self.assertIn("fake_events", names)
+
+    def test_unchecking_web_verification_switches_off_the_built_in_pair(self) -> None:
+        # Ours come off by being left out of the list. The prebuilt toolset is
+        # one opaque entry, so its own per-tool config is the only way in.
+        session = FakeSession([agent_message("Hi."), idle()])
+        self.drive(session, disabled_modes=["web_verify"])
+
+        self.assertFalse(session.created[0]["web"])
+        prebuilt = client.toolset([], web=False)[0]
+        self.assertEqual(
+            prebuilt["configs"],
+            [{"name": "web_fetch", "enabled": False}, {"name": "web_search", "enabled": False}],
+        )
+
+    def test_everything_is_on_when_nothing_is_unchecked(self) -> None:
+        session = FakeSession([agent_message("Hi."), idle()])
+        self.drive(session)
+
+        names = [tool.name for tool in session.created[0]["tools"]]
+        self.assertIn("fake_dining", names)
+        self.assertTrue(session.created[0]["web"])
+
+    def test_a_stale_session_asking_for_an_unchecked_tool_is_refused(self) -> None:
+        # A thread's session outlives the turn, so one opened before the reader
+        # unchecked dining is still holding the old offer.
+        session = FakeSession(
+            [custom_tool_use("fake_dining"), waiting()],
+            [agent_message("I could not check dining."), idle()],
+        )
+        payload = self.answer(session, disabled_modes=["dining"])
+
+        self.assertEqual(self.tool_calls, [], "it must not reach the tool at all")
+        self.assertTrue(session.dispatches[0][0]["is_error"])
+        self.assertEqual(payload["modes_used"], [])
 
 
 @override_settings(**PLANNER_DEFAULTS)
