@@ -72,6 +72,36 @@ Sample `/course/{id}` / `/courses/search` doc shape:
 
 ---
 
+## The Schedule of Classes is not a second source — checked
+
+`enr-apps.as.cmu.edu/assets/SOC/` is the registrar's own schedule: an Apache
+index of 112 files, `{DEPT}_{FALL|SPRING}.htm`, refreshed daily, one clean HTML
+table each (`Course | Title | Units | Lec/Sec | Days | Begin | End | Location`),
+no robots.txt. Deterministically parseable, and tempting — a planner run with no
+tools scraped it by hand to work out that 11-441 is not offered this fall.
+
+**It agrees with ScottyLabs, so it is not worth adding.** Sampled against
+`/schedules` for Fall 2026:
+
+| Department | Sampled | Agree | Differ | Missing from ScottyLabs |
+|---|---|---|---|---|
+| MLG | 14 | 14 | 0 | 0 |
+| CS | 16 | 16 | 0 | 0 |
+| STA | 16 | 16 | 0 | 0 |
+
+Same meeting days, TBA cases included. What ScottyLabs has on top: keyword search
+over all 8395 courses (the Schedule of Classes has no search at all — you must
+already know the department code), descriptions, prereqs, coreqs, crosslisted,
+and instructor names, which its table has no column for.
+
+So a course reported as stale was never a source problem; it was `_pick_offering`
+taking the newest entry on file rather than the soonest unfinished term.
+
+Worth revisiting only as an independent cross-check — this one is the registrar's,
+ScottyLabs is student-run — or if ScottyLabs starts lagging or goes down.
+
+---
+
 ## Scope: what this tool does NOT cover
 
 Per-course **prerequisites are real and present** — `prereqs`, `coreqs`,
