@@ -38,8 +38,10 @@ rather than its slowest member — see `_dispatch`.
 
 from __future__ import annotations
 
+import html
 import json
 import logging
+import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -140,12 +142,13 @@ def run_planner(
     }
 
     logger.info(
-        "planner_answer session=%s new=%s tools=%s failures=%s citations=%s uncited=%s",
+        "planner_answer session=%s new=%s tools=%s failures=%s citations=%s dropped=%s uncited=%s",
         cma_session_id,
         is_new,
         ",".join(turn.ran) or "-",
         len(turn.failures),
         len(turn.ledger.citations),
+        turn.web_dropped,
         ",".join(sorted(uncited)) or "-",
     )
 
@@ -194,6 +197,9 @@ class _Turn:
     #: Whether a built-in web tool actually returned something. `web_verify` is
     #: the one mode `run_tool` cannot report, because Anthropic runs those two.
     web_verified: bool = False
+    #: Web sources turned away by `_MAX_WEB_CITATIONS`, so the ceiling shows up
+    #: in the logs rather than looking like the search found less than it did.
+    web_dropped: int = 0
     #: Event ids already handled, so a reconnect cannot double-count one.
     seen: set[str] = field(default_factory=set)
     finished: bool = False
@@ -435,6 +441,39 @@ def _on_idle(turn: _Turn, cma_session_id: str, event: Any) -> Iterator[dict[str,
 # because Anthropic ran the tool.
 _WEB_SNIPPET_CHARS = 400
 
+# How many citations one turn's web lane may issue. A search returns about ten
+# results and the model searches several times over a broad question — one live
+# question came back with 96, which is not a source list, it is a wall. They
+# arrive in the search's own relevance order, so a ceiling keeps the best of
+# them; what it turned away is logged rather than silently dropped.
+_MAX_WEB_CITATIONS = 10
+
+# A fetched page arrives as markdown behind a block of CMS metadata, then nav
+# chrome, before any prose — confirmed live on www.cmu.edu/news, whose first 400
+# characters are Drupal `meta-` keys. Taking the head of the page verbatim puts
+# that on the citation card.
+_FRONT_MATTER = re.compile(r"\A---\n.*?\n---\n", re.DOTALL)
+_MD_LINK = re.compile(r"\[([^\]]*)\]\([^)]*\)")
+
+# Short lines are usually nav ("Skip to main content"), so a line long enough to
+# be a sentence is preferred — but only preferred. A page whose whole answer is
+# one short line still deserves a snippet.
+_PROSE_CHARS = 40
+
+
+def _page_snippet(text: str) -> str:
+    """The first line of a fetched page that reads like prose rather than chrome."""
+    fallback = ""
+    for raw in _FRONT_MATTER.sub("", text).splitlines():
+        line = " ".join(_MD_LINK.sub(r"\1", raw).split())
+        # A bullet or heading marker is a nav list, not the page's own prose.
+        if not line or line.startswith(("http://", "https://", "*", "-", "#", "|")):
+            continue
+        if len(line) >= _PROSE_CHARS:
+            return line[:_WEB_SNIPPET_CHARS]
+        fallback = fallback or line
+    return fallback[:_WEB_SNIPPET_CHARS]
+
 
 def _harvest_web(turn: _Turn, name: str, arguments: dict[str, Any], event: Any) -> None:
     """Turn a built-in web tool's result into citations.
@@ -465,9 +504,14 @@ def _harvest_web(turn: _Turn, name: str, arguments: dict[str, Any], event: Any) 
             )
         elif kind == "document":
             source = getattr(block, "source", None)
+            # web_fetch comes back as a *plain-text* document — no url on the
+            # block at all — so the one the tool_use asked for is the only one
+            # there is. Confirmed live; the `url` source variant is untested.
             url = str(getattr(source, "url", "") or requested_url)
             title = str(getattr(block, "title", "") or "")
-            snippet = str(getattr(source, "data", "") or getattr(block, "context", "") or "")
+            snippet = _page_snippet(
+                str(getattr(source, "data", "") or getattr(block, "context", "") or "")
+            )
         elif kind == "text":
             url, title = requested_url, ""
             snippet = str(getattr(block, "text", "") or "")
@@ -479,10 +523,16 @@ def _harvest_web(turn: _Turn, name: str, arguments: dict[str, Any], event: Any) 
         if not url:
             continue
 
+        if turn.ledger.web_count >= _MAX_WEB_CITATIONS and not turn.ledger.cites(url):
+            turn.web_dropped += 1
+            continue
+
         turn.ledger.record_web(
             title=title or url,
             url=url,
-            snippet=" ".join(snippet.split())[:_WEB_SNIPPET_CHARS],
+            # Search excerpts arrive HTML-escaped — "Carnegie Mellon&#x27;s"
+            # renders as exactly that on a citation card.
+            snippet=" ".join(html.unescape(snippet).split())[:_WEB_SNIPPET_CHARS],
             verified_at=verified_at,
             source=name,
         )

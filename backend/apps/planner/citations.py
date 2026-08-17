@@ -118,6 +118,15 @@ class CitationLedger:
             self._by_url[url] = citation
         return citation
 
+    def cites(self, url: str) -> bool:
+        """Whether the web path has already issued a citation for `url`."""
+        return url in self._by_url
+
+    @property
+    def web_count(self) -> int:
+        """How many citations `record_web` has issued."""
+        return len(self._by_url)
+
     @property
     def citations(self) -> list[dict[str, Any]]:
         return list(self._citations)

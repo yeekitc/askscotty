@@ -553,7 +553,8 @@ class SessionDriverTests(PlannerTestCase):
                     search_result(
                         "https://www.cmu.edu/events/",
                         "CMU Events Calendar",
-                        "Startup   Week runs\nSeptember 14–18.",
+                        # Escaped and ragged, the way a real excerpt arrives.
+                        "Startup   Week runs\nSeptember 14&#x2013;18.",
                     ),
                 ),
                 agent_message("Startup Week runs September 14–18."),
@@ -615,6 +616,64 @@ class SessionDriverTests(PlannerTestCase):
         self.assertEqual(citation["url"], "https://www.cmu.edu/hub/")
         self.assertEqual(citation["source"], "web_fetch")
         self.assertEqual(citation["snippet"], "The HUB is open 8:30am to 5pm.")
+
+    def test_a_fetched_page_is_quoted_from_its_prose_not_its_metadata(self) -> None:
+        """The head of a real page is CMS front matter and nav, not content.
+
+        Verbatim from a live `web_fetch` of www.cmu.edu/news: 400 characters of
+        Drupal `meta-` keys before anything a reader would recognise.
+        """
+        page = (
+            "---\n"
+            "canonical: https://www.cmu.edu/news\n"
+            "meta-Generator: Drupal 10 (https://www.drupal.org)\n"
+            "meta-og:site_name: News\n"
+            "title: CMU - News - Carnegie Mellon University\n"
+            "---\n"
+            "[https://www.googletagmanager.com/ns.html?id=GTM-5Q36JQ]"
+            "(https://www.googletagmanager.com/ns.html?id=GTM-5Q36JQ)\n"
+            "\n"
+            "[Skip to main content](#main)\n"
+            "[CMU to Lead National Study of AI in Arts Education]"
+            "(https://www.cmu.edu/news/stories/archives/2026/august/ai-arts)\n"
+        )
+        session = FakeSession(
+            [
+                tool_use("web_fetch", event_id="sevt_web", url="https://www.cmu.edu/news/"),
+                tool_result("sevt_web", text_document(page, "CMU - News")),
+                agent_message("The latest is a study of AI in arts education."),
+                idle(),
+            ]
+        )
+        citation = self.answer(session)["citations"][0]
+
+        self.assertEqual(citation["snippet"], "CMU to Lead National Study of AI in Arts Education")
+
+    def test_a_broad_search_is_capped_rather_than_returning_a_wall(self) -> None:
+        """One live question came back with 96 citations before this.
+
+        A search returns about ten results and the model searches several times,
+        so the ceiling is what keeps the source list readable. Results arrive in
+        the search's own relevance order, so the ones kept are the best ones.
+        """
+        session = FakeSession(
+            [
+                tool_use("web_search", event_id="sevt_web"),
+                tool_result(
+                    "sevt_web",
+                    *[
+                        search_result(f"https://example.edu/{index}", f"Result {index}", "…")
+                        for index in range(30)
+                    ],
+                ),
+                agent_message("Plenty of coverage."),
+                idle(),
+            ]
+        )
+        citations = self.answer(session)["citations"]
+
+        self.assertEqual(len(citations), loop._MAX_WEB_CITATIONS)
+        self.assertEqual(citations[0]["url"], "https://example.edu/0")
 
     def test_a_failed_web_search_is_a_note_rather_than_an_exception(self) -> None:
         session = FakeSession(
