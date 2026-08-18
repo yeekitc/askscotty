@@ -36,6 +36,7 @@ import {
 
 import type { Mode } from '../lib/types'
 import { AskComposer } from '../components/AskComposer'
+import { ConnectionsModal } from '../components/ConnectionsModal'
 import { Credits } from '../components/Credits'
 import { ChatMessage } from '../components/ChatMessage'
 import { useCitationOverlay } from '../components/CitationOverlay'
@@ -185,6 +186,11 @@ export default function AskScreen() {
   const [sidebarOpen, setSidebarOpen] = useState<boolean | null>(null)
   const sidebarEffectiveOpen = sidebarOpen ?? isWide
   const [searchQuery, setSearchQuery] = useState('')
+
+  // Personal-source connections (B5). The count rides the profile row; the modal
+  // owns the fetching and reports it back.
+  const [connectionsOpen, setConnectionsOpen] = useState(false)
+  const [linkedCount, setLinkedCount] = useState<number | null>(null)
 
   // Threads whose answer landed while the reader was somewhere else. In memory
   // only: a run cannot outlive a reload, so a marker that did would point at an
@@ -725,6 +731,38 @@ export default function AskScreen() {
           </Text>
         )}
       </View>
+
+      {/* Pinned to the bottom of the flex:1 sidebar via marginTop:auto. Opens
+          the personal-source connections modal (B5). */}
+      <HoverPressable
+        style={({ pressed, hovered }) => [
+          styles.profileRow,
+          (pressed || hovered) && styles.profileRowActive,
+        ]}
+        onPress={() => {
+          setConnectionsOpen(true)
+          if (!isWide) setSidebarOpen(false)
+        }}
+        accessibilityRole="button"
+        accessibilityLabel="Manage your connections"
+      >
+        <View style={styles.profileAvatar}>
+          <Text style={styles.profileInitial}>{user.displayName.slice(0, 1).toUpperCase()}</Text>
+        </View>
+        <View style={styles.profileText}>
+          <Text style={styles.profileName} numberOfLines={1}>
+            {user.displayName}
+          </Text>
+          <Text style={styles.profileSub}>
+            {linkedCount === null
+              ? 'Manage connections'
+              : linkedCount === 0
+                ? 'No sources linked'
+                : `${linkedCount} source${linkedCount === 1 ? '' : 's'} linked`}
+          </Text>
+        </View>
+        <Text style={styles.profileChevron}>›</Text>
+      </HoverPressable>
     </>
   )
 
@@ -826,6 +864,12 @@ export default function AskScreen() {
           </>
         ) : null}
       </View>
+
+      <ConnectionsModal
+        visible={connectionsOpen}
+        onClose={() => setConnectionsOpen(false)}
+        onCountChange={setLinkedCount}
+      />
     </AssistantRuntimeProvider>
   )
 }
@@ -1021,6 +1065,52 @@ const styles = StyleSheet.create({
   },
   recents: {
     gap: 2,
+  },
+  profileRow: {
+    // Pins to the bottom of the flex:1 sidebar, clear of the recents list.
+    marginTop: 'auto',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    paddingVertical: spacing.sm,
+    paddingHorizontal: spacing.sm,
+    borderRadius: radius.md,
+    borderTopWidth: 1,
+    borderTopColor: colors.borderSoft,
+  },
+  profileRowActive: {
+    backgroundColor: colors.sidebarHover,
+  },
+  profileAvatar: {
+    width: 32,
+    height: 32,
+    borderRadius: radius.pill,
+    backgroundColor: colors.accent,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  profileInitial: {
+    color: colors.accentText,
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  profileText: {
+    flex: 1,
+  },
+  profileName: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: colors.text,
+  },
+  profileSub: {
+    fontSize: 12,
+    color: colors.textMuted,
+    marginTop: 1,
+  },
+  profileChevron: {
+    fontSize: 18,
+    color: colors.textFaint,
+    paddingHorizontal: spacing.xs,
   },
   recentEmpty: {
     fontSize: 13,
