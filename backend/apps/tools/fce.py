@@ -94,10 +94,9 @@ _FCE: list[dict] = [
     {"course_id": "21-259", "course_name": "Calculus in Three Dimensions", "semester": "S2024", "instructor": "Clive Newstead", "workload_hours": 7.9, "overall_rating": 4.0, "instructor_rating": 4.3, "response_count": 265},
 ]
 
-# Semester ordering: most-recent first. Prefix sort key: S < F for same year
-# so "F2024" > "S2024" > "F2023".
+# Semester ordering: most-recent first. Later years first; within a year, Fall after Spring.
 _SEMESTER_KEY: dict[str, int] = {}
-for _i, _sem in enumerate(["F2024", "S2025", "S2024", "F2023", "S2023"]):
+for _i, _sem in enumerate(["S2025", "F2024", "S2024", "F2023", "S2023"]):
     _SEMESTER_KEY[_sem] = _i
 
 
