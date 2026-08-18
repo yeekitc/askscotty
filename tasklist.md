@@ -327,13 +327,13 @@ need.
 - [x] `GET`/`POST /api/connections/` (list, connect), `DELETE /api/connections/{provider}/` (disconnect)
 - [x] **Disconnect deletes all synced data** (PRD §7 — required)
 - [x] Piazza (`piazza_list_classes`, `piazza_search`) and Gradescope (`gradescope_get_assignments`) — **P1**
-- [ ] Confirm a real CMU Piazza/Gradescope login is not interrupted by Duo — needs a real account, so it cannot be a test (`scripts/check_connector_login.py`)
+- [x] Confirm a real CMU Piazza/Gradescope login is not interrupted by Duo — **verified live 2026-08-18**: both log in with email/password, no 2FA step; Piazza search returns a bare list, snippet key is `content_snipet`, class URL confirmed (`scripts/check_connector_login.py`)
 - [x] `get_json` accepts an `Authorization` header, and a header structurally disables caching (Part 0 of the doc — the identity-in-cache-key trap made unreachable, not just documented)
 - [x] Canvas client against `canvas.cmu.edu/api/v1` using a student PAT — **P0**
 - [x] Canvas: courses, assignments + due dates (via `/planner/items`) — announcements not built (the doc scoped Canvas to these two tools)
 - [ ] `personal_search(query)` tool, scoped to the current user only — not built (no doc covers it yet)
 - [~] "What's due this week?" wired via `canvas_get_assignments`; end-to-end needs a real PAT (mocked in tests, live check pending)
-- [x] Ed Discussion via settings API token — `ed_list_courses` + `ed_search_threads` — **P1**
+- [x] Ed Discussion via settings API token — `ed_list_courses` + `ed_search_threads` — **P1** — verified live 2026-08-18 against a real token (courses resolve, threads return, no invented URL); token path works, no cookies needed
 - [x] Stellic: mock degree audit — **P1** — mock only, no upload parser (by explicit direction; see doc)
 - [~] "On track for CS minor?" — the pieces exist (`stellic_degree_audit` mock + live `search_courses`); not verified end to end
 - [ ] Assert in code + test that personal chunks are never written to the shared index — belongs to `apps.rag`, not these connectors
