@@ -920,8 +920,22 @@ class StellicTests(TestCase):
                 "stellic_degree_audit", {"program": "CS minor"}, session_id=SESSION
             )
 
-        self.assertEqual(payload["results"][0]["program"], "CS Minor")
+        result = payload["results"][0]
+        self.assertIn("CS Minor", result["program"])
         self.assertIn("mock", payload["citations"][0]["snippet"])
+        # Matching metadata never reaches the model.
+        self.assertNotIn("aliases", result)
+        self.assertNotIn("kind", result)
+
+    def test_it_reports_progress_not_a_course_listing(self):
+        # The point of Stellic vs the catalog: where the student stands, not what
+        # exists. Every audit carries completed-of-required and what's remaining.
+        payload = run_tool(
+            "stellic_degree_audit", {"program": "Statistics"}, session_id=SESSION
+        )
+        result = payload["results"][0]
+        self.assertLess(result["completed"], result["required"])
+        self.assertTrue(result["remaining"])
 
     def test_an_unknown_program_falls_back_rather_than_erroring(self):
         payload = run_tool(
@@ -930,10 +944,32 @@ class StellicTests(TestCase):
 
         self.assertEqual(len(payload["results"]), 1)
 
-    def test_information_systems_resolves_across_phrasings(self):
-        for program in ["Information Systems", "info systems", "IS major", "am I on track for IS"]:
+    def test_major_and_minor_of_the_same_name_are_disambiguated(self):
+        major = run_tool("stellic_degree_audit", {"program": "business major"}, session_id=SESSION)
+        minor = run_tool("stellic_degree_audit", {"program": "business minor"}, session_id=SESSION)
+
+        # Only the minor's program label carries "Minor"; that plus the differing
+        # unit counts is how the two are told apart.
+        self.assertNotIn("minor", major["results"][0]["program"].lower())
+        self.assertIn("minor", minor["results"][0]["program"].lower())
+        self.assertNotEqual(major["results"][0]["required"], minor["results"][0]["required"])
+        # A bare name with no kind word resolves to the major (listed first).
+        bare = run_tool("stellic_degree_audit", {"program": "business"}, session_id=SESSION)
+        self.assertNotIn("minor", bare["results"][0]["program"].lower())
+
+    def test_common_programs_resolve_across_phrasings(self):
+        cases = {
+            "Information Systems": "Information Systems",
+            "info systems": "Information Systems",
+            "IS major": "Information Systems",
+            "machine learning minor": "Machine Learning",
+            "stats minor": "Statistics",
+            "psychology": "Psychology",
+            "mech e": "Mechanical Engineering",
+        }
+        for program, expected in cases.items():
             with self.subTest(program=program):
                 payload = run_tool(
                     "stellic_degree_audit", {"program": program}, session_id=SESSION
                 )
-                self.assertEqual(payload["results"][0]["program"], "Information Systems Major")
+                self.assertIn(expected, payload["results"][0]["program"])

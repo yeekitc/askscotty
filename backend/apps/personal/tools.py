@@ -820,22 +820,69 @@ def _ed_thread_citation(thread: dict) -> dict:
 # against. This is fixture data the same way apps/tools/maps.py's buildings are,
 # but still gated through the connections flow so the settings UI has a real
 # toggle rather than a special case. Every citation is is_mock via the registry.
+#
+# What makes this Stellic and not the course catalog: it is keyed to the
+# student's *progress* — completed vs required units and what is left — not to
+# what courses exist. The programs are CMU's most common majors and minors, with
+# real course numbers so the placeholder reads as a real audit; the numbers
+# themselves are invented, hence is_mock.
+#
+# Each entry carries `aliases` and `kind` used only for matching a free-text
+# program name; both are stripped before the audit is handed back, so the model
+# never sees them.
 
 _MOCK_AUDITS: dict[str, dict] = {
-    "cs minor": {
-        "program": "CS Minor",
-        "required": 60,
-        "completed": 45,
-        "remaining": ["15-210 Parallel & Sequential Data Structures", "one 300+ elective"],
+    "cs_major": {
+        "program": "Computer Science (SCS)",
+        "kind": "major",
+        "required": 360,
+        "completed": 315,
+        "remaining": ["15-451 Algorithm Design and Analysis", "one 300+ CS elective"],
+        "aliases": (" cs ", "computer science", "comp sci"),
     },
-    "ece major": {
-        "program": "ECE Major",
+    "ece_major": {
+        "program": "Electrical & Computer Engineering (CIT)",
+        "kind": "major",
+        "required": 380,
+        "completed": 300,
+        "remaining": ["18-290 Signals and Systems", "one capstone", "two technical electives"],
+        "aliases": ("ece", "electrical", "computer engineering"),
+    },
+    "business_major": {
+        "program": "Business Administration (Tepper)",
+        "kind": "major",
+        "required": 360,
+        "completed": 279,
+        "remaining": ["70-371 Operations Management", "70-391 Finance", "one 70-3xx elective"],
+        "aliases": ("business", "tepper"),
+    },
+    "meche_major": {
+        "program": "Mechanical Engineering (CIT)",
+        "kind": "major",
+        "required": 385,
+        "completed": 301,
+        "remaining": ["24-231 Fluid Mechanics", "24-351 Dynamics", "one ME elective"],
+        "aliases": ("mechanical", "mech e", "meche"),
+    },
+    "statistics_major": {
+        "program": "Statistics & Data Science (Dietrich)",
+        "kind": "major",
         "required": 360,
         "completed": 288,
-        "remaining": ["18-330 Security", "one capstone", "two technical electives"],
+        "remaining": ["36-401 Modern Regression", "36-402 Advanced Methods for Data Analysis"],
+        "aliases": ("statistics", "stats", "statistics and data science"),
     },
-    "information systems": {
-        "program": "Information Systems Major",
+    "ai_major": {
+        "program": "Artificial Intelligence (SCS)",
+        "kind": "major",
+        "required": 380,
+        "completed": 305,
+        "remaining": ["10-301 Introduction to Machine Learning", "15-281 AI: Representation & Problem Solving"],
+        "aliases": ("artificial intelligence", " ai ", "bsai"),
+    },
+    "infosys_major": {
+        "program": "Information Systems (Dietrich)",
+        "kind": "major",
         "required": 360,
         "completed": 327,
         "remaining": [
@@ -843,27 +890,116 @@ _MOCK_AUDITS: dict[str, dict] = {
             "67-373 Information Systems Practicum",
             "one Statistics elective (36-202)",
         ],
+        "aliases": ("information system", "info sys", "info systems", " is "),
+    },
+    "economics_major": {
+        "program": "Economics (Dietrich)",
+        "kind": "major",
+        "required": 360,
+        "completed": 270,
+        "remaining": ["73-240 Intermediate Macroeconomics", "73-274 Econometrics I", "one economics elective"],
+        "aliases": ("economics", "econ"),
+    },
+    "math_major": {
+        "program": "Mathematical Sciences (MCS)",
+        "kind": "major",
+        "required": 360,
+        "completed": 279,
+        "remaining": ["21-355 Principles of Real Analysis I", "21-373 Algebraic Structures", "one math elective"],
+        "aliases": ("mathematical sciences", "mathematics", "math"),
+    },
+    "psychology_major": {
+        "program": "Psychology (Dietrich)",
+        "kind": "major",
+        "required": 360,
+        "completed": 288,
+        "remaining": ["85-300 Introduction to Research Methods", "85-241 Social Psychology", "one psychology elective"],
+        "aliases": ("psychology", "psych"),
+    },
+    "cs_minor": {
+        "program": "CS Minor (SCS)",
+        "kind": "minor",
+        "required": 63,
+        "completed": 45,
+        "remaining": ["15-210 Parallel & Sequential Data Structures", "one 300+ CS elective"],
+        "aliases": (" cs ", "computer science", "comp sci"),
+    },
+    "business_minor": {
+        "program": "Business Administration Minor (Tepper)",
+        "kind": "minor",
+        "required": 54,
+        "completed": 36,
+        "remaining": ["70-122 Introduction to Accounting", "18 units of 70-3xx electives"],
+        "aliases": ("business", "tepper"),
+    },
+    "statistics_minor": {
+        "program": "Statistics Minor (Dietrich)",
+        "kind": "minor",
+        "required": 54,
+        "completed": 36,
+        "remaining": ["36-225 Introduction to Probability Theory", "two statistics electives"],
+        "aliases": ("statistics", "stats"),
+    },
+    "ml_minor": {
+        "program": "Machine Learning Minor (SCS)",
+        "kind": "minor",
+        "required": 63,
+        "completed": 42,
+        "remaining": ["one advanced ML course (10-417 / 10-418)", "two ML electives"],
+        "aliases": ("machine learning", " ml "),
+    },
+    "hci_minor": {
+        "program": "Human-Computer Interaction Minor (SCS)",
+        "kind": "minor",
+        "required": 54,
+        "completed": 36,
+        "remaining": ["05-410 User-Centered Research & Evaluation", "two HCI electives", "a project course"],
+        "aliases": ("human-computer interaction", "human computer interaction", "hci"),
+    },
+    "design_minor": {
+        "program": "Design Minor (CFA)",
+        "kind": "minor",
+        "required": 54,
+        "completed": 36,
+        "remaining": ["51-262 Communication & Digital Design Fundamentals", "three studio electives"],
+        "aliases": ("design",),
     },
 }
+
+_DEFAULT_AUDIT = "cs_major"
 
 
 def _resolve_audit(program: str) -> dict:
     """Match a free-text program name onto a mock audit, forgivingly.
 
     The model passes whatever the student typed ('information systems', 'IS
-    major', 'info sys'), so a plain exact-match would send most phrasings to the
-    CS fallback. The hints cover the abbreviations a substring match misses.
+    major', 'stats minor'), so matching is on each entry's aliases rather than an
+    exact key. When the text says "major" or "minor", that wins the tie between
+    two programs sharing a name (CS, Business, Statistics all exist as both);
+    otherwise majors are listed first, so a bare "CS" resolves to the major.
     """
     query = f" {program.strip().lower()} "
-    hints = {
-        "information systems": ("information system", "info sys", " is ", "is major", "is minor"),
-        "ece major": ("ece", "electrical", "computer engineering"),
-        "cs minor": ("cs ", "computer science", "comp sci"),
-    }
-    for key, needles in hints.items():
-        if key in query or any(needle in query for needle in needles):
-            return _MOCK_AUDITS[key]
-    return _MOCK_AUDITS["cs minor"]
+    wants_minor, wants_major = "minor" in query, "major" in query
+
+    def matches(audit: dict) -> bool:
+        return any(alias in query for alias in audit["aliases"])
+
+    for audit in _MOCK_AUDITS.values():
+        if not matches(audit):
+            continue
+        if wants_minor and audit["kind"] != "minor":
+            continue
+        if wants_major and audit["kind"] != "major":
+            continue
+        return audit
+
+    # A kind was named but nothing of that kind matched — fall back to the
+    # program regardless of kind before giving up entirely.
+    for audit in _MOCK_AUDITS.values():
+        if matches(audit):
+            return audit
+
+    return _MOCK_AUDITS[_DEFAULT_AUDIT]
 
 
 @register_tool(
@@ -896,8 +1032,11 @@ def stellic_degree_audit(*, session_id: str, program: str) -> dict:
     _connection(session_id, STELLIC)
 
     audit = _resolve_audit(program)
+    # `aliases` is only for matching; `kind` is folded into the program label
+    # already. Neither belongs in what the model reads back.
+    result = {key: value for key, value in audit.items() if key not in ("aliases", "kind")}
     return {
-        "results": [audit],
+        "results": [result],
         "citations": [
             {
                 "title": f"{audit['program']} — mock degree audit",
