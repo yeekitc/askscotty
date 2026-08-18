@@ -11,6 +11,7 @@ import {
   KeyboardAvoidingView,
   Platform,
   Pressable,
+  ScrollView,
   StyleSheet,
   Text,
   TextInput,
@@ -625,7 +626,7 @@ export default function AskScreen() {
       />
 
       <Text style={styles.recentHeading}>Recents</Text>
-      <View style={styles.recents}>
+      <ScrollView style={styles.recentsScroll} contentContainerStyle={styles.recents}>
         {visibleThreads.length ? (
           visibleThreads.map((t) => {
             const active = t.id === activeThreadId
@@ -730,10 +731,10 @@ export default function AskScreen() {
             {searchQuery ? 'No matching chats' : 'No recent searches'}
           </Text>
         )}
-      </View>
+      </ScrollView>
 
-      {/* Pinned to the bottom of the flex:1 sidebar via marginTop:auto. Opens
-          the personal-source connections modal (B5). */}
+      {/* A real footer below the flex:1 recents scroll area, so it stays visible
+          however long the chat list grows. Opens the connections modal (B5). */}
       <HoverPressable
         style={({ pressed, hovered }) => [
           styles.profileRow,
@@ -1066,9 +1067,12 @@ const styles = StyleSheet.create({
   recents: {
     gap: 2,
   },
+  recentsScroll: {
+    // Takes the free space between the search box and the profile footer, so a
+    // long chat list scrolls here instead of pushing the footer off-screen.
+    flex: 1,
+  },
   profileRow: {
-    // Pins to the bottom of the flex:1 sidebar, clear of the recents list.
-    marginTop: 'auto',
     flexDirection: 'row',
     alignItems: 'center',
     gap: spacing.sm,
