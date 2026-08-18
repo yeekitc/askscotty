@@ -834,7 +834,36 @@ _MOCK_AUDITS: dict[str, dict] = {
         "completed": 288,
         "remaining": ["18-330 Security", "one capstone", "two technical electives"],
     },
+    "information systems": {
+        "program": "Information Systems Major",
+        "required": 360,
+        "completed": 327,
+        "remaining": [
+            "67-272 Application Design & Development",
+            "67-373 Information Systems Practicum",
+            "one Statistics elective (36-202)",
+        ],
+    },
 }
+
+
+def _resolve_audit(program: str) -> dict:
+    """Match a free-text program name onto a mock audit, forgivingly.
+
+    The model passes whatever the student typed ('information systems', 'IS
+    major', 'info sys'), so a plain exact-match would send most phrasings to the
+    CS fallback. The hints cover the abbreviations a substring match misses.
+    """
+    query = f" {program.strip().lower()} "
+    hints = {
+        "information systems": ("information system", "info sys", " is ", "is major", "is minor"),
+        "ece major": ("ece", "electrical", "computer engineering"),
+        "cs minor": ("cs ", "computer science", "comp sci"),
+    }
+    for key, needles in hints.items():
+        if key in query or any(needle in query for needle in needles):
+            return _MOCK_AUDITS[key]
+    return _MOCK_AUDITS["cs minor"]
 
 
 @register_tool(
@@ -849,7 +878,10 @@ _MOCK_AUDITS: dict[str, dict] = {
     json_schema={
         "type": "object",
         "properties": {
-            "program": {"type": "string", "description": "e.g. 'CS minor', 'ECE major'."},
+            "program": {
+                "type": "string",
+                "description": "e.g. 'CS minor', 'ECE major', 'Information Systems'.",
+            },
         },
         "required": ["program"],
     },
@@ -863,7 +895,7 @@ def stellic_degree_audit(*, session_id: str, program: str) -> dict:
     # credential to read.
     _connection(session_id, STELLIC)
 
-    audit = _MOCK_AUDITS.get(program.strip().lower(), _MOCK_AUDITS["cs minor"])
+    audit = _resolve_audit(program)
     return {
         "results": [audit],
         "citations": [

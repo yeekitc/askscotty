@@ -929,3 +929,11 @@ class StellicTests(TestCase):
         )
 
         self.assertEqual(len(payload["results"]), 1)
+
+    def test_information_systems_resolves_across_phrasings(self):
+        for program in ["Information Systems", "info systems", "IS major", "am I on track for IS"]:
+            with self.subTest(program=program):
+                payload = run_tool(
+                    "stellic_degree_audit", {"program": program}, session_id=SESSION
+                )
+                self.assertEqual(payload["results"][0]["program"], "Information Systems Major")
