@@ -39,6 +39,7 @@ import logging
 from apps.tools.registry import ToolError, register_tool
 
 from .context import mark_synced, require_connection
+from .crypto import DecryptionError
 from .models import Provider, UserConnection
 
 logger = logging.getLogger(__name__)
@@ -73,6 +74,29 @@ def _connection(session_id: str, provider: str) -> UserConnection:
         raise ToolError(str(exc)) from exc
 
 
+def _credential(connection: UserConnection) -> dict:
+    """The decrypted credential, or a ToolError saying to reconnect.
+
+    A stored credential stops decrypting the moment CONNECTOR_ENCRYPTION_KEY
+    changes — and while none is set, crypto.py derives one from
+    DJANGO_SECRET_KEY, so rotating *that* has the same effect. `DecryptionError`
+    is not a ToolError, so without this the planner meets an exception it has no
+    degrade path for and the student gets a 500 rather than being told the one
+    thing that fixes it.
+
+    Chaining is kept here, unlike the login failures below: this exception is
+    ours, and its message is a fixed sentence with no credential in it.
+    """
+    try:
+        return connection.get_credential()
+    except (DecryptionError, ValueError, KeyError) as exc:
+        raise ToolError(
+            f"The stored {connection.provider} credential could not be read — it was "
+            f"probably encrypted with a different key. Disconnect and reconnect "
+            f"{connection.provider} in settings."
+        ) from exc
+
+
 def _iso(value) -> str | None:
     """A library's datetime as a string the tool result can carry."""
     return value.isoformat() if isinstance(value, datetime.datetime) else None
@@ -99,7 +123,7 @@ def _iso(value) -> str | None:
 )
 def canvas_list_courses(*, session_id: str) -> dict:
     connection = _connection(session_id, CANVAS)
-    _ = connection.get_token()  # proves the credential decrypts; B5 sends it to Canvas
+    _ = _credential(connection)["token"]  # proves it decrypts; B5 sends it to Canvas
     raise ToolError(_NOT_WIRED)
 
 
@@ -141,7 +165,7 @@ def canvas_get_assignments(
     course_id: str | None = None,
 ) -> dict:
     connection = _connection(session_id, CANVAS)
-    _ = connection.get_token()
+    _ = _credential(connection)["token"]
     raise ToolError(_NOT_WIRED)
 
 
@@ -225,7 +249,7 @@ def _gradescope_account(connection: UserConnection):
     """
     from gradescopeapi.classes.connection import GSConnection
 
-    credential = connection.get_credential()
+    credential = _credential(connection)
     gs = GSConnection()
     try:
         gs.login(credential["email"], credential["password"])
@@ -390,7 +414,7 @@ def _piazza_client(connection: UserConnection):
     """
     from piazza_api import Piazza
 
-    credential = connection.get_credential()
+    credential = _credential(connection)
     piazza = Piazza()
     try:
         piazza.user_login(email=credential["email"], password=credential["password"])

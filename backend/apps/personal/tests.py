@@ -498,6 +498,30 @@ class ConnectorGatingTests(TestCase):
         crypto._fernet.cache_clear()
         self.addCleanup(crypto._fernet.cache_clear)
 
+    def test_a_credential_encrypted_with_another_key_is_a_tool_error(self):
+        # The realistic version of this: CONNECTOR_ENCRYPTION_KEY is unset in
+        # this repo, so crypto.py derives one from DJANGO_SECRET_KEY — and
+        # rotating that leaves every stored credential unreadable.
+        # DecryptionError is not a ToolError, so unguarded it reaches the
+        # planner as a 500 instead of "reconnect this in settings".
+        for provider, name, arguments in [
+            ("piazza", "piazza_search", {"query": "midterm"}),
+            ("gradescope", "gradescope_get_assignments", {}),
+            ("canvas", "canvas_list_courses", {}),
+        ]:
+            with self.subTest(provider=provider):
+                UserConnection.objects.filter(session_id=SESSION).delete()
+                connection = UserConnection(session_id=SESSION, provider=provider)
+                connection.set_credential({"email": EMAIL, "password": PASSWORD, "token": "t"})
+                connection.save()
+
+                with override_settings(CONNECTOR_ENCRYPTION_KEY=Fernet.generate_key().decode()):
+                    crypto._fernet.cache_clear()
+                    with self.assertRaises(ToolError) as caught:
+                        run_tool(name, arguments, session_id=SESSION)
+
+                self.assertIn("reconnect", str(caught.exception).lower())
+
     def test_an_unconnected_session_cannot_run_them(self):
         for name, arguments in self.PERSONAL_TOOLS:
             with self.subTest(tool=name):
