@@ -300,7 +300,9 @@ _BUILDINGS: set[str] = {r["building"] for r in _ROOMS}
 
 def _is_free_now(room: dict, duration_minutes: int) -> bool:
     """True if a window of `duration_minutes` starting now has no overlap with any busy block."""
-    now = datetime.now()
+    from django.utils import timezone as dj_timezone
+
+    now = dj_timezone.localtime(dj_timezone.now())
     weekday = now.weekday()  # 0=Monday … 6=Sunday
     current = now.hour + now.minute / 60
     end = current + duration_minutes / 60
