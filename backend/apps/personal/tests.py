@@ -203,6 +203,22 @@ class GradescopeTests(ConnectorTestCase):
 
         self.assertEqual([result["name"] for result in results], ["Lab 2"])
 
+    def test_an_assignment_missing_a_field_costs_only_its_own_course(self):
+        # What a library upgrade that renames a dataclass field looks like from
+        # here. It must not leave the tool as an unhandled AttributeError —
+        # `_assignment` reads those fields directly, so the read has to sit
+        # inside the same try as the fetch.
+        courses = {"student": {"111": _course("14-513"), "222": _course("15-213")}}
+        renamed = mock.Mock(spec=[])  # no attributes at all
+
+        with self.gradescope(courses=courses) as connection:
+            connection.account.get_assignments.side_effect = lambda cid: (
+                [renamed] if cid == "111" else [_assignment("Lab 2")]
+            )
+            results = self.call()["results"]
+
+        self.assertEqual([result["name"] for result in results], ["Lab 2"])
+
     def test_a_login_failure_becomes_a_tool_error(self):
         # What the installed library actually raises on a bad credential.
         with self.gradescope(login_error=ValueError("Invalid credentials.")):
@@ -367,18 +383,22 @@ class PiazzaTests(ConnectorTestCase):
         # Phase 0 confirmed the call by reading the package, but the response
         # body needs a real class — so a shape we did not expect must degrade to
         # "no results", never raise.
-        for label, payload in [
-            ("bare list", [self.post(1, "Midterm")]),
-            ("wrapped in feed", {"feed": [self.post(1, "Midterm")]}),
-            ("empty", []),
-            ("null", None),
-            ("unexpected", "surprise"),
-            ("list of junk", ["not-a-post", 7]),
+        # Exact counts, not an upper bound: "at most one" would hold just as
+        # well if the tool returned nothing for every shape, including the two
+        # it is supposed to read.
+        for label, payload, expected in [
+            ("bare list", [self.post(1, "Midterm")], 1),
+            ("wrapped in feed", {"feed": [self.post(1, "Midterm")]}, 1),
+            ("empty", [], 0),
+            ("null", None, 0),
+            ("unexpected", "surprise", 0),
+            ("dict without feed", {"posts": [self.post(1, "Midterm")]}, 0),
+            ("list of junk", ["not-a-post", 7], 0),
         ]:
             with self.subTest(shape=label):
                 with self.piazza(feeds={"n1": payload, "n2": []}):
                     results = self.search(query="midterm", network_id="n1")["results"]
-                self.assertLessEqual(len(results), 1)
+                self.assertEqual(len(results), expected)
 
     def test_either_spelling_of_the_snippet_key_is_read(self):
         corrected = {**self.post(1, "Midterm")}

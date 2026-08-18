@@ -192,14 +192,21 @@ def gradescope_get_assignments(*, session_id: str, course_id: str | None = None)
     results = []
     for cid, course in courses.items():
         try:
-            assignments = account.get_assignments(cid)
+            # Reading the assignments is inside the try as well as fetching
+            # them: `_assignment` addresses dataclass fields directly, so a
+            # release that renames one raises here rather than at the call, and
+            # outside this block it would leave the tool by a route that is not
+            # a ToolError.
+            results.extend(
+                _assignment(assignment, cid, course)
+                for assignment in account.get_assignments(cid)
+            )
         except Exception as exc:
             # One unreadable course must not cost the student the other five.
             logger.warning(
                 "gradescope_course_unreadable course=%s error=%s", cid, type(exc).__name__
             )
             continue
-        results.extend(_assignment(assignment, cid, course) for assignment in assignments)
 
     mark_synced(connection)
     return {
@@ -355,6 +362,9 @@ def piazza_search(*, session_id: str, query: str, network_id: str | None = None)
     for klass in classes:
         try:
             payload = piazza.network(klass["network_id"]).search_feed(query)
+            results.extend(
+                _post(item, klass) for item in _feed_items(payload)[:_MAX_POSTS_PER_CLASS]
+            )
         except Exception as exc:
             # One class refusing a search must not lose the others.
             logger.warning(
@@ -363,9 +373,6 @@ def piazza_search(*, session_id: str, query: str, network_id: str | None = None)
                 type(exc).__name__,
             )
             continue
-        results.extend(
-            _post(item, klass) for item in _feed_items(payload)[:_MAX_POSTS_PER_CLASS]
-        )
 
     mark_synced(connection)
     return {

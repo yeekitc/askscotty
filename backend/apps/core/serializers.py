@@ -196,6 +196,10 @@ class ThreadListResponseSerializer(serializers.Serializer):
 
 # --- Personal connections -----------------------------------------------------
 
+#: Generous next to a Canvas PAT (~70 chars) or any password, and small enough
+#: that a credential cannot be used as storage.
+MAX_CREDENTIAL_LENGTH = 4096
+
 
 class ConnectionSerializer(serializers.Serializer):
     """POST /api/connections/ request, and — minus `credential` — the response."""
@@ -244,6 +248,15 @@ class ConnectionSerializer(serializers.Serializer):
             for key, value in credential.items()
             if key in expected and isinstance(value, str)
         }
+
+        # No real token or password is anywhere near this long. Without a bound,
+        # the only limit is DATA_UPLOAD_MAX_MEMORY_SIZE, and every oversized
+        # value would still be encrypted and stored.
+        too_long = [key for key, value in cleaned.items() if len(value) > MAX_CREDENTIAL_LENGTH]
+        if too_long:
+            raise serializers.ValidationError(
+                {"credential": f"Too long: {', '.join(sorted(too_long))}."}
+            )
 
         missing = [key for key in expected if not cleaned.get(key)]
         if missing:

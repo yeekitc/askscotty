@@ -345,6 +345,12 @@ class ConnectionEndpointTests(TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertFalse(UserConnection.objects.exists())
 
+    def test_an_absurdly_long_credential_is_rejected(self):
+        response = self.connect_canvas(token="x" * 5000)
+
+        self.assertEqual(response.status_code, 400)
+        self.assertFalse(UserConnection.objects.exists())
+
     def test_a_credential_that_is_not_an_object_is_a_400(self):
         # JSONField would accept any of these; the per-provider key check would
         # then raise AttributeError and turn a bad request into a 500.
