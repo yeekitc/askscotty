@@ -115,6 +115,29 @@ else
   dim "If the port is already in use, change BACKEND_PORT in .env and re-run."
 fi
 
+# The campus search index ships as a data dump so a fresh clone can answer
+# public questions without waiting on a live crawl. Loaded only when the index
+# is empty, so re-running setup never duplicates it or clobbers a real crawl.
+info "Campus search index"
+INDEX_DUMP="backend/fixtures/rag_index.sql.gz"
+DB_USER="${POSTGRES_USER:-askscotty}"
+DB_NAME="${POSTGRES_DB:-askscotty}"
+CHUNKS="$(docker compose exec -T db psql -U "$DB_USER" -d "$DB_NAME" -tAc 'SELECT count(*) FROM rag_chunk;' 2>/dev/null | tr -d '[:space:]')"
+if [[ "${CHUNKS:-0}" =~ ^[0-9]+$ ]] && (( CHUNKS > 0 )); then
+  ok "Index already populated (${CHUNKS} chunks) — leaving it alone"
+elif [[ -f "$INDEX_DUMP" ]]; then
+  dim "Restoring the prebuilt index (~1,400 chunks)…"
+  if gunzip -c "$INDEX_DUMP" | docker compose exec -T db psql -U "$DB_USER" -d "$DB_NAME" -q >/dev/null 2>&1; then
+    ok "Campus index loaded"
+  else
+    warn "Index restore failed — the app runs, but public search will be empty"
+    dim "Rebuild live:  docker compose exec backend python manage.py crawl && docker compose exec backend python manage.py reindex"
+  fi
+else
+  warn "No prebuilt index at $INDEX_DUMP — public search will be empty until a crawl"
+  dim "Build one:  docker compose exec backend python manage.py crawl && docker compose exec backend python manage.py reindex"
+fi
+
 # ---------------------------------------------------------------------------
 # 4. Planner agent
 # ---------------------------------------------------------------------------

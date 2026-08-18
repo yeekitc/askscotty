@@ -174,8 +174,8 @@ Django 5.1 + DRF + Postgres. Everything lives under `backend/`. Code is bind-mou
 - [ ] Hybrid retrieval: combine BM25 + vector scores, de-duplicate by document
 - [x] `campus_search(query, k, filters)` tool function — returns `{citations: [...]}`, not a bare list, or `CitationLedger` drops every hit
 - [x] Every result returns `url` + `indexed_at` (PRD §4) — and the whole chunk as `snippet`, which is the only grounding text the model gets to answer from
-- [ ] Management command `python manage.py reindex`
-- [ ] Ship a pre-built index (fixture or dump) so the demo doesn't depend on a live crawl
+- [x] Management command `python manage.py reindex` — `apps/rag/management/commands/reindex.py`
+- [x] Ship a pre-built index so the demo doesn't depend on a live crawl — `backend/fixtures/rag_index.sql.gz` (174 docs / 1,439 embedded chunks), restored by `setup.sh` only when the index is empty
 
 **HKN / LibGuides — P1**
 
@@ -340,9 +340,9 @@ need.
 
 ## B6. Ops & pitch material — P1
 
-- [ ] Re-index job runnable on demand (manual is fine — PRD §9 says even manual counts)
+- [x] Re-index job runnable on demand (manual is fine — PRD §9 says even manual counts) — `manage.py reindex`
 - [ ] Record `indexed_at` per source and expose it via `GET /api/sources/`
-- [ ] Seed script that populates a demo-ready database in one command
+- [x] Seed script that populates a demo-ready database in one command — `setup.sh` restores `backend/fixtures/rag_index.sql.gz` on first run, so a fresh clone can answer public questions without a live crawl
 - [ ] Basic tests: one per tool, one planner smoke test on the signature query
 - [ ] README section on how to run the crawl and re-index
 
