@@ -97,6 +97,17 @@ def _credential(connection: UserConnection) -> dict:
         ) from exc
 
 
+def _load_cookies(session, cookies: dict) -> None:
+    """Load a captured cookie jar into a library's requests session.
+
+    Demo-only (apps/personal/demo_only): the value comes from a browser
+    extension that reads an already-signed-in tab's cookies, so whatever names
+    that domain uses are set verbatim rather than guessed at here.
+    """
+    for name, value in cookies.items():
+        session.cookies.set(name, str(value))
+
+
 def _iso(value) -> str | None:
     """A library's datetime as a string the tool result can carry."""
     return value.isoformat() if isinstance(value, datetime.datetime) else None
@@ -251,6 +262,20 @@ def _gradescope_account(connection: UserConnection):
 
     credential = _credential(connection)
     gs = GSConnection()
+
+    cookies = credential.get("cookies")
+    if cookies:
+        # Demo-only path (docs/b5-piazza-gradescope.md, apps/personal/demo_only).
+        # A session cookie captured from an already-signed-in browser tab, which
+        # skips login() and so is the only path past Duo — an automated password
+        # login stops at 2FA. Never populated by the public connect endpoint.
+        from gradescopeapi.classes.account import Account
+
+        _load_cookies(gs.session, cookies)
+        gs.logged_in = True
+        gs.account = Account(gs.session, gs.gradescope_base_url)
+        return gs.account
+
     try:
         gs.login(credential["email"], credential["password"])
     except Exception as exc:
@@ -415,6 +440,18 @@ def _piazza_client(connection: UserConnection):
     from piazza_api import Piazza
 
     credential = _credential(connection)
+
+    cookies = credential.get("cookies")
+    if cookies:
+        # Demo-only path — see _gradescope_account. PiazzaRPC._check_authenticated
+        # only asserts the cookie jar is non-empty, so a captured session cookie
+        # stands in for user_login() and never reaches Duo.
+        from piazza_api.rpc import PiazzaRPC
+
+        rpc = PiazzaRPC()
+        _load_cookies(rpc.session, cookies)
+        return Piazza(piazza_rpc=rpc)
+
     piazza = Piazza()
     try:
         piazza.user_login(email=credential["email"], password=credential["password"])

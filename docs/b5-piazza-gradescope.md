@@ -96,6 +96,16 @@ succeed. Confirm this works end-to-end with a real account in Phase 0, before
 writing the tool functions — if it doesn't, the whole approach needs
 rethinking, not a retry loop.
 
+**Demo fallback for exactly that failure: `apps/personal/demo_only`.** A
+captured session cookie has already cleared Duo, so injecting one skips
+`login()` entirely — `_gradescope_account` / `_piazza_client` take a
+`{"cookies": {...}}` credential and load it into the library's session instead
+of authenticating. It is walled off (DEBUG-only route, its own folder, nothing
+depends on it) because scraping a logged-in tab's cookies through a browser
+extension is a demo convenience for reaching *our own* accounts, not something
+we ship. Read that folder's README before touching it. The email/password path
+above stays the real one.
+
 ---
 
 ## Design

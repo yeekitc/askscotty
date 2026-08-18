@@ -557,3 +557,142 @@ class ConnectorGatingTests(TestCase):
         self.assertIn("piazza_search", offered)
         # Connecting one source does not offer another's tools.
         self.assertNotIn("gradescope_get_assignments", offered)
+
+
+# --- Demo-only cookie path ----------------------------------------------------
+#
+# The extension-captured-cookie path (apps/personal/demo_only). These assert the
+# two things that matter: a cookie credential skips the library login (the whole
+# point — it is what clears Duo), and the demo route does not exist in a build
+# with DEBUG off.
+
+
+@override_settings(CONNECTOR_ENCRYPTION_KEY=_TEST_KEY)
+class GradescopeCookieTests(ConnectorTestCase):
+    provider = "gradescope"
+
+    def setUp(self):
+        super().setUp()
+        self.connection.set_credential({"cookies": {"_gradescope_session": "sess-abc"}})
+        self.connection.save()
+
+    def test_a_cookie_credential_injects_the_cookie_and_never_calls_login(self):
+        gs = mock.Mock()
+        account = mock.Mock()
+        account.get_courses.return_value = {"student": {"111": _course("14-513")}}
+        account.get_assignments.side_effect = lambda cid: [_assignment("Lab 1")]
+
+        with mock.patch(
+            "gradescopeapi.classes.connection.GSConnection", return_value=gs
+        ), mock.patch(
+            "gradescopeapi.classes.account.Account", return_value=account
+        ) as account_cls:
+            results = run_tool("gradescope_get_assignments", {}, session_id=SESSION)["results"]
+
+        gs.login.assert_not_called()
+        gs.session.cookies.set.assert_any_call("_gradescope_session", "sess-abc")
+        # The account is built from the cookie-bearing session, not a fresh login.
+        account_cls.assert_called_once_with(gs.session, gs.gradescope_base_url)
+        self.assertEqual([result["name"] for result in results], ["Lab 1"])
+
+
+@override_settings(CONNECTOR_ENCRYPTION_KEY=_TEST_KEY)
+class PiazzaCookieTests(ConnectorTestCase):
+    provider = "piazza"
+
+    def setUp(self):
+        super().setUp()
+        self.connection.set_credential({"cookies": {"session_id": "sess-xyz"}})
+        self.connection.save()
+
+    def test_a_cookie_credential_injects_the_cookie_and_never_calls_user_login(self):
+        rpc = mock.Mock()
+        client = mock.Mock()
+        client.get_user_classes.return_value = PiazzaTests.CLASSES
+
+        def network(network_id):
+            handle = mock.Mock()
+            handle.search_feed.side_effect = lambda query: []
+            return handle
+
+        client.network.side_effect = network
+
+        with mock.patch(
+            "piazza_api.rpc.PiazzaRPC", return_value=rpc
+        ), mock.patch("piazza_api.Piazza", return_value=client) as piazza_cls:
+            run_tool("piazza_search", {"query": "midterm"}, session_id=SESSION)
+
+        client.user_login.assert_not_called()
+        rpc.session.cookies.set.assert_any_call("session_id", "sess-xyz")
+        piazza_cls.assert_called_once_with(piazza_rpc=rpc)
+
+
+@override_settings(CONNECTOR_ENCRYPTION_KEY=_TEST_KEY)
+class DemoCookieEndpointTests(TestCase):
+    """The ingestion view, exercised directly.
+
+    Directly rather than through a URL because the test runner forces
+    DEBUG=False and the route only mounts under DEBUG — which is itself the
+    property `test_the_route_is_absent_without_debug` pins down.
+    """
+
+    def setUp(self):
+        crypto._fernet.cache_clear()
+        self.addCleanup(crypto._fernet.cache_clear)
+
+    def call(self, body: dict, session_id: str | None = SESSION):
+        from rest_framework.test import APIRequestFactory
+
+        from .demo_only.views import DemoCookieConnectView
+
+        extra = {} if session_id is None else {"HTTP_X_SESSION_ID": session_id}
+        request = APIRequestFactory().post(
+            "/api/personal/demo/cookies/", body, format="json", **extra
+        )
+        return DemoCookieConnectView.as_view()(request)
+
+    def test_a_captured_cookie_becomes_a_stored_credential(self):
+        response = self.call({"provider": "piazza", "cookies": {"session_id": "sess-xyz"}})
+
+        self.assertEqual(response.status_code, 200)
+        connection = UserConnection.objects.get(session_id=SESSION, provider="piazza")
+        self.assertEqual(connection.get_credential(), {"cookies": {"session_id": "sess-xyz"}})
+
+    def test_the_response_carries_no_cookie(self):
+        response = self.call({"provider": "piazza", "cookies": {"session_id": "sess-xyz"}})
+        response.render()
+
+        self.assertNotIn(b"sess-xyz", response.content)
+        self.assertNotIn(b"cookie", response.content)
+
+    def test_a_token_provider_is_rejected(self):
+        # Canvas/Ed use a revocable token; the cookie path has no business there.
+        response = self.call({"provider": "canvas", "cookies": {"x": "y"}})
+
+        self.assertEqual(response.status_code, 400)
+        self.assertFalse(UserConnection.objects.exists())
+
+    def test_an_empty_cookie_jar_is_rejected(self):
+        response = self.call({"provider": "gradescope", "cookies": {}})
+
+        self.assertEqual(response.status_code, 400)
+
+    def test_a_blank_cookie_value_is_rejected(self):
+        response = self.call({"provider": "gradescope", "cookies": {"_gradescope_session": "  "}})
+
+        self.assertEqual(response.status_code, 400)
+
+    def test_it_needs_a_session_header(self):
+        response = self.call(
+            {"provider": "piazza", "cookies": {"session_id": "x"}}, session_id=None
+        )
+
+        self.assertEqual(response.status_code, 400)
+
+    def test_the_route_is_absent_without_debug(self):
+        # The security-relevant direction: a production build (DEBUG=False, which
+        # is the test default) must not expose this route at all.
+        from django.urls import NoReverseMatch, reverse
+
+        with self.assertRaises(NoReverseMatch):
+            reverse("demo-cookies")
