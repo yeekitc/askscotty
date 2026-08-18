@@ -27,6 +27,9 @@ MODES: tuple[str, ...] = (
     "dining",
     "events",
     "maps",
+    "rooms",
+    "handshake",
+    "fce",
     "web_verify",
     "personal",
 )

@@ -75,6 +75,9 @@ export const MODE_LABELS: Record<Mode, string> = {
   dining: 'Dining',
   events: 'Events',
   maps: 'Maps',
+  rooms: 'Rooms',
+  handshake: 'Handshake',
+  fce: 'FCE',
   web_verify: 'Web verify',
   personal: 'Your accounts',
 }
