@@ -31,11 +31,13 @@ from __future__ import annotations
 
 import datetime
 import logging
+import re
 
 import httpx  # for httpx.HTTPError only
 
 from apps.core.http import get_json
 from apps.tools.registry import ToolError, register_tool
+from django.utils import timezone
 
 from .context import mark_synced, require_connection
 from .crypto import DecryptionError
@@ -292,6 +294,111 @@ def _planner_citation(item: dict) -> dict:
         "title": item["title"],
         "url": item["html_url"],
         "snippet": " · ".join(bit for bit in bits if bit),
+        "indexed_at": None,
+    }
+
+
+#: How far back canvas_get_announcements looks by default. Canvas's own default
+#: is 14 days, which routinely comes back empty; a term-length window keeps the
+#: whole semester's announcements in reach, and each result carries `posted_at`
+#: so the model can still say what is genuinely recent.
+_ANNOUNCEMENT_DAYS = 180
+
+
+@register_tool(
+    name="canvas_get_announcements",
+    description=(
+        "Get recent Canvas announcements — instructor posts about exams, schedule "
+        "changes, policy and logistics — from the student's own courses. Use this for "
+        "'did my professor announce anything', 'any updates in <class>', or exam "
+        "logistics. Only available when the student has connected Canvas."
+    ),
+    json_schema={
+        "type": "object",
+        "properties": {
+            "course_id": {
+                "type": "string",
+                "description": (
+                    "Restrict to one course, using an id from canvas_list_courses. "
+                    "Omit for announcements across every enrolled course."
+                ),
+            },
+        },
+        "required": [],
+    },
+    mode="personal",
+    requires_connector=CANVAS,
+)
+def canvas_get_announcements(*, session_id: str, course_id: str | None = None) -> dict:
+    connection = _connection(session_id, CANVAS)
+    headers = _bearer(connection)
+
+    # The announcements endpoint requires context_codes, and the id it stamps on
+    # each result is not the course name — so the enrolled list is fetched either
+    # way, to build both the contexts and a name map.
+    courses = _get_json(
+        f"{_CANVAS_BASE}/courses",
+        params={"enrollment_state": "active", "per_page": _PAGE},
+        headers=headers,
+        service="Canvas",
+    )
+    names = {
+        f"course_{course['id']}": course.get("name", "")
+        for course in courses
+        if isinstance(course, dict) and course.get("id")
+    }
+    contexts = [f"course_{course_id}"] if course_id else list(names)
+    if not contexts:
+        mark_synced(connection)
+        return {"results": [], "citations": []}
+
+    # Both bounds: with only start_date, Canvas narrows the window and returns
+    # nothing (confirmed live). end_date is tomorrow so today is included.
+    now = timezone.now()
+    since = (now - datetime.timedelta(days=_ANNOUNCEMENT_DAYS)).date().isoformat()
+    until = (now + datetime.timedelta(days=1)).date().isoformat()
+    items = _get_json(
+        f"{_CANVAS_BASE}/announcements",
+        params={
+            "context_codes[]": contexts,
+            "start_date": since,
+            "end_date": until,
+            "per_page": _PAGE,
+        },
+        headers=headers,
+        service="Canvas",
+    )
+
+    mark_synced(connection)
+    results = [_announcement(item, names) for item in items if isinstance(item, dict)]
+    return {"results": results, "citations": [_announcement_citation(a) for a in results]}
+
+
+def _strip_html(html: str) -> str:
+    """A Canvas announcement body is HTML; a citation snippet wants plain text."""
+    return re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", html or "")).strip()
+
+
+def _announcement(item: dict, names: dict) -> dict:
+    context = item.get("context_code", "")
+    return {
+        "title": item.get("title", ""),
+        "course": names.get(context, context.replace("course_", "")),
+        "posted_at": item.get("posted_at") or item.get("created_at"),
+        "author": (item.get("author") or {}).get("display_name", ""),
+        "html_url": item.get("html_url", ""),
+        "snippet": _strip_html(item.get("message", ""))[:280],
+    }
+
+
+def _announcement_citation(item: dict) -> dict:
+    bits = [item["course"]]
+    if item["posted_at"]:
+        bits.append(f"posted {item['posted_at']}")
+    return {
+        "title": item["title"] or "Canvas announcement",
+        "url": item["html_url"],
+        "snippet": " · ".join(bit for bit in (*bits, item["snippet"]) if bit),
         "indexed_at": None,
     }
 
@@ -811,6 +918,49 @@ def _ed_thread_citation(thread: dict) -> dict:
         "snippet": " · ".join(bit for bit in (thread["category"], answered, thread["snippet"]) if bit),
         "indexed_at": None,
     }
+
+
+@register_tool(
+    name="ed_get_announcements",
+    description=(
+        "Get instructor announcements from one of the student's Ed Discussion courses "
+        "— exam logistics, schedule changes, policy notices. Needs a course_id from "
+        "ed_list_courses. Only available when the student has connected Ed."
+    ),
+    json_schema={
+        "type": "object",
+        "properties": {
+            "course_id": {
+                "type": "string",
+                "description": "The Ed course, from ed_list_courses.",
+            },
+        },
+        "required": ["course_id"],
+    },
+    mode="personal",
+    requires_connector=ED,
+)
+def ed_get_announcements(*, session_id: str, course_id: str) -> dict:
+    connection = _connection(session_id, ED)
+    headers = _bearer(connection)
+
+    payload = _get_json(
+        f"{_ED_BASE}courses/{course_id}/threads",
+        params={"limit": _PAGE, "offset": 0, "sort": "new"},
+        headers=headers,
+        service="Ed Discussion",
+    )
+
+    mark_synced(connection)
+    threads = payload.get("threads", []) if isinstance(payload, dict) else []
+    # Ed marks an announcement with type == "announcement" (confirmed live); it is
+    # a field on the same thread shape, so no separate endpoint is needed.
+    results = [
+        _ed_thread(thread)
+        for thread in threads
+        if isinstance(thread, dict) and thread.get("type") == "announcement"
+    ]
+    return {"results": results, "citations": [_ed_thread_citation(t) for t in results]}
 
 
 # --- Stellic (mock only) ------------------------------------------------------

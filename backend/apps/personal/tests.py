@@ -496,8 +496,10 @@ class ConnectorGatingTests(TestCase):
         ("gradescope_get_assignments", {}),
         ("canvas_list_courses", {}),
         ("canvas_get_assignments", {}),
+        ("canvas_get_announcements", {}),
         ("ed_list_courses", {}),
         ("ed_search_threads", {"course_id": "10"}),
+        ("ed_get_announcements", {"course_id": "10"}),
         ("stellic_degree_audit", {"program": "CS minor"}),
     )
 
@@ -811,6 +813,47 @@ class CanvasTests(TestCase):
         self.connection.refresh_from_db()
         self.assertIsNotNone(self.connection.last_sync_at)
 
+    def patched_seq(self, values):
+        # The announcements tool calls get_json twice: courses (for context codes
+        # and names), then the announcements themselves.
+        return mock.patch("apps.personal.tools.get_json", side_effect=list(values))
+
+    def test_get_announcements_queries_the_endpoint_with_both_date_bounds(self):
+        announcements = [
+            {
+                "title": "Midterm moved",
+                "message": "<p>The <b>midterm</b> is now Friday</p>",
+                "posted_at": "2026-08-10T12:00:00Z",
+                "context_code": "course_1",
+                "author": {"display_name": "Prof X"},
+                "html_url": "/courses/1/discussion_topics/9",
+            }
+        ]
+        with self.patched_seq([CANVAS_COURSES, announcements]) as get_json:
+            payload = run_tool("canvas_get_announcements", {}, session_id=SESSION)
+
+        ann_call = get_json.call_args_list[1]
+        params = ann_call.kwargs["params"]
+        self.assertTrue(ann_call.args[0].endswith("/announcements"))
+        # Both bounds are required — with only start_date Canvas returns nothing.
+        self.assertIn("start_date", params)
+        self.assertIn("end_date", params)
+        self.assertIn("course_1", params["context_codes[]"])
+
+        result = payload["results"][0]
+        self.assertEqual(result["title"], "Midterm moved")
+        # context_code course_1 is mapped to the course name, not left as an id.
+        self.assertEqual(result["course"], "Intro to Systems")
+        # The HTML body becomes a plain-text snippet.
+        self.assertNotIn("<", result["snippet"])
+        self.assertIn("midterm", result["snippet"])
+
+    def test_an_announcements_http_error_becomes_a_tool_error(self):
+        with self.patched(raises=httpx.HTTPError("401")):
+            with self.assertRaises(ToolError) as caught:
+                run_tool("canvas_get_announcements", {}, session_id=SESSION)
+        self.assertIsNone(caught.exception.__cause__)
+
 
 # --- Ed Discussion ------------------------------------------------------------
 
@@ -892,6 +935,23 @@ class EdTests(TestCase):
                 run_tool("ed_list_courses", {}, session_id=SESSION)
 
         self.assertIsNone(caught.exception.__cause__)
+
+    def test_get_announcements_keeps_only_announcement_type_threads(self):
+        threads = {
+            "threads": [
+                {"course_id": 10, "number": 1, "title": "Exam logistics", "type": "announcement",
+                 "category": "Logistics", "is_answered": False, "document": "in Wean",
+                 "created_at": "2026-08-01T00:00:00Z"},
+                {"course_id": 10, "number": 2, "title": "HW help", "type": "question",
+                 "category": "Assignments", "is_answered": False, "document": "part 2",
+                 "created_at": "2026-08-02T00:00:00Z"},
+            ]
+        }
+        with self.patched(returns=threads):
+            results = run_tool("ed_get_announcements", {"course_id": "10"}, session_id=SESSION)["results"]
+
+        # Ed marks announcements with type == "announcement"; questions are dropped.
+        self.assertEqual([thread["title"] for thread in results], ["Exam logistics"])
 
 
 # --- Stellic (mock) -----------------------------------------------------------

@@ -330,7 +330,7 @@ need.
 - [x] Confirm a real CMU Piazza/Gradescope login is not interrupted by Duo — **verified live 2026-08-18**: both log in with email/password, no 2FA step; Piazza search returns a bare list, snippet key is `content_snipet`, class URL confirmed (`scripts/check_connector_login.py`)
 - [x] `get_json` accepts an `Authorization` header, and a header structurally disables caching (Part 0 of the doc — the identity-in-cache-key trap made unreachable, not just documented)
 - [x] Canvas client against `canvas.cmu.edu/api/v1` using a student PAT — **P0** — verified live 2026-08-18 (9 courses, correct Bearer auth + citation URLs)
-- [x] Canvas: courses, assignments + due dates (via `/planner/items`) — announcements not built (the doc scoped Canvas to these two tools) — verified live: 100 planner items all with due dates, `course_id` filter works
+- [x] Canvas: courses, assignments + due dates (via `/planner/items`), **and announcements** (`/announcements`, both date bounds) — all verified live. Ed also has `ed_get_announcements` (threads where `type == "announcement"`, confirmed live)
 - [ ] `personal_search(query)` tool, scoped to the current user only — not built (no doc covers it yet)
 - [x] "What's due this week?" — `canvas_get_assignments` verified live against a real PAT (100 planner items, all with due dates)
 - [x] Ed Discussion via settings API token — `ed_list_courses` + `ed_search_threads` — **P1** — verified live 2026-08-18 against a real token (courses resolve, threads return, no invented URL); token path works, no cookies needed
