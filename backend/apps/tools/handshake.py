@@ -1,8 +1,8 @@
-"""Handshake events tool — mock fixture with deep-link citations.
+"""Handshake events tool — mock fixture with Handshake citations.
 
 The real Handshake feed requires SSO; we do not scrape it (PRD §10). This module
-supplies ~15 hardcoded career events. Citations include the real Handshake deep-link
-so users can tap through to see live details and RSVP.
+supplies ~15 hardcoded career events. Citations link to Handshake landing pages
+so users can open the real site for details and RSVP.
 
 Every result carries is_mock=True (PRD §9).
 """
