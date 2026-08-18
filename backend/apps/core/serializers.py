@@ -234,8 +234,10 @@ class ConnectionSerializer(serializers.Serializer):
 
         expected = CREDENTIAL_FIELDS.get(provider)
         if expected is None:
-            # A provider with no credential shape — Stellic, whose "connection"
-            # is an uploaded degree audit rather than a login.
+            # A Provider in the choices but absent from CREDENTIAL_FIELDS — a new
+            # source added without declaring its credential shape. `()` means
+            # "connects with no fields" (Stellic) and is not this; None means
+            # "cannot be connected here at all".
             raise serializers.ValidationError(
                 {"provider": f"{provider} is not connected with a login credential."}
             )
