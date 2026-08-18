@@ -26,7 +26,12 @@ import {
   useWindowDimensions,
   View,
 } from 'react-native'
-import Animated, { useAnimatedStyle, useSharedValue, withTiming } from 'react-native-reanimated'
+import Animated, {
+  runOnJS,
+  useAnimatedStyle,
+  useSharedValue,
+  withTiming,
+} from 'react-native-reanimated'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 
 import { ApiError, connect, disconnect, fetchConnections } from '../lib/api'
@@ -156,14 +161,25 @@ export function ConnectionsModal({ visible, onClose, onCountChange }: Props) {
   const isWide = width >= WIDE_BREAKPOINT
   const reduceMotion = useReducedMotion()
 
-  // The card pulls up and the backdrop fades in on open. Re-armed to 0 each time
-  // `visible` flips true so a reopen animates rather than appearing instantly.
+  // The card pulls up and the backdrop fades in on open, and reverses on close.
+  // `mounted` keeps the Modal in the tree through the exit so it can animate out
+  // before unmounting — Modal drops its children instantly otherwise.
   const enter = useSharedValue(0)
+  const [mounted, setMounted] = useState(visible)
   useEffect(() => {
-    if (!visible) return
-    enter.value = 0
-    enter.value = reduceMotion ? 1 : withTiming(1, { duration: durations.entrance, easing })
-  }, [visible, reduceMotion, enter])
+    if (visible) {
+      setMounted(true)
+      enter.value = reduceMotion ? 1 : withTiming(1, { duration: durations.entrance, easing })
+    } else if (mounted) {
+      if (reduceMotion) {
+        setMounted(false)
+        return
+      }
+      enter.value = withTiming(0, { duration: durations.base, easing }, (finished) => {
+        if (finished) runOnJS(setMounted)(false)
+      })
+    }
+  }, [visible, mounted, reduceMotion, enter])
 
   const rise = isWide ? offsets.view : 40
   const backdropStyle = useAnimatedStyle(() => ({ opacity: enter.value }))
@@ -289,7 +305,7 @@ export function ConnectionsModal({ visible, onClose, onCountChange }: Props) {
   }
 
   return (
-    <Modal visible={visible} transparent animationType="none" onRequestClose={close}>
+    <Modal visible={mounted} transparent animationType="none" onRequestClose={close}>
       <View style={styles.root}>
         {/* Reanimated drives the entrance rather than Modal's animationType, so
             the backdrop fade and the card rise share the app's motion tokens. */}
