@@ -13,7 +13,7 @@
  * and freshness only.
  */
 
-import { useEffect, useMemo, useState } from 'react'
+import { type ReactNode, useEffect, useMemo, useState } from 'react'
 import {
   ActivityIndicator,
   Linking,
@@ -26,12 +26,53 @@ import {
   useWindowDimensions,
   View,
 } from 'react-native'
+import Animated, { useAnimatedStyle, useSharedValue, withTiming } from 'react-native-reanimated'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 
 import { ApiError, connect, disconnect, fetchConnections } from '../lib/api'
+import { durations, easing, offsets, useReducedMotion } from '../lib/motion'
 import { colors, radius, shadows, spacing, WIDE_BREAKPOINT } from '../lib/theme'
 import type { Connection, Provider } from '../lib/types'
 import { HoverPressable } from './HoverPressable'
+
+const AnimatedPressable = Animated.createAnimatedComponent(Pressable)
+
+/**
+ * Height-and-fade reveal for a connect form — the "dropdown opening" motion.
+ * Measures its content once, invisibly and out of flow, then animates a clipped
+ * wrapper from zero to that height so the row grows into the form rather than
+ * snapping open. Same reanimated primitives the rest of the app uses (lib/motion).
+ */
+function Collapsible({ children }: { children: ReactNode }) {
+  const reduceMotion = useReducedMotion()
+  const [measured, setMeasured] = useState<number | null>(null)
+  const progress = useSharedValue(0)
+
+  useEffect(() => {
+    if (measured == null) return
+    progress.value = reduceMotion ? 1 : withTiming(1, { duration: durations.base, easing })
+  }, [measured, reduceMotion, progress])
+
+  const style = useAnimatedStyle(() => ({
+    opacity: progress.value,
+    height: measured == null ? 0 : progress.value * measured,
+  }))
+
+  return (
+    <Animated.View style={[styles.collapsible, style]}>
+      <View
+        // Measured absolutely and invisibly first, so the wrapper starts at 0
+        // instead of flashing full height before it collapses.
+        style={measured == null ? styles.measure : undefined}
+        onLayout={(event) => {
+          if (measured == null) setMeasured(event.nativeEvent.layout.height)
+        }}
+      >
+        {children}
+      </View>
+    </Animated.View>
+  )
+}
 
 type AuthKind = 'token' | 'password' | 'none'
 
@@ -113,6 +154,23 @@ export function ConnectionsModal({ visible, onClose, onCountChange }: Props) {
   const { width } = useWindowDimensions()
   const insets = useSafeAreaInsets()
   const isWide = width >= WIDE_BREAKPOINT
+  const reduceMotion = useReducedMotion()
+
+  // The card pulls up and the backdrop fades in on open. Re-armed to 0 each time
+  // `visible` flips true so a reopen animates rather than appearing instantly.
+  const enter = useSharedValue(0)
+  useEffect(() => {
+    if (!visible) return
+    enter.value = 0
+    enter.value = reduceMotion ? 1 : withTiming(1, { duration: durations.entrance, easing })
+  }, [visible, reduceMotion, enter])
+
+  const rise = isWide ? offsets.view : 40
+  const backdropStyle = useAnimatedStyle(() => ({ opacity: enter.value }))
+  const cardStyle = useAnimatedStyle(() => ({
+    opacity: enter.value,
+    transform: [{ translateY: (1 - enter.value) * rise }],
+  }))
 
   // null while the first load is in flight; [] is a real "nothing connected".
   const [connections, setConnections] = useState<Connection[] | null>(null)
@@ -231,15 +289,22 @@ export function ConnectionsModal({ visible, onClose, onCountChange }: Props) {
   }
 
   return (
-    <Modal visible={visible} transparent animationType={isWide ? 'fade' : 'slide'} onRequestClose={close}>
+    <Modal visible={visible} transparent animationType="none" onRequestClose={close}>
       <View style={styles.root}>
-        <Pressable style={StyleSheet.absoluteFill} onPress={close} accessibilityLabel="Close connections" />
+        {/* Reanimated drives the entrance rather than Modal's animationType, so
+            the backdrop fade and the card rise share the app's motion tokens. */}
+        <AnimatedPressable
+          style={[StyleSheet.absoluteFill, styles.backdrop, backdropStyle]}
+          onPress={close}
+          accessibilityLabel="Close connections"
+        />
 
-        <View
+        <Animated.View
           style={[
             styles.card,
             isWide ? styles.cardWide : styles.cardSheet,
             !isWide && { paddingBottom: insets.bottom + spacing.lg },
+            cardStyle,
           ]}
         >
           <View style={styles.header}>
@@ -341,7 +406,8 @@ export function ConnectionsModal({ visible, onClose, onCountChange }: Props) {
                     ) : null}
 
                     {isOpen && !connection ? (
-                      <View style={styles.form}>
+                      <Collapsible>
+                       <View style={styles.form}>
                         {meta.kind === 'password' ? (
                           <Text style={styles.warn}>
                             ⚠ This signs in with your real CMU email and password and stores them
@@ -430,7 +496,8 @@ export function ConnectionsModal({ visible, onClose, onCountChange }: Props) {
                             <Text style={styles.submitText}>{isBusy ? 'Connecting…' : 'Connect'}</Text>
                           </HoverPressable>
                         </View>
-                      </View>
+                       </View>
+                      </Collapsible>
                     ) : null}
 
                     {error ? <Text style={styles.rowError}>{error}</Text> : null}
@@ -439,7 +506,7 @@ export function ConnectionsModal({ visible, onClose, onCountChange }: Props) {
               })}
             </ScrollView>
           )}
-        </View>
+        </Animated.View>
       </View>
     </Modal>
   )
@@ -448,9 +515,20 @@ export function ConnectionsModal({ visible, onClose, onCountChange }: Props) {
 const styles = StyleSheet.create({
   root: {
     flex: 1,
-    backgroundColor: colors.overlay,
     justifyContent: 'center',
     alignItems: 'center',
+  },
+  // The overlay tint lives here, not on root, so its opacity can animate in.
+  backdrop: {
+    backgroundColor: colors.overlay,
+  },
+  collapsible: {
+    overflow: 'hidden',
+  },
+  measure: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
   },
   card: {
     backgroundColor: colors.background,
