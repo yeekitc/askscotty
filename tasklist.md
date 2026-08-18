@@ -329,10 +329,10 @@ need.
 - [x] Piazza (`piazza_list_classes`, `piazza_search`) and Gradescope (`gradescope_get_assignments`) — **P1**
 - [x] Confirm a real CMU Piazza/Gradescope login is not interrupted by Duo — **verified live 2026-08-18**: both log in with email/password, no 2FA step; Piazza search returns a bare list, snippet key is `content_snipet`, class URL confirmed (`scripts/check_connector_login.py`)
 - [x] `get_json` accepts an `Authorization` header, and a header structurally disables caching (Part 0 of the doc — the identity-in-cache-key trap made unreachable, not just documented)
-- [x] Canvas client against `canvas.cmu.edu/api/v1` using a student PAT — **P0**
-- [x] Canvas: courses, assignments + due dates (via `/planner/items`) — announcements not built (the doc scoped Canvas to these two tools)
+- [x] Canvas client against `canvas.cmu.edu/api/v1` using a student PAT — **P0** — verified live 2026-08-18 (9 courses, correct Bearer auth + citation URLs)
+- [x] Canvas: courses, assignments + due dates (via `/planner/items`) — announcements not built (the doc scoped Canvas to these two tools) — verified live: 100 planner items all with due dates, `course_id` filter works
 - [ ] `personal_search(query)` tool, scoped to the current user only — not built (no doc covers it yet)
-- [~] "What's due this week?" wired via `canvas_get_assignments`; end-to-end needs a real PAT (mocked in tests, live check pending)
+- [x] "What's due this week?" — `canvas_get_assignments` verified live against a real PAT (100 planner items, all with due dates)
 - [x] Ed Discussion via settings API token — `ed_list_courses` + `ed_search_threads` — **P1** — verified live 2026-08-18 against a real token (courses resolve, threads return, no invented URL); token path works, no cookies needed
 - [x] Stellic: mock degree audit — **P1** — mock only, no upload parser (by explicit direction; see doc)
 - [~] "On track for CS minor?" — the pieces exist (`stellic_degree_audit` mock + live `search_courses`); not verified end to end
