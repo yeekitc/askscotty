@@ -40,6 +40,9 @@ export type Mode =
   | 'dining'
   | 'events'
   | 'maps'
+  | 'rooms'
+  | 'handshake'
+  | 'fce'
   | 'web_verify'
   | 'personal'
 
@@ -55,6 +58,9 @@ export const LANES: { mode: Mode; label: string; mock?: boolean }[] = [
   { mode: 'dining', label: 'Dining' },
   { mode: 'events', label: 'Events' },
   { mode: 'maps', label: 'Maps', mock: true },
+  { mode: 'rooms', label: 'Rooms', mock: true },
+  { mode: 'handshake', label: 'Handshake', mock: true },
+  { mode: 'fce', label: 'FCE', mock: true },
   { mode: 'web_verify', label: 'Web verification' },
 ]
 
