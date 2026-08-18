@@ -61,6 +61,7 @@ def get_json(
     params: dict[str, Any] | None = None,
     timeout: float = DEFAULT_TIMEOUT,
     ttl: float = 0.0,
+    headers: dict[str, str] | None = None,
 ) -> Any:
     """GET `url` and decode the JSON body.
 
@@ -69,11 +70,14 @@ def get_json(
     than one global constant because the honest answer differs per source: a
     course catalog barely moves during a demo, dining hours do.
 
-    Never pass `ttl > 0` for a request carrying someone's identity. The cache is
-    process-wide and keyed only on url and params, so two students hitting the
-    same authenticated endpoint with different tokens would collide and one
-    could be served the other's data. A personal connector (PRD §9) that wants
-    caching has to fold the user into the key, which this helper does not do.
+    `headers` are merged over the User-Agent for this one request — how a
+    personal connector sends `Authorization: Bearer <token>`. **A request with
+    headers is never cached, whatever `ttl` says.** The cache is process-wide and
+    keyed only on url and params, so caching an authenticated response would let
+    two students hitting the same endpoint with different tokens collide and be
+    served each other's data (PRD §9). Rather than leave that as a rule a caller
+    has to remember, a header makes the cache key `None` outright — the trap is
+    unreachable, not merely documented.
 
     Every failure surfaces as an `httpx.HTTPError` once the retries are spent —
     an unreachable host, a timeout, a non-2xx status, or a body that is not JSON.
@@ -81,7 +85,7 @@ def get_json(
     ToolError (apps/tools/registry.py), and a dead upstream degrades the answer
     instead of failing the request.
     """
-    key = _cache_key(url, params) if ttl > 0 else None
+    key = _cache_key(url, params) if (ttl > 0 and not headers) else None
 
     if key is not None:
         cached = cache.get(key, _MISS)
@@ -92,22 +96,33 @@ def get_json(
         if cached is not _MISS:
             return cached
 
-    data = _fetch(url, params=params, timeout=timeout)
+    data = _fetch(url, params=params, timeout=timeout, headers=headers)
 
     if key is not None:
         cache.set(key, data, timeout=ttl)
     return data
 
 
-def _fetch(url: str, *, params: dict[str, Any] | None, timeout: float) -> Any:
+def _fetch(
+    url: str,
+    *,
+    params: dict[str, Any] | None,
+    timeout: float,
+    headers: dict[str, str] | None = None,
+) -> Any:
     host = httpx.URL(url).host
-    headers = {"User-Agent": settings.CRAWLER_USER_AGENT}
+    request_headers = {"User-Agent": settings.CRAWLER_USER_AGENT}
+    if headers:
+        # Caller's headers win, so Authorization is never shadowed by a default.
+        request_headers.update(headers)
     deadline = time.monotonic() + _RETRY_BUDGET
 
     for attempt in range(_MAX_ATTEMPTS):
         _throttle(host)
         try:
-            response = _client().get(url, params=params, timeout=timeout, headers=headers)
+            response = _client().get(
+                url, params=params, timeout=timeout, headers=request_headers
+            )
         except httpx.RequestError:
             if _out_of_retries(attempt, deadline):
                 raise

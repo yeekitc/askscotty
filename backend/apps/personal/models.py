@@ -37,18 +37,22 @@ class Provider(models.TextChoices):
 
 # What a credential must contain, per provider. One place knows the shape, so
 # the connections endpoint and the tools that spend the credential cannot
-# disagree about it.
+# disagree about it. A provider absent from this map cannot be connected at all.
 #
-# STELLIC is absent on purpose: its "credential" is an uploaded degree-audit
-# JSON file, not a login, so it does not go through the connect endpoint.
 # Piazza and Gradescope want an email and password rather than a scoped token
 # because their unofficial libraries offer nothing else — see
 # docs/b5-piazza-gradescope.md for that decision and the risk accepted with it.
+#
+# STELLIC maps to no required keys: it is a mock (docs/b5-canvas-ed-stellic.md
+# Part C) with nothing to authenticate, but it still connects — with an empty
+# credential — so the settings UI can toggle it like any other source rather
+# than special-casing it.
 CREDENTIAL_FIELDS: dict[str, tuple[str, ...]] = {
     Provider.CANVAS: ("token",),
     Provider.ED: ("token",),
     Provider.PIAZZA: ("email", "password"),
     Provider.GRADESCOPE: ("email", "password"),
+    Provider.STELLIC: (),
 }
 
 

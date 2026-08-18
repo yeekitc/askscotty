@@ -27,7 +27,8 @@ import secrets
 from contextlib import contextmanager
 from unittest import mock
 
-from apps.tools.registry import ToolError, run_tool
+import httpx
+from apps.tools.registry import ToolError, get_tool, run_tool
 from cryptography.fernet import Fernet
 from django.test import TestCase, override_settings
 from gradescopeapi.classes.assignments import Assignment
@@ -42,6 +43,7 @@ EMAIL = "student@andrew.cmu.edu"
 
 # Generated rather than written down, and never compared against a literal.
 PASSWORD = secrets.token_urlsafe(24)
+TOKEN = secrets.token_urlsafe(20)
 
 _TEST_KEY = Fernet.generate_key().decode()
 
@@ -492,6 +494,11 @@ class ConnectorGatingTests(TestCase):
         ("piazza_search", {"query": "midterm"}),
         ("piazza_list_classes", {}),
         ("gradescope_get_assignments", {}),
+        ("canvas_list_courses", {}),
+        ("canvas_get_assignments", {}),
+        ("ed_list_courses", {}),
+        ("ed_search_threads", {"course_id": "10"}),
+        ("stellic_degree_audit", {"program": "CS minor"}),
     )
 
     def setUp(self):
@@ -696,3 +703,229 @@ class DemoCookieEndpointTests(TestCase):
 
         with self.assertRaises(NoReverseMatch):
             reverse("demo-cookies")
+
+
+# --- Canvas -------------------------------------------------------------------
+#
+# get_json is mocked whole: the point is the request the tool builds (URL, auth
+# header, no ttl) and how it shapes the response, not httpx, which apps.core owns
+# and tests separately.
+
+CANVAS_COURSES = [
+    {"id": 1, "name": "Intro to Systems", "course_code": "15-213"},
+    {"id": 2, "name": "Algorithms", "course_code": "15-451"},
+]
+
+PLANNER_ITEM = {
+    "plannable_type": "assignment",
+    "plannable_date": "2026-08-25T04:00:00Z",
+    "context_name": "15-213",
+    "html_url": "/courses/1/assignments/2",
+    "plannable": {"title": "Lab 1", "due_at": "2026-08-25T04:00:00Z", "points_possible": 100},
+}
+
+
+@override_settings(CONNECTOR_ENCRYPTION_KEY=_TEST_KEY)
+class CanvasTests(TestCase):
+    def setUp(self):
+        crypto._fernet.cache_clear()
+        self.addCleanup(crypto._fernet.cache_clear)
+        self.connection = UserConnection(session_id=SESSION, provider="canvas")
+        self.connection.set_credential({"token": TOKEN})
+        self.connection.save()
+
+    def patched(self, *, returns=None, raises=None):
+        return mock.patch(
+            "apps.personal.tools.get_json", return_value=returns, side_effect=raises
+        )
+
+    def test_list_courses_sends_a_bearer_token_and_hits_the_courses_endpoint(self):
+        with self.patched(returns=CANVAS_COURSES) as get_json:
+            results = run_tool("canvas_list_courses", {}, session_id=SESSION)["results"]
+
+        url = get_json.call_args.args[0]
+        kwargs = get_json.call_args.kwargs
+        self.assertTrue(url.endswith("/courses"))
+        self.assertEqual(kwargs["headers"]["Authorization"], f"Bearer {TOKEN}")
+        # PRD §9: an authenticated call must never be cached.
+        self.assertNotIn("ttl", kwargs)
+        self.assertEqual([course["course_code"] for course in results], ["15-213", "15-451"])
+
+    def test_a_course_with_no_name_is_dropped(self):
+        courses = [*CANVAS_COURSES, {"id": 3, "course_code": "99-999"}]
+
+        with self.patched(returns=courses):
+            results = run_tool("canvas_list_courses", {}, session_id=SESSION)["results"]
+
+        self.assertEqual({course["id"] for course in results}, {1, 2})
+
+    def test_get_assignments_uses_planner_items_and_passes_the_filters(self):
+        with self.patched(returns=[PLANNER_ITEM]) as get_json:
+            results = run_tool(
+                "canvas_get_assignments",
+                {"due_before": "2026-08-30T00:00:00Z", "course_id": "1"},
+                session_id=SESSION,
+            )["results"]
+
+        url = get_json.call_args.args[0]
+        params = get_json.call_args.kwargs["params"]
+        self.assertTrue(url.endswith("/planner/items"))
+        self.assertEqual(params["end_date"], "2026-08-30T00:00:00Z")
+        self.assertEqual(params["context_codes[]"], "course_1")
+        self.assertEqual(results[0]["title"], "Lab 1")
+        self.assertEqual(results[0]["course"], "15-213")
+
+    def test_a_planner_item_missing_a_due_date_stays_none(self):
+        bare = {"plannable_type": "quiz", "context_name": "15-213", "plannable": {}}
+
+        with self.patched(returns=[bare]):
+            results = run_tool("canvas_get_assignments", {}, session_id=SESSION)["results"]
+
+        # A type without a due_at does not crash and does not invent one.
+        self.assertIsNone(results[0]["due_at"])
+        self.assertEqual(results[0]["title"], "quiz")
+
+    def test_citations_use_canvas_own_html_url_and_course_path(self):
+        with self.patched(returns=CANVAS_COURSES):
+            course_cite = run_tool("canvas_list_courses", {}, session_id=SESSION)["citations"][0]
+        with self.patched(returns=[PLANNER_ITEM]):
+            item_cite = run_tool("canvas_get_assignments", {}, session_id=SESSION)["citations"][0]
+
+        self.assertEqual(course_cite["url"], "https://canvas.cmu.edu/courses/1")
+        # The API's own link, not a hand-built assignment path.
+        self.assertEqual(item_cite["url"], "/courses/1/assignments/2")
+
+    def test_an_http_error_becomes_a_tool_error_without_leaking(self):
+        with self.patched(raises=httpx.HTTPError("boom at https://canvas.cmu.edu/...?token=x")):
+            with self.assertRaises(ToolError) as caught:
+                run_tool("canvas_list_courses", {}, session_id=SESSION)
+
+        # httpx errors can carry the URL and its query string; the message must not.
+        self.assertNotIn("token=x", str(caught.exception))
+        self.assertIsNone(caught.exception.__cause__)
+
+    def test_a_successful_call_stamps_the_sync_time(self):
+        with self.patched(returns=CANVAS_COURSES):
+            run_tool("canvas_list_courses", {}, session_id=SESSION)
+
+        self.connection.refresh_from_db()
+        self.assertIsNotNone(self.connection.last_sync_at)
+
+
+# --- Ed Discussion ------------------------------------------------------------
+
+ED_USER = {
+    "courses": [
+        {"course": {"id": 10, "code": "15-213", "name": "Systems", "year": "2026", "status": "active"}},
+        {"course": {"id": 11, "code": "15-150", "name": "Functional", "year": "2025", "status": "archived"}},
+    ]
+}
+
+ED_THREADS = {
+    "threads": [
+        {"course_id": 10, "number": 3, "title": "Midterm logistics", "type": "post",
+         "category": "Logistics", "is_answered": True, "document": "exam is in Wean",
+         "created_at": "2026-08-01T00:00:00Z"},
+        {"course_id": 10, "number": 4, "title": "Cache lab", "type": "question",
+         "category": "Assignments", "is_answered": False, "document": "part 2 help",
+         "created_at": "2026-08-02T00:00:00Z"},
+    ]
+}
+
+
+@override_settings(CONNECTOR_ENCRYPTION_KEY=_TEST_KEY)
+class EdTests(TestCase):
+    def setUp(self):
+        crypto._fernet.cache_clear()
+        self.addCleanup(crypto._fernet.cache_clear)
+        self.connection = UserConnection(session_id=SESSION, provider="ed")
+        self.connection.set_credential({"token": TOKEN})
+        self.connection.save()
+
+    def patched(self, *, returns=None, raises=None):
+        return mock.patch(
+            "apps.personal.tools.get_json", return_value=returns, side_effect=raises
+        )
+
+    def test_list_courses_reads_enrolments_from_get_user(self):
+        with self.patched(returns=ED_USER) as get_json:
+            results = run_tool("ed_list_courses", {}, session_id=SESSION)["results"]
+
+        url = get_json.call_args.args[0]
+        self.assertTrue(url.endswith("/user"))
+        self.assertEqual(get_json.call_args.kwargs["headers"]["Authorization"], f"Bearer {TOKEN}")
+        # The archived course is dropped; the active one is renamed onto our keys.
+        self.assertEqual([course["course_id"] for course in results], ["10"])
+        self.assertEqual(results[0]["code"], "15-213")
+
+    def test_search_filters_recent_threads_by_keyword(self):
+        with self.patched(returns=ED_THREADS) as get_json:
+            results = run_tool(
+                "ed_search_threads",
+                {"course_id": "10", "keywords": "midterm"},
+                session_id=SESSION,
+            )["results"]
+
+        url = get_json.call_args.args[0]
+        self.assertTrue(url.endswith("/courses/10/threads"))
+        self.assertEqual([thread["title"] for thread in results], ["Midterm logistics"])
+
+    def test_search_without_keywords_returns_the_recent_page(self):
+        with self.patched(returns=ED_THREADS):
+            results = run_tool("ed_search_threads", {"course_id": "10"}, session_id=SESSION)
+
+        self.assertEqual(len(results["results"]), 2)
+
+    def test_a_thread_citation_never_invents_a_url(self):
+        with self.patched(returns=ED_THREADS):
+            citations = run_tool(
+                "ed_search_threads", {"course_id": "10"}, session_id=SESSION
+            )["citations"]
+
+        # API_Thread carries no link, and the discussion/{number} pattern is a guess.
+        for citation in citations:
+            self.assertEqual(citation["url"], "")
+
+    def test_an_http_error_becomes_a_tool_error(self):
+        with self.patched(raises=httpx.HTTPError("Ed said 401")):
+            with self.assertRaises(ToolError) as caught:
+                run_tool("ed_list_courses", {}, session_id=SESSION)
+
+        self.assertIsNone(caught.exception.__cause__)
+
+
+# --- Stellic (mock) -----------------------------------------------------------
+
+
+@override_settings(CONNECTOR_ENCRYPTION_KEY=_TEST_KEY)
+class StellicTests(TestCase):
+    def setUp(self):
+        crypto._fernet.cache_clear()
+        self.addCleanup(crypto._fernet.cache_clear)
+        connection = UserConnection(session_id=SESSION, provider="stellic")
+        connection.set_credential({})  # nothing to authenticate
+        connection.save()
+
+    def test_the_tool_is_registered_as_a_mock(self):
+        # is_mock rides on the tool, and the registry stamps every citation from
+        # it — which is what the PRD §9 badge keys off, so the flag is the thing
+        # to assert, not a field the tool sets by hand.
+        self.assertTrue(get_tool("stellic_degree_audit").is_mock)
+
+    def test_it_returns_mock_data_and_never_touches_the_network(self):
+        with mock.patch(
+            "apps.personal.tools.get_json", side_effect=AssertionError("no network for a mock")
+        ):
+            payload = run_tool(
+                "stellic_degree_audit", {"program": "CS minor"}, session_id=SESSION
+            )
+
+        self.assertEqual(payload["results"][0]["program"], "CS Minor")
+        self.assertIn("mock", payload["citations"][0]["snippet"])
+
+    def test_an_unknown_program_falls_back_rather_than_erroring(self):
+        payload = run_tool(
+            "stellic_degree_audit", {"program": "underwater basket weaving"}, session_id=SESSION
+        )
+
+        self.assertEqual(len(payload["results"]), 1)

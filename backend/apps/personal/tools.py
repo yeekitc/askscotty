@@ -19,16 +19,12 @@ exception text into a message. Those messages are built from a login response we
 do not control, and everything a tool raises travels onward into the planner's
 context and can reach an answer.
 
-The Canvas HTTP client is not wired yet (tasklist B5); its definitions are here
-because the plumbing — registry, per-session gating, credential handoff — is what
-§1 is about. Until then each Canvas function raises `ToolError`, the same path a
-real Canvas outage takes, so degrade-don't-crash gets exercised either way.
-
-When it is wired, `apps.core.http.get_json` is the client to use — but never copy
-the `ttl=` from a public B2 call into it. That cache is keyed on url and params
-only, so two students hitting the same Canvas endpoint with different tokens
-would collide and one could be served the other's data (PRD §9). Caching a
-personal response needs a key that includes the user.
+Canvas and Ed go through `apps.core.http.get_json` with an `Authorization`
+header. That call is never cached — get_json makes caching structurally
+impossible once a header is present — because the cache is keyed on url and
+params only, so caching an authenticated response would let two students on the
+same endpoint be served each other's data (PRD §9). Stellic is a mock and makes
+no request at all.
 """
 
 from __future__ import annotations
@@ -36,6 +32,9 @@ from __future__ import annotations
 import datetime
 import logging
 
+import httpx  # for httpx.HTTPError only
+
+from apps.core.http import get_json
 from apps.tools.registry import ToolError, register_tool
 
 from .context import mark_synced, require_connection
@@ -47,13 +46,19 @@ logger = logging.getLogger(__name__)
 # Passed as `requires_connector` below, which is what hides a tool from sessions
 # that have not connected that provider.
 CANVAS = Provider.CANVAS.value
+ED = Provider.ED.value
 PIAZZA = Provider.PIAZZA.value
 GRADESCOPE = Provider.GRADESCOPE.value
+STELLIC = Provider.STELLIC.value
 
-_NOT_WIRED = (
-    "The Canvas client is not implemented yet (tasklist B5). The connection is "
-    "recognised and the token decrypts, but no request is made to Canvas."
-)
+_CANVAS_BASE = "https://canvas.cmu.edu/api/v1"
+_ED_BASE = "https://us.edstem.org/api/"
+
+# Canvas and Ed list endpoints paginate with a Link header get_json never sees
+# (docs/b5-canvas-ed-stellic.md Part 0). 100 is the max page and covers a normal
+# student's course and thread load; a heavier account is truncated at one page,
+# which the tool descriptions say rather than hide.
+_PAGE = 100
 
 #: Posts returned per Piazza class. A feed search can match a whole semester of
 #: discussion, and the planner pays for every row in context.
@@ -134,8 +139,28 @@ def _iso(value) -> str | None:
 )
 def canvas_list_courses(*, session_id: str) -> dict:
     connection = _connection(session_id, CANVAS)
-    _ = _credential(connection)["token"]  # proves it decrypts; B5 sends it to Canvas
-    raise ToolError(_NOT_WIRED)
+    headers = _bearer(connection)
+
+    courses = _get_json(
+        f"{_CANVAS_BASE}/courses",
+        params={"enrollment_state": "active", "per_page": _PAGE},
+        headers=headers,
+        service="Canvas",
+    )
+
+    mark_synced(connection)
+    results = [
+        {
+            "id": course.get("id"),
+            "name": course.get("name", ""),
+            "course_code": course.get("course_code", ""),
+        }
+        for course in courses
+        # A concluded or restricted enrolment comes back without a name; it is
+        # not a course the student can act on.
+        if isinstance(course, dict) and course.get("name")
+    ]
+    return {"results": results, "citations": [_course_citation(c) for c in results]}
 
 
 @register_tool(
@@ -176,8 +201,99 @@ def canvas_get_assignments(
     course_id: str | None = None,
 ) -> dict:
     connection = _connection(session_id, CANVAS)
-    _ = _credential(connection)["token"]
-    raise ToolError(_NOT_WIRED)
+    headers = _bearer(connection)
+
+    # /planner/items aggregates every enrolled course in one call, already
+    # ordered by date — which is the "what's due this week" question. Looping
+    # /courses/{id}/assignments would be one request per class for the same
+    # answer.
+    params: dict = {"per_page": _PAGE}
+    if due_before:
+        params["end_date"] = due_before
+    if course_id:
+        params["context_codes[]"] = f"course_{course_id}"
+
+    items = _get_json(
+        f"{_CANVAS_BASE}/planner/items", params=params, headers=headers, service="Canvas"
+    )
+
+    mark_synced(connection)
+    results = [
+        _planner_item(item) for item in items if isinstance(item, dict)
+    ]
+    return {"results": results, "citations": [_planner_citation(item) for item in results]}
+
+
+def _bearer(connection: UserConnection) -> dict:
+    """The Authorization header for a token connector (Canvas, Ed).
+
+    Built through _credential so a token that no longer decrypts becomes the
+    reconnect ToolError rather than a KeyError, and returned as a fresh dict so
+    it never outlives the call.
+    """
+    return {"Authorization": f"Bearer {_credential(connection).get('token', '')}"}
+
+
+def _get_json(url: str, *, params: dict, headers: dict, service: str):
+    """get_json with the two things every connector call needs: no cache on an
+    authenticated request (get_json enforces that structurally once headers are
+    present), and every httpx failure translated to a ToolError.
+
+    `service` names the source in the message; the exception text is dropped
+    because an httpx error can carry the request URL with its query string, and
+    a personal call's params can identify the student.
+    """
+    try:
+        return get_json(url, params=params, headers=headers)
+    except httpx.HTTPError as exc:
+        logger.warning("%s_request_failed error=%s", service.lower(), type(exc).__name__)
+        raise ToolError(
+            f"{service} could not be reached, or rejected the stored credential. "
+            f"If this keeps happening, reconnect {service} in settings."
+        ) from None
+
+
+def _planner_item(item: dict) -> dict:
+    """One Canvas planner item, flattened.
+
+    Reads through `.get()` because the `plannable` sub-object's fields vary by
+    `plannable_type` (assignment, quiz, discussion_topic, …) and the docs give
+    no guarantee every type carries `due_at`; a missing one stays None rather
+    than raising. `plannable_date` is the item's own date and backs a due_at the
+    sub-object omitted.
+    """
+    plannable = item.get("plannable") or {}
+    return {
+        "type": item.get("plannable_type", ""),
+        "title": plannable.get("title") or item.get("plannable_type", ""),
+        "due_at": plannable.get("due_at") or item.get("plannable_date"),
+        "course": item.get("context_name", ""),
+        "points_possible": plannable.get("points_possible"),
+        # Canvas's own student-facing link, not one hand-built here.
+        "html_url": item.get("html_url", ""),
+    }
+
+
+def _course_citation(course: dict) -> dict:
+    number = course["course_code"]
+    return {
+        "title": " — ".join(bit for bit in (number, course["name"]) if bit),
+        "url": f"https://canvas.cmu.edu/courses/{course['id']}" if course.get("id") else "",
+        "snippet": number,
+        "indexed_at": None,
+    }
+
+
+def _planner_citation(item: dict) -> dict:
+    bits = [item["course"]]
+    if item["due_at"]:
+        bits.append(f"due {item['due_at']}")
+    return {
+        "title": item["title"],
+        "url": item["html_url"],
+        "snippet": " · ".join(bit for bit in bits if bit),
+        "indexed_at": None,
+    }
 
 
 # --- Gradescope ---------------------------------------------------------------
@@ -541,6 +657,224 @@ def _post_citation(post: dict) -> dict:
 
 def _class_url(network_id: str) -> str:
     return f"https://piazza.com/class/{network_id}" if network_id else ""
+
+
+# --- Ed Discussion ------------------------------------------------------------
+#
+# Confirmed by reading edapi's source, not a README (docs/b5-canvas-ed-stellic.md):
+# the same official Bearer token as Canvas, GET /api/user carries the student's
+# course enrolments, and there is no server-side thread search — list_threads
+# takes only limit/offset/sort. So course resolution mirrors Canvas, and the
+# search is an honest client-side filter over one page of recent threads.
+
+
+@register_tool(
+    name="ed_list_courses",
+    description=(
+        "List the Ed Discussion courses the student is enrolled in, each with the "
+        "course_id that ed_search_threads takes. Call this first to turn a course name "
+        "or number into a course_id. Only available when the student has connected Ed."
+    ),
+    json_schema={
+        "type": "object",
+        "properties": {},
+        "required": [],
+    },
+    mode="personal",
+    requires_connector=ED,
+)
+def ed_list_courses(*, session_id: str) -> dict:
+    connection = _connection(session_id, ED)
+    headers = _bearer(connection)
+
+    payload = _get_json(f"{_ED_BASE}user", params={}, headers=headers, service="Ed Discussion")
+
+    mark_synced(connection)
+    courses = _ed_courses(payload)
+    return {"results": courses, "citations": [_ed_course_citation(c) for c in courses]}
+
+
+@register_tool(
+    name="ed_search_threads",
+    description=(
+        "Search recent threads in one of the student's Ed Discussion courses — "
+        "announcements, exam logistics, homework clarifications, staff answers. "
+        "Needs a course_id from ed_list_courses.\n\n"
+        "This filters the most recent threads by keyword; it does NOT search the "
+        "whole course history, so treat a miss as 'not in the recent threads', not "
+        "'never discussed'. The threads are a shared class space written by "
+        "classmates and staff — summarise what was established, do not repeat other "
+        "students' posts verbatim or name them.\n\n"
+        "Only available when the student has connected Ed."
+    ),
+    json_schema={
+        "type": "object",
+        "properties": {
+            "course_id": {
+                "type": "string",
+                "description": "The Ed course to search, from ed_list_courses.",
+            },
+            "keywords": {
+                "type": "string",
+                "description": "Words to match in a thread's title or body. Omit for the most recent.",
+            },
+        },
+        "required": ["course_id"],
+    },
+    mode="personal",
+    requires_connector=ED,
+)
+def ed_search_threads(
+    *, session_id: str, course_id: str, keywords: str | None = None
+) -> dict:
+    connection = _connection(session_id, ED)
+    headers = _bearer(connection)
+
+    payload = _get_json(
+        f"{_ED_BASE}courses/{course_id}/threads",
+        params={"limit": _PAGE, "offset": 0, "sort": "new"},
+        headers=headers,
+        service="Ed Discussion",
+    )
+
+    mark_synced(connection)
+    threads = payload.get("threads", []) if isinstance(payload, dict) else []
+    if keywords:
+        needle = keywords.lower()
+        threads = [
+            thread
+            for thread in threads
+            if isinstance(thread, dict)
+            and needle in f"{thread.get('title', '')} {thread.get('document', '')}".lower()
+        ]
+
+    results = [_ed_thread(thread) for thread in threads if isinstance(thread, dict)]
+    return {"results": results, "citations": [_ed_thread_citation(t) for t in results]}
+
+
+def _ed_courses(payload: dict) -> list[dict]:
+    """The student's courses out of GET /api/user's `courses` list.
+
+    Each entry is `{"course": {...}, "role": {...}}`; the model wants the course,
+    renamed onto course_id/code/name. An archived course is dropped — a stale
+    class the student cannot act on is noise in a "which class?" lookup.
+    """
+    if not isinstance(payload, dict):
+        return []
+
+    courses = []
+    for entry in payload.get("courses", []):
+        course = entry.get("course", {}) if isinstance(entry, dict) else {}
+        if not course.get("id") or course.get("status") == "archived":
+            continue
+        courses.append(
+            {
+                "course_id": str(course["id"]),
+                "code": course.get("code", ""),
+                "name": course.get("name", ""),
+                "year": course.get("year", ""),
+            }
+        )
+    return courses
+
+
+def _ed_thread(thread: dict) -> dict:
+    return {
+        "course_id": str(thread.get("course_id", "")),
+        "number": thread.get("number", ""),
+        "title": thread.get("title", ""),
+        "type": thread.get("type", ""),
+        "category": thread.get("category", ""),
+        "is_answered": thread.get("is_answered", False),
+        "snippet": (thread.get("document") or "")[:280],
+        "created_at": thread.get("created_at", ""),
+    }
+
+
+def _ed_course_citation(course: dict) -> dict:
+    return {
+        "title": " — ".join(bit for bit in (course["code"], course["name"]) if bit),
+        # No confirmed public per-course Ed URL in the response — don't invent one.
+        "url": "",
+        "snippet": course["year"],
+        "indexed_at": None,
+    }
+
+
+def _ed_thread_citation(thread: dict) -> dict:
+    """No url: API_Thread carries no link field, and the `discussion/{number}`
+    pattern is a guess this project's rules forbid (docs/b5-canvas-ed-stellic.md)."""
+    answered = "answered" if thread["is_answered"] else "open"
+    return {
+        "title": thread["title"] or "Ed thread",
+        "url": "",
+        "snippet": " · ".join(bit for bit in (thread["category"], answered, thread["snippet"]) if bit),
+        "indexed_at": None,
+    }
+
+
+# --- Stellic (mock only) ------------------------------------------------------
+#
+# No real integration, by explicit direction (docs/b5-canvas-ed-stellic.md Part
+# C): Stellic offers institutional PAT only, no student credential to build
+# against. This is fixture data the same way apps/tools/maps.py's buildings are,
+# but still gated through the connections flow so the settings UI has a real
+# toggle rather than a special case. Every citation is is_mock via the registry.
+
+_MOCK_AUDITS: dict[str, dict] = {
+    "cs minor": {
+        "program": "CS Minor",
+        "required": 60,
+        "completed": 45,
+        "remaining": ["15-210 Parallel & Sequential Data Structures", "one 300+ elective"],
+    },
+    "ece major": {
+        "program": "ECE Major",
+        "required": 360,
+        "completed": 288,
+        "remaining": ["18-330 Security", "one capstone", "two technical electives"],
+    },
+}
+
+
+@register_tool(
+    name="stellic_degree_audit",
+    description=(
+        "Check progress toward a degree or minor requirement, using a MOCK degree "
+        "audit. This is placeholder data, not the student's real Stellic record — say "
+        "so in the answer. Combine with search_courses/get_course for live course "
+        "data; this tool only covers what's 'required', not what's offered. Only "
+        "available when the student has connected Stellic."
+    ),
+    json_schema={
+        "type": "object",
+        "properties": {
+            "program": {"type": "string", "description": "e.g. 'CS minor', 'ECE major'."},
+        },
+        "required": ["program"],
+    },
+    mode="personal",
+    requires_connector=STELLIC,
+    is_mock=True,
+)
+def stellic_degree_audit(*, session_id: str, program: str) -> dict:
+    # Confirms the connector is connected (and translates a mid-request
+    # disconnect to a ToolError); nothing is read from it — there is no
+    # credential to read.
+    _connection(session_id, STELLIC)
+
+    audit = _MOCK_AUDITS.get(program.strip().lower(), _MOCK_AUDITS["cs minor"])
+    return {
+        "results": [audit],
+        "citations": [
+            {
+                "title": f"{audit['program']} — mock degree audit",
+                "url": "",
+                "snippet": f"{audit['completed']}/{audit['required']} units completed (mock data)",
+                "indexed_at": None,
+            }
+        ],
+    }
 
 
 # --- Failure messages ---------------------------------------------------------

@@ -105,6 +105,18 @@ filtering is built in; a second execution environment confuses the model), and
 handle `pause_turn` — a long search turn ends the loop early and looks like a
 finished answer.
 
+### Evaluated and declined: `edapi` — the Ed token path is a direct call
+
+Ed Discussion was going to lean on `edapi`, once believed to authenticate by
+scraping a logged-in browser cookie. Reading its source (`edapi/edapi.py`) settled
+both halves: it uses the same official Bearer token as Canvas
+(`edstem.org/us/settings/api-tokens`), and `apps/personal/tools.py` calls
+`https://us.edstem.org/api/` directly through `apps.core.http.get_json` rather than
+add the dependency — there is no cookie scraping and nothing `edapi` does that the
+two endpoints we need (`GET user`, `GET courses/{id}/threads`) don't do in one line
+each. It was installed once, only to read, and uninstalled. Don't add it back
+without a reason those two calls can't cover.
+
 ---
 
 ## Frontend — npm

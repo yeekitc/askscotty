@@ -210,6 +210,26 @@ class GetJsonTests(SimpleTestCase):
         # other three each wait their turn.
         self.assertGreaterEqual(elapsed, 0.3)
 
+    def test_headers_are_merged_over_the_user_agent(self):
+        seen = self.stub((200, {"ok": True}))
+
+        http.get_json(URL, headers={"Authorization": "Bearer secret-token"})
+
+        self.assertEqual(seen[0].headers["authorization"], "Bearer secret-token")
+        # The identifying User-Agent is not dropped when a caller adds a header.
+        self.assertIn("user-agent", seen[0].headers)
+
+    def test_a_request_with_headers_is_never_cached(self):
+        seen = self.stub((200, {"ok": True}))
+
+        # ttl>0 would normally cache; a header makes the key None outright, so an
+        # authenticated response cannot be served to a different token (PRD §9).
+        http.get_json(URL, ttl=60, headers={"Authorization": "Bearer a"})
+        http.get_json(URL, ttl=60, headers={"Authorization": "Bearer b"})
+
+        self.assertEqual(len(seen), 2)
+        self.assertIsNone(cache.get(http._cache_key(URL, None)))
+
 
 # --- Personal connections (B5) ------------------------------------------------
 
@@ -364,13 +384,17 @@ class ConnectionEndpointTests(TestCase):
 
         self.assertEqual(response.status_code, 400)
 
-    def test_stellic_cannot_be_connected_with_a_login(self):
-        # A valid Provider with no CREDENTIAL_FIELDS entry — an uploaded degree
-        # audit, not a login. Must be a 400, not the KeyError a straight lookup
-        # would raise.
-        response = self.post({"provider": "stellic", "credential": {"token": "x"}})
+    def test_stellic_connects_with_an_empty_credential(self):
+        # Stellic maps to no required keys (it is a mock — see
+        # docs/b5-canvas-ed-stellic.md), so an empty credential connects rather
+        # than being rejected as incomplete. The settings UI toggles it like any
+        # other source.
+        response = self.post({"provider": "stellic", "credential": {}})
 
-        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.status_code, 200)
+        connection = UserConnection.objects.get(session_id=SESSION, provider="stellic")
+        # Nothing is authenticated, so nothing meaningful is stored.
+        self.assertEqual(connection.get_credential(), {})
 
     # --- Reconnecting ---------------------------------------------------------
 
