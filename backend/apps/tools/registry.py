@@ -55,6 +55,9 @@ class Tool:
     #: Provider slug (e.g. "canvas") whose credential must exist for this tool
     #: to be offered. None means public and always available.
     requires_connector: str | None
+    #: Provider slug this tool stands in for when the real connector is absent.
+    #: None for all real tools; set only on demo/sample stand-ins.
+    shadows: str | None
     func: Callable[..., Any] = field(compare=False, repr=False)
 
     @property
@@ -99,6 +102,7 @@ def register_tool(
     is_mock: bool = False,
     *,
     requires_connector: str | None = None,
+    shadows: str | None = None,
 ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
     """Register a function as a tool the planner can call.
 
@@ -140,6 +144,7 @@ def register_tool(
             mode=mode,
             is_mock=is_mock,
             requires_connector=requires_connector,
+            shadows=shadows,
             func=func,
         )
         return func
@@ -168,10 +173,14 @@ def tools_for_session(session_id: str | None) -> list[Tool]:
     """The tools this particular request is allowed to use.
 
     Public tools always; a personal tool only once the session has connected
-    that provider. The load-bearing half of PRD §7: a tool the planner is never
-    told about is a tool it cannot call.
+    that provider. Demo stand-ins (shadows != None) appear only when the real
+    provider is absent, giving the planner sample data to work with and a
+    prompt to guide the user toward connecting. The load-bearing half of PRD
+    §7: a tool the planner is never told about is a tool it cannot call.
     """
-    public = [tool for tool in all_tools() if not tool.is_personal]
+    # Demo stand-ins are not personal (requires_connector=None) and not public
+    # (shadows != None), so they need their own lane in both branches.
+    public = [tool for tool in all_tools() if not tool.is_personal and tool.shadows is None]
 
     if not session_id:
         return public
@@ -186,8 +195,10 @@ def tools_for_session(session_id: str | None) -> list[Tool]:
         for tool in all_tools()
         if tool.is_personal and tool.requires_connector in connected
     ]
+    # Stand-ins appear only when their shadowed provider is not connected.
+    demo = [tool for tool in all_tools() if tool.shadows is not None and tool.shadows not in connected]
 
-    return public + personal
+    return public + personal + demo
 
 
 def tool_definitions(session_id: str | None = None) -> list[dict[str, Any]]:
