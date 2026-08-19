@@ -68,8 +68,8 @@ export function getSessionId(): Promise<string> {
 
 /**
  * Forget this device's session, and with it the link to its saved threads.
- * Unused so far: it is the "sign out" primitive the connectors screen will need
- * (PRD §7), kept here so that flow never touches storage keys directly.
+ * It is the "sign out" primitive the connectors screen uses (PRD §7), kept
+ * here so that flow never touches storage keys directly.
  */
 export async function resetSessionId(): Promise<void> {
   cached = null
@@ -78,5 +78,16 @@ export async function resetSessionId(): Promise<void> {
     await AsyncStorage.removeItem(SESSION_KEY)
   } catch (e) {
     // Nothing useful to do — the cache is already cleared.
+  }
+}
+
+/** Restore a previously saved session id, switching this device to that session. */
+export async function setSessionId(id: string): Promise<void> {
+  cached = id
+  inFlight = null
+  try {
+    await AsyncStorage.setItem(SESSION_KEY, id)
+  } catch {
+    // In-memory update still takes effect.
   }
 }
