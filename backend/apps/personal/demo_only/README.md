@@ -38,3 +38,8 @@ the same doc's Phase 0 for why 2FA was the open risk.
 - Do not enable this route with `DEBUG=False`.
 - Do not widen it to Canvas/Ed — those use a real personal access token
   (`docs/b5-canvas-ed-stellic.md`); a token is revocable and does not need this.
+
+## Full guide
+
+For step-by-step setup, how to add a provider, and architecture notes, see
+`docs/browser-extension.md`.

@@ -1198,6 +1198,261 @@ def stellic_degree_audit(*, session_id: str, program: str) -> dict:
     }
 
 
+# --- Demo stand-ins -----------------------------------------------------------
+#
+# Each of these appears in tools_for_session only when its real provider is not
+# connected (shadows= gates it). requires_connector=None means run() calls the
+# function directly, with no session_id forwarded, which keeps personal data out
+# of the call (same guarantee as any public tool). is_mock=True is stamped on
+# every citation so the MOCK badge always appears.
+
+
+@register_tool(
+    name="canvas_sample",
+    description=(
+        "Returns example Canvas courses and assignments for a CMU student. "
+        "Only use this tool when the user has NOT connected Canvas. "
+        "Always tell the user this is example data and that they can connect "
+        "Canvas via their profile to see their real courses and assignments."
+    ),
+    json_schema={"type": "object", "properties": {}},
+    mode="personal",
+    is_mock=True,
+    shadows=CANVAS,
+)
+def canvas_sample() -> dict:
+    return {
+        "results": [
+            {
+                "courses": [
+                    {"id": 101, "name": "15-213 Introduction to Computer Systems", "term": "Fall 2024"},
+                    {"id": 102, "name": "15-251 Great Theoretical Ideas in CS", "term": "Fall 2024"},
+                    {"id": 103, "name": "21-127 Concepts of Mathematics", "term": "Fall 2024"},
+                ],
+                "upcoming_assignments": [
+                    {
+                        "course": "15-213",
+                        "name": "Data Lab",
+                        "due": "2024-09-20T23:59:00",
+                        "points": 100,
+                    },
+                    {
+                        "course": "15-251",
+                        "name": "Problem Set 2",
+                        "due": "2024-09-22T23:59:00",
+                        "points": 50,
+                    },
+                ],
+                "announcements": [
+                    {
+                        "course": "15-213",
+                        "title": "Office hours this week",
+                        "posted": "2024-09-15",
+                    }
+                ],
+            }
+        ],
+        "citations": [
+            {
+                "title": "Canvas — example courses (not your real data)",
+                "url": "",
+                "snippet": "Example data — connect Canvas in your profile to see your real courses and assignments.",
+                "indexed_at": None,
+                "is_mock": True,
+                "source": "canvas_sample",
+            }
+        ],
+    }
+
+
+@register_tool(
+    name="ed_sample",
+    description=(
+        "Returns example Ed Discussion threads for a CMU student. "
+        "Only use this tool when the user has NOT connected Ed. "
+        "Always tell the user this is example data and that they can connect "
+        "Ed via their profile to see their real discussion threads."
+    ),
+    json_schema={"type": "object", "properties": {}},
+    mode="personal",
+    is_mock=True,
+    shadows=ED,
+)
+def ed_sample() -> dict:
+    return {
+        "results": [
+            {
+                "courses": [
+                    {"id": 201, "name": "15-213 Introduction to Computer Systems"},
+                    {"id": 202, "name": "15-251 Great Theoretical Ideas in CS"},
+                ],
+                "recent_threads": [
+                    {
+                        "course": "15-213",
+                        "title": "Lab 1 submission — do we need a Makefile?",
+                        "type": "question",
+                        "answered": True,
+                        "created": "2024-09-14",
+                    },
+                    {
+                        "course": "15-213",
+                        "title": "Logistics: midterm location confirmed",
+                        "type": "announcement",
+                        "answered": False,
+                        "created": "2024-09-13",
+                    },
+                    {
+                        "course": "15-251",
+                        "title": "PS2 Q3 — hint request",
+                        "type": "question",
+                        "answered": False,
+                        "created": "2024-09-15",
+                    },
+                ],
+            }
+        ],
+        "citations": [
+            {
+                "title": "Ed Discussion — example threads (not your real data)",
+                "url": "",
+                "snippet": "Example data — connect Ed in your profile to see your real discussion threads.",
+                "indexed_at": None,
+                "is_mock": True,
+                "source": "ed_sample",
+            }
+        ],
+    }
+
+
+@register_tool(
+    name="piazza_sample",
+    description=(
+        "Returns example Piazza posts for a CMU student. "
+        "Only use this tool when the user has NOT connected Piazza. "
+        "Always tell the user this is example data and that they can connect "
+        "Piazza via their profile to see their real posts."
+    ),
+    json_schema={"type": "object", "properties": {}},
+    mode="personal",
+    is_mock=True,
+    shadows=PIAZZA,
+)
+def piazza_sample() -> dict:
+    return {
+        "results": [
+            {
+                "classes": [
+                    {"id": "cs213fall24", "name": "15-213 Fall 2024"},
+                    {"id": "cs251fall24", "name": "15-251 Fall 2024"},
+                ],
+                "recent_posts": [
+                    {
+                        "class": "15-213",
+                        "title": "Cache lab — is blocking required?",
+                        "type": "question",
+                        "resolved": True,
+                        "created": "2024-09-12",
+                    },
+                    {
+                        "class": "15-213",
+                        "title": "Regrades for Exam 1 open until Friday",
+                        "type": "instructor-note",
+                        "resolved": False,
+                        "created": "2024-09-11",
+                    },
+                    {
+                        "class": "15-251",
+                        "title": "Study group forming for PS3",
+                        "type": "note",
+                        "resolved": False,
+                        "created": "2024-09-14",
+                    },
+                ],
+            }
+        ],
+        "citations": [
+            {
+                "title": "Piazza — example posts (not your real data)",
+                "url": "",
+                "snippet": "Example data — connect Piazza in your profile to see your real posts.",
+                "indexed_at": None,
+                "is_mock": True,
+                "source": "piazza_sample",
+            }
+        ],
+    }
+
+
+@register_tool(
+    name="gradescope_sample",
+    description=(
+        "Returns example Gradescope assignments and grades for a CMU student. "
+        "Only use this tool when the user has NOT connected Gradescope. "
+        "Always tell the user this is example data and that they can connect "
+        "Gradescope via their profile to see their real grades."
+    ),
+    json_schema={"type": "object", "properties": {}},
+    mode="personal",
+    is_mock=True,
+    shadows=GRADESCOPE,
+)
+def gradescope_sample() -> dict:
+    return {
+        "results": [
+            {
+                "courses": [
+                    {"id": 301, "name": "15-213 Introduction to Computer Systems"},
+                    {"id": 302, "name": "15-251 Great Theoretical Ideas in CS"},
+                ],
+                "assignments": [
+                    {
+                        "course": "15-213",
+                        "name": "Bomb Lab",
+                        "score": 70,
+                        "max_score": 70,
+                        "status": "graded",
+                        "due": "2024-09-10",
+                    },
+                    {
+                        "course": "15-213",
+                        "name": "Data Lab",
+                        "score": None,
+                        "max_score": 100,
+                        "status": "upcoming",
+                        "due": "2024-09-20",
+                    },
+                    {
+                        "course": "15-251",
+                        "name": "Problem Set 1",
+                        "score": 45,
+                        "max_score": 50,
+                        "status": "graded",
+                        "due": "2024-09-08",
+                    },
+                    {
+                        "course": "15-251",
+                        "name": "Problem Set 2",
+                        "score": None,
+                        "max_score": 50,
+                        "status": "upcoming",
+                        "due": "2024-09-22",
+                    },
+                ],
+            }
+        ],
+        "citations": [
+            {
+                "title": "Gradescope — example assignments (not your real data)",
+                "url": "",
+                "snippet": "Example data — connect Gradescope in your profile to see your real grades.",
+                "indexed_at": None,
+                "is_mock": True,
+                "source": "gradescope_sample",
+            }
+        ],
+    }
+
+
 # --- Failure messages ---------------------------------------------------------
 #
 # Both of these drop the caught exception's text, and every `raise` that uses

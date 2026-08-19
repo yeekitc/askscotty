@@ -9,6 +9,9 @@ Read [PRD.md](./docs/PRD.md) before implementing features — it is the source o
   planner's toolset in `backend/apps/tools/`; user-scoped connectors in
   `backend/apps/personal/`.
 - `frontend/app/` — **one** Expo/React Native codebase that runs on iOS, Android, and web.
+- `browser-extension/` — Chrome Mv3 extension (DEBUG/demo use only) that captures
+  Gradescope and Piazza session cookies and sends them to the local backend so the
+  personal tools can run without storing a CMU password. See `docs/browser-extension.md`.
 - `PRD.md` — product requirements.
 - `dependencies.md` — every dependency and why it's there. Adding a package to
   `requirements.txt` or `package.json` means adding a row here in the same
