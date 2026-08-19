@@ -1,0 +1,21 @@
+{
+  "manifest_version": 3,
+  "name": "AskScotty Demo Connector",
+  "version": "1.0.0",
+  "description": "Send Gradescope/Piazza session cookies to AskScotty for demo use. DEBUG builds only.",
+  "permissions": [
+    "cookies",
+    "activeTab",
+    "storage"
+  ],
+  "host_permissions": [
+    "https://www.gradescope.com/*",
+    "https://gradescope.com/*",
+    "https://piazza.com/*",
+    "http://localhost/*"
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "AskScotty Demo Connector"
+  }
+}

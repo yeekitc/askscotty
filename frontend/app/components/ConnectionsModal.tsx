@@ -13,9 +13,11 @@
  * and freshness only.
  */
 
+import { router } from 'expo-router'
 import { type ReactNode, useEffect, useMemo, useState } from 'react'
 import {
   ActivityIndicator,
+  Keyboard,
   Linking,
   Modal,
   Pressable,
@@ -35,9 +37,12 @@ import Animated, {
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 
 import { ApiError, connect, disconnect, fetchConnections } from '../lib/api'
+import { type SavedAccount, getSavedAccounts, removeAccount, saveAccount } from '../lib/accounts'
 import { durations, easing, offsets, useReducedMotion } from '../lib/motion'
+import { getSessionId, resetSessionId, setSessionId } from '../lib/session'
 import { colors, radius, shadows, spacing, WIDE_BREAKPOINT } from '../lib/theme'
 import type { Connection, Provider } from '../lib/types'
+import { setDisplayName, useCurrentUser } from '../lib/user'
 import { HoverPressable } from './HoverPressable'
 
 const AnimatedPressable = Animated.createAnimatedComponent(Pressable)
@@ -160,6 +165,7 @@ export function ConnectionsModal({ visible, onClose, onCountChange }: Props) {
   const insets = useSafeAreaInsets()
   const isWide = width >= WIDE_BREAKPOINT
   const reduceMotion = useReducedMotion()
+  const { displayName } = useCurrentUser()
 
   // The card pulls up and the backdrop fades in on open, and reverses on close.
   // `mounted` keeps the Modal in the tree through the exit so it can animate out
@@ -197,6 +203,45 @@ export function ConnectionsModal({ visible, onClose, onCountChange }: Props) {
   const [busy, setBusy] = useState<Provider | null>(null)
   const [rowError, setRowError] = useState<Partial<Record<Provider, string>>>({})
 
+  const [nameInput, setNameInput] = useState(displayName)
+  const [savedAccounts, setSavedAccounts] = useState<SavedAccount[]>([])
+  const [currentSessionId, setCurrentSessionId] = useState<string | null>(null)
+
+  // Pre-fill with the saved name each time the modal opens.
+  // Intentionally excludes displayName from deps — we don't want to overwrite
+  // in-progress edits while the modal is already open.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { if (visible) setNameInput(displayName) }, [visible])
+
+  const handleSaveName = async () => {
+    await setDisplayName(nameInput.trim())
+    Keyboard.dismiss()
+  }
+
+  const handleNewAccount = async () => {
+    const sid = await getSessionId()
+    await saveAccount(sid, displayName)
+    await resetSessionId()
+    await setDisplayName('')
+    setNameInput('')
+    close()
+    router.replace('/')
+  }
+
+  const handleSwitchToAccount = async (account: SavedAccount) => {
+    const sid = await getSessionId()
+    await saveAccount(sid, displayName)
+    await setSessionId(account.sessionId)
+    await setDisplayName(account.displayName)
+    close()
+    router.replace('/')
+  }
+
+  const handleRemoveAccount = async (account: SavedAccount) => {
+    await removeAccount(account.sessionId)
+    setSavedAccounts((prev) => prev.filter((a) => a.sessionId !== account.sessionId))
+  }
+
   // Credential fields, cleared whenever a different form opens or the modal closes
   // — a password should never outlive the row that asked for it.
   const [token, setToken] = useState('')
@@ -214,16 +259,20 @@ export function ConnectionsModal({ visible, onClose, onCountChange }: Props) {
     let cancelled = false
     setLoadError(null)
     setConnections(null)
+
     fetchConnections()
-      .then((list) => {
-        if (!cancelled) setConnections(list)
-      })
+      .then((list) => { if (!cancelled) setConnections(list) })
       .catch((err) => {
         if (!cancelled) setLoadError(err instanceof ApiError ? err.message : 'Could not load connections.')
       })
-    return () => {
-      cancelled = true
-    }
+
+    Promise.all([getSavedAccounts(), getSessionId()]).then(([accounts, sid]) => {
+      if (cancelled) return
+      setSavedAccounts(accounts)
+      setCurrentSessionId(sid)
+    })
+
+    return () => { cancelled = true }
   }, [visible])
 
   useEffect(() => {
@@ -333,6 +382,34 @@ export function ConnectionsModal({ visible, onClose, onCountChange }: Props) {
             Link an account so Scotty can answer from your own courses, deadlines and grades.
             Credentials are encrypted and never shown again.
           </Text>
+
+          <View style={styles.profileSection}>
+            <Text style={styles.fieldLabel}>Display name</Text>
+            <View style={styles.profileRow}>
+              <TextInput
+                style={[styles.input, styles.nameInput]}
+                value={nameInput}
+                onChangeText={setNameInput}
+                placeholder="Your name"
+                placeholderTextColor={colors.textFaint}
+                autoCapitalize="words"
+                autoCorrect={false}
+                returnKeyType="done"
+                onSubmitEditing={handleSaveName}
+              />
+              <HoverPressable
+                style={({ hovered, pressed }) => [
+                  styles.action,
+                  (hovered || pressed) && styles.actionActive,
+                ]}
+                onPress={handleSaveName}
+                accessibilityRole="button"
+              >
+                <Text style={styles.actionText}>Save</Text>
+              </HoverPressable>
+            </View>
+          </View>
+          <View style={styles.divider} />
 
           {connections === null && !loadError ? (
             <View style={styles.loading}>
@@ -522,6 +599,55 @@ export function ConnectionsModal({ visible, onClose, onCountChange }: Props) {
               })}
             </ScrollView>
           )}
+
+          <View style={styles.divider} />
+          <Text style={styles.accountsLabel}>Accounts</Text>
+
+          {/* Current session row */}
+          <View style={styles.accountRow}>
+            <Text style={styles.accountName}>
+              {displayName || 'Unnamed account'}{' '}
+              <Text style={styles.accountYou}>(you)</Text>
+            </Text>
+          </View>
+
+          {/* Saved accounts (excluding the current session) */}
+          {savedAccounts
+            .filter((a) => a.sessionId !== currentSessionId)
+            .map((account) => (
+              <View key={account.sessionId} style={styles.accountRow}>
+                <Text style={styles.accountName}>{account.displayName || 'Unnamed account'}</Text>
+                <View style={styles.accountActions}>
+                  <Pressable
+                    onPress={() => handleRemoveAccount(account)}
+                    accessibilityRole="button"
+                  >
+                    <Text style={styles.linkMuted}>Remove</Text>
+                  </Pressable>
+                  <HoverPressable
+                    style={({ hovered, pressed }) => [
+                      styles.action,
+                      (hovered || pressed) && styles.actionActive,
+                    ]}
+                    onPress={() => handleSwitchToAccount(account)}
+                    accessibilityRole="button"
+                  >
+                    <Text style={styles.actionText}>Switch</Text>
+                  </HoverPressable>
+                </View>
+              </View>
+            ))}
+
+          <HoverPressable
+            style={({ hovered, pressed }) => [
+              styles.switchRow,
+              (hovered || pressed) && styles.actionActive,
+            ]}
+            onPress={handleNewAccount}
+            accessibilityRole="button"
+          >
+            <Text style={styles.switchText}>+ New account</Text>
+          </HoverPressable>
         </Animated.View>
       </View>
     </Modal>
@@ -772,5 +898,59 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: colors.error,
     marginTop: spacing.sm,
+  },
+  profileSection: {
+    gap: spacing.xs,
+  },
+  profileRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+  },
+  nameInput: {
+    flex: 1,
+  },
+  divider: {
+    height: 1,
+    backgroundColor: colors.borderSoft,
+    marginVertical: spacing.md,
+  },
+  accountsLabel: {
+    fontSize: 11,
+    fontWeight: '600',
+    letterSpacing: 0.5,
+    color: colors.textFaint,
+    textTransform: 'uppercase',
+    marginBottom: spacing.xs,
+  },
+  accountRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: spacing.xs,
+  },
+  accountName: {
+    fontSize: 13,
+    color: colors.text,
+    fontWeight: '500',
+    flex: 1,
+  },
+  accountYou: {
+    color: colors.textMuted,
+    fontWeight: '400',
+  },
+  accountActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.md,
+  },
+  switchRow: {
+    paddingVertical: spacing.xs,
+    marginTop: spacing.xs,
+  },
+  switchText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: colors.accent,
   },
 })

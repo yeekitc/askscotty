@@ -4,12 +4,65 @@
  * needs swapping when one exists.
  */
 
+import AsyncStorage from '@react-native-async-storage/async-storage'
+import { useEffect, useState } from 'react'
+
+const DISPLAY_NAME_KEY = 'askscotty.display_name'
+
 export type CurrentUser = {
   displayName: string
+  displayNameLoaded: boolean
 }
 
-const DEFAULT_DISPLAY_NAME = 'Yee Kit'
+type Listener = (name: string) => void
+const listeners = new Set<Listener>()
+// null = not yet read from storage; string = known value (including empty string)
+let cache: string | null = null
+
+/** Persist a new display name and notify all mounted useCurrentUser hooks. */
+export async function setDisplayName(name: string): Promise<void> {
+  cache = name
+  try {
+    await AsyncStorage.setItem(DISPLAY_NAME_KEY, name)
+  } catch {
+    // In-memory update still propagates even if storage fails.
+  }
+  for (const fn of listeners) fn(name)
+}
 
 export function useCurrentUser(): CurrentUser {
-  return { displayName: process.env.EXPO_PUBLIC_DEMO_USER_NAME ?? DEFAULT_DISPLAY_NAME }
+  const [name, setName] = useState<string | null>(cache)
+
+  useEffect(() => {
+    let cancelled = false
+
+    if (cache !== null) {
+      setName(cache)
+    } else {
+      AsyncStorage.getItem(DISPLAY_NAME_KEY)
+        .then((stored) => {
+          if (!cancelled) {
+            cache = stored ?? ''
+            setName(cache)
+          }
+        })
+        .catch(() => {
+          if (!cancelled) {
+            cache = ''
+            setName('')
+          }
+        })
+    }
+
+    const listener: Listener = (n) => {
+      if (!cancelled) setName(n)
+    }
+    listeners.add(listener)
+    return () => {
+      cancelled = true
+      listeners.delete(listener)
+    }
+  }, [])
+
+  return { displayName: name ?? '', displayNameLoaded: name !== null }
 }

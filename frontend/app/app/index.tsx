@@ -38,6 +38,7 @@ import {
 import type { Mode } from '../lib/types'
 import { AskComposer } from '../components/AskComposer'
 import { ConnectionsModal } from '../components/ConnectionsModal'
+import { NameModal } from '../components/NameModal'
 import { Credits } from '../components/Credits'
 import { ChatMessage } from '../components/ChatMessage'
 import { useCitationOverlay } from '../components/CitationOverlay'
@@ -871,6 +872,7 @@ export default function AskScreen() {
         onClose={() => setConnectionsOpen(false)}
         onCountChange={setLinkedCount}
       />
+      <NameModal visible={user.displayNameLoaded && !user.displayName} />
     </AssistantRuntimeProvider>
   )
 }
