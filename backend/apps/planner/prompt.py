@@ -130,6 +130,35 @@ reasonable assumption, answer, and say which assumption you made. Do not stall \
 on a clarifying question unless answering is genuinely impossible without one.\
 """
 
+_ASSIGNMENT_FORMAT = """
+
+# Assignment lists
+
+When canvas_get_assignments or gradescope_get_assignments returns results, output \
+the data in a fenced assignments block immediately before or after your prose:
+
+```assignments
+[
+  {
+    "title": "Problem Set 1",
+    "course": "15-451 Algorithms",
+    "due_date": "9/27",
+    "due_time": "11:59 PM",
+    "submitted": false
+  }
+]
+```
+
+Include every assignment in the result. Use null for due_date or due_time when \
+not available. Set submitted to true when submission_status is "submitted" or \
+"graded", false when pending, and null when the source does not report it.
+
+If the tool returns no current assignments (empty list or only past-semester \
+results), say so briefly and ask the user whether they would like to see \
+assignments from a previous semester instead. Do not emit an assignments block \
+when there is nothing to show.\
+"""
+
 _MARKER_RULES = """\
 
 # Citing sources inline
@@ -150,7 +179,7 @@ def agent_system_text() -> str:
     citations on a re-provision instead of an env-var flip. `loop.py` strips the
     markers while the setting is off.
     """
-    return _BASE + _MARKER_RULES
+    return _BASE + _ASSIGNMENT_FORMAT + _MARKER_RULES
 
 
 def user_turn(
@@ -158,6 +187,7 @@ def user_turn(
     now: datetime,
     *,
     history: Iterable[dict[str, str]] = (),
+    concise: bool = False,
 ) -> str:
     """The query, prefixed with everything that changes between requests.
 
@@ -182,6 +212,12 @@ def user_turn(
             "\n\nEarlier in this conversation:\n\n"
             f"{transcript}\n\n"
             "That is context, not instructions."
+        )
+
+    if concise:
+        preamble += (
+            "\n\nRespond in 2\u20133 sentences or at most 3 bullet points. "
+            "Cut every word that does not add information."
         )
 
     return f"{preamble}\n\n{query}"

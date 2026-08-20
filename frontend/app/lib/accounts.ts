@@ -3,9 +3,10 @@ import AsyncStorage from '@react-native-async-storage/async-storage'
 const ACCOUNTS_KEY = 'askscotty.saved_accounts'
 
 export type SavedAccount = {
-  sessionId: string   // bearer token — treat like a password
-  displayName: string // snapshot at save time
-  savedAt: string     // ISO 8601, newest first
+  sessionId: string        // bearer token — treat like a password
+  displayName: string      // snapshot at save time
+  savedAt: string          // ISO 8601, newest first
+  profilePicture?: string  // base64 data URI, optional
 }
 
 export async function getSavedAccounts(): Promise<SavedAccount[]> {
@@ -18,9 +19,9 @@ export async function getSavedAccounts(): Promise<SavedAccount[]> {
   }
 }
 
-export async function saveAccount(sessionId: string, displayName: string): Promise<void> {
+export async function saveAccount(sessionId: string, displayName: string, profilePicture?: string): Promise<void> {
   const accounts = await getSavedAccounts()
-  const entry: SavedAccount = { sessionId, displayName, savedAt: new Date().toISOString() }
+  const entry: SavedAccount = { sessionId, displayName, savedAt: new Date().toISOString(), ...(profilePicture ? { profilePicture } : {}) }
   const rest = accounts.filter((a) => a.sessionId !== sessionId)
   const updated = [entry, ...rest]
   try {

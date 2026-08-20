@@ -92,6 +92,8 @@ export type AskRequest = {
    * "everything is checked unless you uncheck it" true after a backend adds one.
    */
   disabled_modes?: Mode[]
+  /** When true, the backend caps the answer to 2–3 sentences or bullet points. */
+  concise?: boolean
 }
 
 export type AskResponse = {

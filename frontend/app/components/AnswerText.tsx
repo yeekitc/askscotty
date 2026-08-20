@@ -31,6 +31,7 @@ import { listMarker, parseMarkdown, type Block, type InlineSpan } from '../lib/m
 import { toWords, type Word } from '../lib/citations'
 import { FADE_RAMP, FADE_WORDS, splitWords, useBlink, useSmoothReveal } from '../lib/reveal'
 import { CitationMarker } from './CitationMarker'
+import { AssignmentList } from './AssignmentList'
 
 /** One span's words. */
 type SpanWords = Word[]
@@ -64,6 +65,7 @@ function chunkBlock(block: Block): BlockWords {
     // Not `toWords`: a `[S1]` inside a fenced block is something the model
     // wrote as code, not a citation of its own output.
     case 'code':
+      if (block.language === 'assignments') return [[[]]]
       return [[splitWords(block.text).map((text) => ({ text, markers: [] }))]]
     default:
       return [block.spans.map((span) => toWords(span.text))]
@@ -158,6 +160,15 @@ function BlockView({ block, words, start, first, style, reveal, caretOn }: Block
       )
 
     case 'code': {
+      if (block.language === 'assignments') {
+        // Hidden during streaming; shown once the turn settles.
+        if (reveal.caret !== null) return null
+        return (
+          <View style={spacer}>
+            <AssignmentList text={block.text} />
+          </View>
+        )
+      }
       const chunks = words[0][0]
       const visible = Math.min(chunks.length, reveal.revealed - start)
       return (

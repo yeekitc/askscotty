@@ -114,7 +114,7 @@ export function ChatMessage() {
                   // return an element rather than nothing.
                   renderSource={() => <></>}
                 />
-                <CitationList citations={citations} answer={answer} />
+                <CitationList citations={citations} />
               </MessageCitations>
             </View>
           </View>
@@ -132,7 +132,7 @@ const styles = StyleSheet.create({
     alignItems: 'flex-end',
   },
   userBubble: {
-    backgroundColor: colors.surface,
+    backgroundColor: colors.userBubble,
     paddingHorizontal: spacing.lg,
     paddingVertical: spacing.md,
     borderRadius: radius.xl,

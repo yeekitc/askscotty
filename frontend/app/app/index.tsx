@@ -8,6 +8,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import {
+  Image,
   KeyboardAvoidingView,
   Platform,
   Pressable,
@@ -74,6 +75,7 @@ const DEMO_QUERY =
 const DISABLED_MODES_KEY = 'askscotty.disabledModes'
 // Everything on until someone unchecks it — an empty deny list.
 const DEFAULT_DISABLED_MODES: Mode[] = []
+const CONCISE_KEY = 'askscotty.conciseMode'
 const SIDEBAR_WIDTH = 280
 
 const SAVE_DEBOUNCE_MS = 600
@@ -157,6 +159,23 @@ async function saveDisabledModes(modes: Mode[]): Promise<void> {
   }
 }
 
+async function loadConciseMode(): Promise<boolean> {
+  try {
+    const raw = await AsyncStorage.getItem(CONCISE_KEY)
+    return raw === 'true'
+  } catch (e) {
+    return false
+  }
+}
+
+async function saveConciseMode(concise: boolean): Promise<void> {
+  try {
+    await AsyncStorage.setItem(CONCISE_KEY, String(concise))
+  } catch (e) {
+    // Forgotten preference is not worth an error.
+  }
+}
+
 export default function AskScreen() {
   const insets = useSafeAreaInsets()
   const { width } = useWindowDimensions()
@@ -182,6 +201,23 @@ export default function AskScreen() {
   useEffect(() => {
     if (disabledModesLoaded.current) void saveDisabledModes(disabledModes)
   }, [disabledModes])
+
+  const [conciseMode, setConciseMode] = useState(false)
+  const conciseModeRef = useRef(false)
+  useEffect(() => {
+    conciseModeRef.current = conciseMode
+  }, [conciseMode])
+
+  const conciseModeLoaded = useRef(false)
+  useEffect(() => {
+    loadConciseMode().then((stored) => {
+      conciseModeLoaded.current = true
+      setConciseMode(stored)
+    })
+  }, [])
+  useEffect(() => {
+    if (conciseModeLoaded.current) void saveConciseMode(conciseMode)
+  }, [conciseMode])
 
   // `null` means "no explicit choice yet": follow the width-based default until
   // the toggle is tapped, so resizing doesn't fight a stale manual override.
@@ -251,11 +287,15 @@ export default function AskScreen() {
     threadsRef.current = threads
   }, [threads])
 
-  // Both read through refs at request time rather than closed over once, so the
-  // adapter sees the current filter and the current conversation without being
-  // rebuilt — which would drop the in-flight answer.
+  // All read through refs at request time rather than closed over once, so the
+  // adapter sees the current filter, conversation, and concise setting without
+  // being rebuilt — which would drop the in-flight answer.
   const adapter = useMemo(
-    () => createHttpAdapter(() => disabledModesRef.current, () => activeThreadIdRef.current),
+    () => createHttpAdapter(
+      () => disabledModesRef.current,
+      () => activeThreadIdRef.current,
+      () => conciseModeRef.current || undefined,
+    ),
     [],
   )
   const runtime = useLocalRuntime(adapter, { initialMessages: [] })
@@ -622,7 +662,7 @@ export default function AskScreen() {
         value={searchQuery}
         onChangeText={setSearchQuery}
         placeholder="Search chats"
-        placeholderTextColor={colors.textFaint}
+        placeholderTextColor="rgba(255,255,255,0.5)"
         accessibilityLabel="Search chats"
       />
 
@@ -748,9 +788,13 @@ export default function AskScreen() {
         accessibilityRole="button"
         accessibilityLabel="Manage your connections"
       >
-        <View style={styles.profileAvatar}>
-          <Text style={styles.profileInitial}>{user.displayName.slice(0, 1).toUpperCase()}</Text>
-        </View>
+        {user.profilePicture ? (
+          <Image source={{ uri: user.profilePicture }} style={styles.profileAvatar} />
+        ) : (
+          <View style={styles.profileAvatar}>
+            <Text style={styles.profileInitial}>{user.displayName.slice(0, 1).toUpperCase()}</Text>
+          </View>
+        )}
         <View style={styles.profileText}>
           <Text style={styles.profileName} numberOfLines={1}>
             {user.displayName}
@@ -783,15 +827,46 @@ export default function AskScreen() {
 
           <View style={styles.mainColumn}>
             <View style={styles.topBar}>
-              <Pressable
-                onPress={() => setSidebarOpen(!sidebarEffectiveOpen)}
-                accessibilityRole="button"
-                accessibilityLabel={sidebarEffectiveOpen ? 'Hide sidebar' : 'Show sidebar'}
-                style={styles.sidebarToggle}
-              >
-                <Text style={styles.sidebarToggleIcon}>☰</Text>
-              </Pressable>
-              {!sidebarEffectiveOpen ? <Text style={styles.topBarBrand}>AskScotty</Text> : null}
+              <View style={styles.topBarLeft}>
+                <Pressable
+                  onPress={() => setSidebarOpen(!sidebarEffectiveOpen)}
+                  accessibilityRole="button"
+                  accessibilityLabel={sidebarEffectiveOpen ? 'Hide sidebar' : 'Show sidebar'}
+                  style={styles.sidebarToggle}
+                >
+                  <Text style={styles.sidebarToggleIcon}>☰</Text>
+                </Pressable>
+                {!sidebarEffectiveOpen ? <Text style={styles.topBarBrand}>AskScotty</Text> : null}
+              </View>
+              <View style={styles.conciseToggleRow}>
+                {(['normal', 'concise'] as const).map((mode) => {
+                  const active = mode === (conciseMode ? 'concise' : 'normal')
+                  return (
+                    <HoverPressable
+                      key={mode}
+                      onPress={() => setConciseMode(mode === 'concise')}
+                      style={styles.conciseBtn}
+                    >
+                      {({ hovered }) => (
+                        <>
+                          <Text style={[styles.conciseBtnText, active && styles.conciseBtnActive]}>
+                            {mode === 'normal' ? 'Normal' : 'Concise'}
+                          </Text>
+                          {hovered && (
+                            <View style={styles.conciseTooltip}>
+                              <Text style={styles.conciseTooltipText}>
+                                {mode === 'normal'
+                                  ? 'Longer, detailed answers'
+                                  : 'Short answers — 2–3 sentences max'}
+                              </Text>
+                            </View>
+                          )}
+                        </>
+                      )}
+                    </HoverPressable>
+                  )
+                })}
+              </View>
             </View>
 
             <KeyboardAvoidingView
@@ -1028,11 +1103,11 @@ const styles = StyleSheet.create({
   brandSidebar: {
     fontSize: 20,
     fontWeight: '700',
-    color: colors.text,
+    color: colors.sidebarText,
   },
   closeIcon: {
     fontSize: 16,
-    color: colors.textMuted,
+    color: colors.sidebarText,
     padding: spacing.xs,
   },
   newChatButton: {
@@ -1043,25 +1118,25 @@ const styles = StyleSheet.create({
     marginBottom: spacing.md,
   },
   newChatButtonActive: {
-    backgroundColor: colors.border,
+    backgroundColor: 'rgba(255,255,255,0.25)',
   },
   newChatText: {
-    color: colors.text,
+    color: colors.sidebarText,
     fontSize: 14,
     fontWeight: '600',
   },
   searchInput: {
-    backgroundColor: colors.background,
+    backgroundColor: 'rgba(255,255,255,0.15)',
     borderRadius: radius.md,
     paddingVertical: spacing.sm,
     paddingHorizontal: spacing.md,
     fontSize: 14,
-    color: colors.text,
+    color: colors.sidebarText,
     marginBottom: spacing.lg,
   },
   recentHeading: {
     fontSize: 12,
-    color: colors.textMuted,
+    color: 'rgba(255,255,255,0.6)',
     marginBottom: spacing.sm,
     textTransform: 'uppercase',
     letterSpacing: 1,
@@ -1082,7 +1157,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.sm,
     borderRadius: radius.md,
     borderTopWidth: 1,
-    borderTopColor: colors.borderSoft,
+    borderTopColor: colors.sidebarBorder,
   },
   profileRowActive: {
     backgroundColor: colors.sidebarHover,
@@ -1106,21 +1181,21 @@ const styles = StyleSheet.create({
   profileName: {
     fontSize: 14,
     fontWeight: '600',
-    color: colors.text,
+    color: colors.sidebarText,
   },
   profileSub: {
     fontSize: 12,
-    color: colors.textMuted,
+    color: 'rgba(255,255,255,0.65)',
     marginTop: 1,
   },
   profileChevron: {
     fontSize: 18,
-    color: colors.textFaint,
+    color: 'rgba(255,255,255,0.5)',
     paddingHorizontal: spacing.xs,
   },
   recentEmpty: {
     fontSize: 13,
-    color: colors.textFaint,
+    color: 'rgba(255,255,255,0.5)',
     fontStyle: 'italic',
   },
   recentItem: {
@@ -1146,7 +1221,7 @@ const styles = StyleSheet.create({
     height: 6,
     borderRadius: radius.pill,
     marginRight: spacing.xs + 2,
-    backgroundColor: colors.textMuted,
+    backgroundColor: 'rgba(255,255,255,0.55)',
   },
   // Arrived rather than arriving — darker, so a finished answer reads as
   // something to go and look at rather than something still happening.
@@ -1158,7 +1233,7 @@ const styles = StyleSheet.create({
     // control past the edge of the sidebar.
     flexShrink: 1,
     fontSize: 13,
-    color: colors.textMuted,
+    color: 'rgba(255,255,255,0.75)',
   },
   recentRow: {
     // The positioning context the "..." menu anchors to.
@@ -1175,7 +1250,7 @@ const styles = StyleSheet.create({
   menuIcon: {
     fontSize: 16,
     lineHeight: 16,
-    color: colors.textFaint,
+    color: 'rgba(255,255,255,0.55)',
     paddingHorizontal: spacing.xs,
   },
   menu: {
@@ -1212,14 +1287,14 @@ const styles = StyleSheet.create({
     paddingVertical: spacing.sm,
     paddingHorizontal: spacing.sm,
     borderRadius: radius.sm,
-    backgroundColor: colors.background,
+    backgroundColor: 'rgba(255,255,255,0.15)',
     borderWidth: 1,
-    borderColor: colors.border,
+    borderColor: 'rgba(255,255,255,0.35)',
     fontSize: 13,
-    color: colors.text,
+    color: colors.sidebarText,
   },
   recentItemTextActive: {
-    color: colors.text,
+    color: colors.sidebarText,
     fontWeight: '600',
   },
   mainColumn: {
@@ -1228,9 +1303,14 @@ const styles = StyleSheet.create({
   topBar: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: spacing.sm,
+    justifyContent: 'space-between',
     paddingHorizontal: spacing.lg,
     paddingTop: spacing.md,
+  },
+  topBarLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
   },
   sidebarToggle: {
     padding: spacing.xs,
@@ -1242,6 +1322,41 @@ const styles = StyleSheet.create({
   topBarBrand: {
     fontSize: 16,
     fontWeight: '700',
+    color: colors.text,
+  },
+  conciseToggleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.xs,
+  },
+  conciseBtn: {
+    paddingHorizontal: spacing.xs + 2,
+    paddingVertical: spacing.xs - 1,
+    position: 'relative',
+  },
+  conciseBtnText: {
+    fontSize: 11,
+    color: colors.textFaint,
+  },
+  conciseBtnActive: {
+    color: colors.text,
+    fontWeight: '600',
+  },
+  conciseTooltip: {
+    position: 'absolute',
+    top: '100%',
+    right: 0,
+    zIndex: 50,
+    backgroundColor: colors.surface,
+    borderWidth: 1,
+    borderColor: colors.borderSoft,
+    borderRadius: radius.md,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: spacing.xs,
+    marginTop: spacing.xs,
+  },
+  conciseTooltipText: {
+    fontSize: 11,
     color: colors.text,
   },
   threadArea: {
