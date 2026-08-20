@@ -99,7 +99,12 @@ export function cancelRun(threadId: string): void {
   clearRun(threadId)
 }
 
-export function startRun(threadId: string, query: string, disabledModes: Mode[] | undefined): void {
+export function startRun(
+  threadId: string,
+  query: string,
+  disabledModes: Mode[] | undefined,
+  concise?: boolean,
+): void {
   // One stream per thread. A second would race the first into the same slot.
   cancelRun(threadId)
 
@@ -118,7 +123,7 @@ export function startRun(threadId: string, query: string, disabledModes: Mode[] 
   })
   notify()
 
-  void drain(threadId, query, disabledModes, controller.signal)
+  void drain(threadId, query, disabledModes, controller.signal, concise)
 }
 
 async function drain(
@@ -126,9 +131,10 @@ async function drain(
   query: string,
   disabledModes: Mode[] | undefined,
   signal: AbortSignal,
+  concise?: boolean,
 ): Promise<void> {
   try {
-    for await (const event of askEvents(query, { disabledModes, threadId, signal })) {
+    for await (const event of askEvents(query, { disabledModes, threadId, signal, concise })) {
       const run = runs.get(threadId)
       if (!run) return // cancelled out from under us
 

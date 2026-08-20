@@ -74,6 +74,11 @@ class AskSerializer(serializers.Serializer):
         default=list,
     )
 
+    # When true, the planner is instructed to cap its answer to 2–3 sentences
+    # or at most 3 bullet points. The instruction goes in the user turn so the
+    # frozen cached system prompt is never invalidated.
+    concise = serializers.BooleanField(required=False, default=False)
+
 
 # --- Response -----------------------------------------------------------------
 

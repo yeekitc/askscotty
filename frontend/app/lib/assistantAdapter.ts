@@ -110,9 +110,9 @@ function provisional(streamed: string): string {
 }
 
 /**
- * Both accessors are read at request time rather than closed over once, so the
- * adapter sees the current Sources filter and the current conversation without
- * being recreated on every change to either.
+ * All accessors are read at request time rather than closed over once, so the
+ * adapter sees the current Sources filter, the current conversation, and the
+ * current concise setting without being recreated on every change.
  *
  * `getThreadId` is what lets a follow-up continue where the last answer left
  * off: the backend keys the thread's planner session on it, so "is that still
@@ -121,6 +121,7 @@ function provisional(streamed: string): string {
 export function createHttpAdapter(
   getDisabledModes: () => Mode[] | undefined,
   getThreadId: () => string | undefined,
+  getConcise: () => boolean | undefined,
 ): ChatModelAdapter {
   return {
     async *run({ messages, abortSignal }) {
@@ -139,7 +140,7 @@ export function createHttpAdapter(
       // The stream belongs to lib/runs.ts, not to this generator. That is what
       // lets an answer outlive the conversation being closed: this loop is only
       // a reader, and abandoning it does not stop the run.
-      startRun(threadId, text, getDisabledModes())
+      startRun(threadId, text, getDisabledModes(), getConcise())
 
       try {
         for await (const run of tailRun(threadId)) {

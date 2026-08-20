@@ -90,6 +90,7 @@ def run_planner(
     thread_id: str = "",
     history: Iterable[dict[str, str]] = (),
     disabled_modes: Iterable[str] = (),
+    concise: bool = False,
     now: datetime | None = None,
 ) -> Iterator[dict[str, Any]]:
     """Answer `query`, yielding progress events and finally the `AskResponse`.
@@ -116,7 +117,7 @@ def run_planner(
     # empty registry: the agent's prebuilt toolset always carries web_search and
     # web_fetch, so telling the model nothing can be checked would talk it out of
     # the one lane it still has.
-    message = prompt.user_turn(query, now, history=history if is_new else ())
+    message = prompt.user_turn(query, now, history=history if is_new else (), concise=concise)
 
     try:
         yield from _drive(turn, cma_session_id, message)
@@ -130,7 +131,7 @@ def run_planner(
         cma_session_id = _reopen_session(thread, tools, title=query, web=web)
         is_new = True
         turn = _Turn(tools=turn.tools, session_id=session_id)
-        message = prompt.user_turn(query, now, history=history)
+        message = prompt.user_turn(query, now, history=history, concise=concise)
         yield from _drive(turn, cma_session_id, message)
 
     # Markers off (the default) means an empty issued set, which strips any the

@@ -155,13 +155,14 @@ function normalizeAskResponse(raw: RawAskResponse): AskResponse {
  * lets the planner use this person's connected sources. Omitting it silently
  * drops every personal tool.
  */
-async function askBody(query: string, disabledModes?: Mode[], threadId?: string) {
+async function askBody(query: string, disabledModes?: Mode[], threadId?: string, concise?: boolean) {
   const body: AskRequest = {
     query,
     session_id: await getSessionId(),
   }
   if (disabledModes?.length) body.disabled_modes = disabledModes
   if (threadId) body.thread_id = threadId
+  if (concise) body.concise = concise
   return body
 }
 
@@ -176,10 +177,11 @@ export async function ask(
   query: string,
   disabledModes?: Mode[],
   threadId?: string,
+  concise?: boolean,
 ): Promise<AskResponse> {
   const raw = await request<RawAskResponse>('/api/ask/', {
     method: 'POST',
-    body: await askBody(query, disabledModes, threadId),
+    body: await askBody(query, disabledModes, threadId, concise),
   })
   return normalizeAskResponse(raw)
 }
@@ -197,10 +199,10 @@ export async function ask(
  */
 export async function* askEvents(
   query: string,
-  options: { disabledModes?: Mode[]; threadId?: string; signal?: AbortSignal } = {},
+  options: { disabledModes?: Mode[]; threadId?: string; signal?: AbortSignal; concise?: boolean } = {},
 ): AsyncGenerator<AskEvent, void> {
   const sessionId = await getSessionId()
-  const body = await askBody(query, options.disabledModes, options.threadId)
+  const body = await askBody(query, options.disabledModes, options.threadId, options.concise)
 
   const queue: AskEvent[] = []
   let failure: ApiError | null = null

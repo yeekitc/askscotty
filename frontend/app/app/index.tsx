@@ -74,6 +74,7 @@ const DEMO_QUERY =
 const DISABLED_MODES_KEY = 'askscotty.disabledModes'
 // Everything on until someone unchecks it — an empty deny list.
 const DEFAULT_DISABLED_MODES: Mode[] = []
+const CONCISE_KEY = 'askscotty.conciseMode'
 const SIDEBAR_WIDTH = 280
 
 const SAVE_DEBOUNCE_MS = 600
@@ -157,6 +158,23 @@ async function saveDisabledModes(modes: Mode[]): Promise<void> {
   }
 }
 
+async function loadConciseMode(): Promise<boolean> {
+  try {
+    const raw = await AsyncStorage.getItem(CONCISE_KEY)
+    return raw === 'true'
+  } catch (e) {
+    return false
+  }
+}
+
+async function saveConciseMode(concise: boolean): Promise<void> {
+  try {
+    await AsyncStorage.setItem(CONCISE_KEY, String(concise))
+  } catch (e) {
+    // Forgotten preference is not worth an error.
+  }
+}
+
 export default function AskScreen() {
   const insets = useSafeAreaInsets()
   const { width } = useWindowDimensions()
@@ -182,6 +200,23 @@ export default function AskScreen() {
   useEffect(() => {
     if (disabledModesLoaded.current) void saveDisabledModes(disabledModes)
   }, [disabledModes])
+
+  const [conciseMode, setConciseMode] = useState(false)
+  const conciseModeRef = useRef(false)
+  useEffect(() => {
+    conciseModeRef.current = conciseMode
+  }, [conciseMode])
+
+  const conciseModeLoaded = useRef(false)
+  useEffect(() => {
+    loadConciseMode().then((stored) => {
+      conciseModeLoaded.current = true
+      setConciseMode(stored)
+    })
+  }, [])
+  useEffect(() => {
+    if (conciseModeLoaded.current) void saveConciseMode(conciseMode)
+  }, [conciseMode])
 
   // `null` means "no explicit choice yet": follow the width-based default until
   // the toggle is tapped, so resizing doesn't fight a stale manual override.
@@ -251,11 +286,15 @@ export default function AskScreen() {
     threadsRef.current = threads
   }, [threads])
 
-  // Both read through refs at request time rather than closed over once, so the
-  // adapter sees the current filter and the current conversation without being
-  // rebuilt — which would drop the in-flight answer.
+  // All read through refs at request time rather than closed over once, so the
+  // adapter sees the current filter, conversation, and concise setting without
+  // being rebuilt — which would drop the in-flight answer.
   const adapter = useMemo(
-    () => createHttpAdapter(() => disabledModesRef.current, () => activeThreadIdRef.current),
+    () => createHttpAdapter(
+      () => disabledModesRef.current,
+      () => activeThreadIdRef.current,
+      () => conciseModeRef.current || undefined,
+    ),
     [],
   )
   const runtime = useLocalRuntime(adapter, { initialMessages: [] })
@@ -783,15 +822,46 @@ export default function AskScreen() {
 
           <View style={styles.mainColumn}>
             <View style={styles.topBar}>
-              <Pressable
-                onPress={() => setSidebarOpen(!sidebarEffectiveOpen)}
-                accessibilityRole="button"
-                accessibilityLabel={sidebarEffectiveOpen ? 'Hide sidebar' : 'Show sidebar'}
-                style={styles.sidebarToggle}
-              >
-                <Text style={styles.sidebarToggleIcon}>☰</Text>
-              </Pressable>
-              {!sidebarEffectiveOpen ? <Text style={styles.topBarBrand}>AskScotty</Text> : null}
+              <View style={styles.topBarLeft}>
+                <Pressable
+                  onPress={() => setSidebarOpen(!sidebarEffectiveOpen)}
+                  accessibilityRole="button"
+                  accessibilityLabel={sidebarEffectiveOpen ? 'Hide sidebar' : 'Show sidebar'}
+                  style={styles.sidebarToggle}
+                >
+                  <Text style={styles.sidebarToggleIcon}>☰</Text>
+                </Pressable>
+                {!sidebarEffectiveOpen ? <Text style={styles.topBarBrand}>AskScotty</Text> : null}
+              </View>
+              <View style={styles.conciseToggleRow}>
+                {(['normal', 'concise'] as const).map((mode) => {
+                  const active = mode === (conciseMode ? 'concise' : 'normal')
+                  return (
+                    <HoverPressable
+                      key={mode}
+                      onPress={() => setConciseMode(mode === 'concise')}
+                      style={styles.conciseBtn}
+                    >
+                      {({ hovered }) => (
+                        <>
+                          <Text style={[styles.conciseBtnText, active && styles.conciseBtnActive]}>
+                            {mode === 'normal' ? 'Normal' : 'Concise'}
+                          </Text>
+                          {hovered && (
+                            <View style={styles.conciseTooltip}>
+                              <Text style={styles.conciseTooltipText}>
+                                {mode === 'normal'
+                                  ? 'Longer, detailed answers'
+                                  : 'Short answers — 2–3 sentences max'}
+                              </Text>
+                            </View>
+                          )}
+                        </>
+                      )}
+                    </HoverPressable>
+                  )
+                })}
+              </View>
             </View>
 
             <KeyboardAvoidingView
@@ -1228,9 +1298,14 @@ const styles = StyleSheet.create({
   topBar: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: spacing.sm,
+    justifyContent: 'space-between',
     paddingHorizontal: spacing.lg,
     paddingTop: spacing.md,
+  },
+  topBarLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
   },
   sidebarToggle: {
     padding: spacing.xs,
@@ -1243,6 +1318,41 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '700',
     color: colors.text,
+  },
+  conciseToggleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.xs,
+  },
+  conciseBtn: {
+    paddingHorizontal: spacing.xs + 2,
+    paddingVertical: spacing.xs - 1,
+    position: 'relative',
+  },
+  conciseBtnText: {
+    fontSize: 11,
+    color: colors.textFaint,
+  },
+  conciseBtnActive: {
+    color: colors.text,
+    fontWeight: '600',
+  },
+  conciseTooltip: {
+    position: 'absolute',
+    top: '100%',
+    right: 0,
+    zIndex: 50,
+    backgroundColor: colors.surface,
+    borderWidth: 1,
+    borderColor: colors.borderSoft,
+    borderRadius: radius.md,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: spacing.xs,
+    marginTop: spacing.xs,
+  },
+  conciseTooltipText: {
+    fontSize: 11,
+    color: colors.textMuted,
   },
   threadArea: {
     flex: 1,
