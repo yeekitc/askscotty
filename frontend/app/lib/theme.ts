@@ -19,10 +19,11 @@ export const colors = {
   accentText: '#f7fafc',
   error: '#8a1f1f',
   mockBadge: '#8a5a1f',
-  // Lighter than `background` so the sidebar reads as its own surface without
-  // needing a border.
-  sidebar: '#f9fafb',
-  sidebarHover: '#eef1f4',
+  sidebar: '#C41230',
+  sidebarHover: 'rgba(255,255,255,0.12)',
+  sidebarText: '#ffffff',
+  sidebarBorder: 'rgba(255,255,255,0.2)',
+  userBubble: '#FFC5C5',
   // Backdrop behind the sidebar when it opens as a drawer on narrow screens.
   overlay: 'rgba(12, 20, 28, 0.35)',
 }

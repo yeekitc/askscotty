@@ -622,7 +622,7 @@ export default function AskScreen() {
         value={searchQuery}
         onChangeText={setSearchQuery}
         placeholder="Search chats"
-        placeholderTextColor={colors.textFaint}
+        placeholderTextColor="rgba(255,255,255,0.5)"
         accessibilityLabel="Search chats"
       />
 
@@ -1028,11 +1028,11 @@ const styles = StyleSheet.create({
   brandSidebar: {
     fontSize: 20,
     fontWeight: '700',
-    color: colors.text,
+    color: colors.sidebarText,
   },
   closeIcon: {
     fontSize: 16,
-    color: colors.textMuted,
+    color: colors.sidebarText,
     padding: spacing.xs,
   },
   newChatButton: {
@@ -1043,25 +1043,25 @@ const styles = StyleSheet.create({
     marginBottom: spacing.md,
   },
   newChatButtonActive: {
-    backgroundColor: colors.border,
+    backgroundColor: 'rgba(255,255,255,0.25)',
   },
   newChatText: {
-    color: colors.text,
+    color: colors.sidebarText,
     fontSize: 14,
     fontWeight: '600',
   },
   searchInput: {
-    backgroundColor: colors.background,
+    backgroundColor: 'rgba(255,255,255,0.15)',
     borderRadius: radius.md,
     paddingVertical: spacing.sm,
     paddingHorizontal: spacing.md,
     fontSize: 14,
-    color: colors.text,
+    color: colors.sidebarText,
     marginBottom: spacing.lg,
   },
   recentHeading: {
     fontSize: 12,
-    color: colors.textMuted,
+    color: 'rgba(255,255,255,0.6)',
     marginBottom: spacing.sm,
     textTransform: 'uppercase',
     letterSpacing: 1,
@@ -1082,7 +1082,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.sm,
     borderRadius: radius.md,
     borderTopWidth: 1,
-    borderTopColor: colors.borderSoft,
+    borderTopColor: colors.sidebarBorder,
   },
   profileRowActive: {
     backgroundColor: colors.sidebarHover,
@@ -1106,21 +1106,21 @@ const styles = StyleSheet.create({
   profileName: {
     fontSize: 14,
     fontWeight: '600',
-    color: colors.text,
+    color: colors.sidebarText,
   },
   profileSub: {
     fontSize: 12,
-    color: colors.textMuted,
+    color: 'rgba(255,255,255,0.65)',
     marginTop: 1,
   },
   profileChevron: {
     fontSize: 18,
-    color: colors.textFaint,
+    color: 'rgba(255,255,255,0.5)',
     paddingHorizontal: spacing.xs,
   },
   recentEmpty: {
     fontSize: 13,
-    color: colors.textFaint,
+    color: 'rgba(255,255,255,0.5)',
     fontStyle: 'italic',
   },
   recentItem: {
@@ -1146,7 +1146,7 @@ const styles = StyleSheet.create({
     height: 6,
     borderRadius: radius.pill,
     marginRight: spacing.xs + 2,
-    backgroundColor: colors.textMuted,
+    backgroundColor: 'rgba(255,255,255,0.55)',
   },
   // Arrived rather than arriving — darker, so a finished answer reads as
   // something to go and look at rather than something still happening.
@@ -1158,7 +1158,7 @@ const styles = StyleSheet.create({
     // control past the edge of the sidebar.
     flexShrink: 1,
     fontSize: 13,
-    color: colors.textMuted,
+    color: 'rgba(255,255,255,0.75)',
   },
   recentRow: {
     // The positioning context the "..." menu anchors to.
@@ -1175,7 +1175,7 @@ const styles = StyleSheet.create({
   menuIcon: {
     fontSize: 16,
     lineHeight: 16,
-    color: colors.textFaint,
+    color: 'rgba(255,255,255,0.55)',
     paddingHorizontal: spacing.xs,
   },
   menu: {
@@ -1212,14 +1212,14 @@ const styles = StyleSheet.create({
     paddingVertical: spacing.sm,
     paddingHorizontal: spacing.sm,
     borderRadius: radius.sm,
-    backgroundColor: colors.background,
+    backgroundColor: 'rgba(255,255,255,0.15)',
     borderWidth: 1,
-    borderColor: colors.border,
+    borderColor: 'rgba(255,255,255,0.35)',
     fontSize: 13,
-    color: colors.text,
+    color: colors.sidebarText,
   },
   recentItemTextActive: {
-    color: colors.text,
+    color: colors.sidebarText,
     fontWeight: '600',
   },
   mainColumn: {
