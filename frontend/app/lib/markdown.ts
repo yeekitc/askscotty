@@ -36,7 +36,7 @@ export type Block =
   | { type: 'heading'; level: 1 | 2 | 3; spans: InlineSpan[] }
   /** `ordered` drives the marker; `start` is what the first item is numbered. */
   | { type: 'list'; ordered: boolean; start: number; items: InlineSpan[][] }
-  | { type: 'code'; text: string }
+  | { type: 'code'; language?: string; text: string }
 
 const HEADING = /^(#{1,3})\s+(.*)$/
 const BULLET = /^[-*+]\s+(.*)$/
@@ -75,6 +75,7 @@ export function parseMarkdown(source: string): Block[] {
     if (FENCE.test(line.trim())) {
       flushParagraph()
       openList = null
+      const fenceInfo = line.trim().slice(3).trim()
       const body: string[] = []
       index++
       while (index < lines.length && !FENCE.test(lines[index].trim())) {
@@ -83,7 +84,7 @@ export function parseMarkdown(source: string): Block[] {
       }
       // An unterminated fence runs to the end of the answer, which is what a
       // half-streamed code block looks like. Render what there is.
-      blocks.push({ type: 'code', text: body.join('\n') })
+      blocks.push({ type: 'code', language: fenceInfo || undefined, text: body.join('\n') })
       continue
     }
 

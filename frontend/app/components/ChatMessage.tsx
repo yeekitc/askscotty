@@ -114,7 +114,7 @@ export function ChatMessage() {
                   // return an element rather than nothing.
                   renderSource={() => <></>}
                 />
-                <CitationList citations={citations} answer={answer} />
+                <CitationList citations={citations} />
               </MessageCitations>
             </View>
           </View>
