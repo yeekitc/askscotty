@@ -12,7 +12,15 @@ type Assignment = {
 
 const PAGE_SIZE = 6
 
-export function AssignmentList({ text }: { text: string }) {
+function Checkbox({ submitted }: { submitted: boolean | null }) {
+  return (
+    <View style={[styles.checkbox, submitted === true && styles.checkboxDone]}>
+      {submitted === true && <Text style={styles.checkmark}>✓</Text>}
+    </View>
+  )
+}
+
+export function AssignmentList({ text, viewMode }: { text: string; viewMode: 'list' | 'grid' }) {
   const [page, setPage] = useState(0)
 
   let items: Assignment[] = []
@@ -26,53 +34,80 @@ export function AssignmentList({ text }: { text: string }) {
   const totalPages = Math.ceil(items.length / PAGE_SIZE)
   const visibleItems = items.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE)
 
+  const pager = totalPages > 1 ? (
+    <View style={styles.pager}>
+      <Pressable
+        onPress={() => setPage(p => p - 1)}
+        disabled={page === 0}
+        style={styles.pageBtn}
+      >
+        <Text style={[styles.pageBtnText, page === 0 && styles.pageBtnDisabled]}>‹</Text>
+      </Pressable>
+      <Text style={styles.pageLabel}>{page + 1} / {totalPages}</Text>
+      <Pressable
+        onPress={() => setPage(p => p + 1)}
+        disabled={page === totalPages - 1}
+        style={styles.pageBtn}
+      >
+        <Text style={[styles.pageBtnText, page === totalPages - 1 && styles.pageBtnDisabled]}>›</Text>
+      </Pressable>
+    </View>
+  ) : null
+
+  if (viewMode === 'list') {
+    return (
+      <View>
+        <View style={styles.listContainer}>
+          {visibleItems.map((item, i) => (
+            <View key={i}>
+              <View style={styles.listRow}>
+                <View style={styles.listDateCol}>
+                  <Text style={styles.listDateDay}>{item.due_date ?? '—'}</Text>
+                  {item.due_time ? <Text style={styles.listDateTime}>{item.due_time}</Text> : null}
+                </View>
+                <View style={styles.listNameCol}>
+                  <Text style={styles.listTitle} numberOfLines={2}>{item.title}</Text>
+                  <Text style={styles.listCourse} numberOfLines={1}>{item.course}</Text>
+                </View>
+                <View style={styles.checkCol}>
+                  <Checkbox submitted={item.submitted} />
+                </View>
+              </View>
+              {i < visibleItems.length - 1 && <View style={styles.divider} />}
+            </View>
+          ))}
+        </View>
+        {pager}
+      </View>
+    )
+  }
+
   return (
     <View>
       <View style={styles.grid}>
-      {visibleItems.map((item, i) => (
-        <View key={i} style={styles.card}>
-          <View style={styles.dateCol}>
-            <Text style={styles.dateDay}>{item.due_date ?? '—'}</Text>
-            {item.due_time ? <Text style={styles.dateTime}>{item.due_time}</Text> : null}
-          </View>
-          <View style={styles.nameCol}>
-            <Text style={styles.title} numberOfLines={2}>{item.title}</Text>
-            <Text style={styles.course} numberOfLines={1}>{item.course}</Text>
-          </View>
-          <View style={styles.checkCol}>
-            <View style={[styles.checkbox, item.submitted === true && styles.checkboxDone]}>
-              {item.submitted === true && (
-                <Text style={styles.checkmark}>✓</Text>
-              )}
+        {visibleItems.map((item, i) => (
+          <View key={i} style={styles.card}>
+            <View style={styles.dateCol}>
+              <Text style={styles.dateDay}>{item.due_date ?? '—'}</Text>
+              {item.due_time ? <Text style={styles.dateTime}>{item.due_time}</Text> : null}
+            </View>
+            <View style={styles.nameCol}>
+              <Text style={styles.title} numberOfLines={2}>{item.title}</Text>
+              <Text style={styles.course} numberOfLines={1}>{item.course}</Text>
+            </View>
+            <View style={styles.checkCol}>
+              <Checkbox submitted={item.submitted} />
             </View>
           </View>
-        </View>
-      ))}
+        ))}
       </View>
-      {totalPages > 1 && (
-        <View style={styles.pager}>
-          <Pressable
-            onPress={() => setPage(p => p - 1)}
-            disabled={page === 0}
-            style={styles.pageBtn}
-          >
-            <Text style={[styles.pageBtnText, page === 0 && styles.pageBtnDisabled]}>‹</Text>
-          </Pressable>
-          <Text style={styles.pageLabel}>{page + 1} / {totalPages}</Text>
-          <Pressable
-            onPress={() => setPage(p => p + 1)}
-            disabled={page === totalPages - 1}
-            style={styles.pageBtn}
-          >
-            <Text style={[styles.pageBtnText, page === totalPages - 1 && styles.pageBtnDisabled]}>›</Text>
-          </Pressable>
-        </View>
-      )}
+      {pager}
     </View>
   )
 }
 
 const styles = StyleSheet.create({
+  // Grid view
   grid: {
     flexDirection: 'row',
     flexWrap: 'wrap',
@@ -119,6 +154,57 @@ const styles = StyleSheet.create({
     color: colors.textMuted,
     marginTop: 2,
   },
+  // List view
+  listContainer: {
+    backgroundColor: colors.surface,
+    borderRadius: radius.lg,
+    borderWidth: 1,
+    borderColor: colors.borderSoft,
+    overflow: 'hidden',
+  },
+  listRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: spacing.sm,
+    paddingHorizontal: spacing.md,
+    gap: spacing.sm,
+  },
+  listDateCol: {
+    width: 48,
+    alignItems: 'center',
+    flexShrink: 0,
+  },
+  listDateDay: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: colors.text,
+    textAlign: 'center',
+  },
+  listDateTime: {
+    fontSize: 11,
+    color: colors.textMuted,
+    textAlign: 'center',
+    marginTop: 1,
+  },
+  listNameCol: {
+    flex: 1,
+  },
+  listTitle: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: colors.text,
+  },
+  listCourse: {
+    fontSize: 11,
+    color: colors.textMuted,
+    marginTop: 2,
+  },
+  divider: {
+    height: 1,
+    backgroundColor: colors.borderSoft,
+    marginHorizontal: spacing.md,
+  },
+  // Shared
   checkCol: {
     alignItems: 'center',
     justifyContent: 'center',

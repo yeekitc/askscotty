@@ -24,8 +24,6 @@ import { HoverPressable } from './HoverPressable'
 /** Narrower than this and a two-column card is all ellipsis. */
 const MIN_COLUMN = 168
 
-const PREVIEW_CARDS = 4
-
 /** Groups in first-appearance order, so the numbering still climbs down the page. */
 function groupBySource(citations: Citation[]): [string, Citation[]][] {
   const groups = new Map<string, Citation[]>()
@@ -57,45 +55,35 @@ export function CitationList({ citations }: { citations: Citation[] }) {
   const [cardsExpanded, setCardsExpanded] = useState(false)
 
   const groups = useMemo(() => groupBySource(citations), [citations])
-
   const totalCards = citations.length
-  const visibleIds = useMemo(() => {
-    const slice = cardsExpanded ? citations : citations.slice(0, PREVIEW_CARDS)
-    return new Set(slice.map((c) => c.id))
-  }, [citations, cardsExpanded])
 
-  if (citations.length === 0) return null
+  if (totalCards === 0) return null
 
-  // Measured, not guessed off the window: the answer card is inset by its own
-  // padding and by the sidebar, so window width says little about the space here.
   const columns = width >= MIN_COLUMN * 2 + spacing.sm ? 2 : 1
   const cardWidth = columns === 2 ? (width - spacing.sm) / 2 : undefined
   const onLayout = (event: LayoutChangeEvent) => setWidth(event.nativeEvent.layout.width)
 
   return (
     <View style={styles.list} onLayout={onLayout}>
-      {groups.map(([source, items]) => {
-        const visible = items.filter((c) => visibleIds.has(c.id))
-        if (visible.length === 0) return null
-        return (
+      {cardsExpanded &&
+        groups.map(([source, items]) => (
           <View key={source} style={styles.group}>
             <Text style={styles.groupLabel}>{source}</Text>
             <View style={styles.grid}>
-              {visible.map((citation) => (
+              {items.map((citation) => (
                 <SourceCard key={citation.id} citation={citation} width={cardWidth} />
               ))}
             </View>
           </View>
-        )
-      })}
+        ))}
 
-      {totalCards > PREVIEW_CARDS ? (
-        <Pressable onPress={() => setCardsExpanded((e) => !e)} style={styles.expandBtn}>
-          <Text style={styles.expandBtnText}>
-            {cardsExpanded ? 'Show less ↑' : `Show all ${totalCards} sources ↓`}
-          </Text>
-        </Pressable>
-      ) : null}
+      <Pressable onPress={() => setCardsExpanded((e) => !e)} style={styles.expandBtn}>
+        <Text style={styles.expandBtnText}>
+          {cardsExpanded
+            ? 'Hide sources ↑'
+            : `${totalCards} source${totalCards !== 1 ? 's' : ''} ↓`}
+        </Text>
+      </Pressable>
     </View>
   )
 }
