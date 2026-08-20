@@ -8,6 +8,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import {
+  Image,
   KeyboardAvoidingView,
   Platform,
   Pressable,
@@ -787,9 +788,13 @@ export default function AskScreen() {
         accessibilityRole="button"
         accessibilityLabel="Manage your connections"
       >
-        <View style={styles.profileAvatar}>
-          <Text style={styles.profileInitial}>{user.displayName.slice(0, 1).toUpperCase()}</Text>
-        </View>
+        {user.profilePicture ? (
+          <Image source={{ uri: user.profilePicture }} style={styles.profileAvatar} />
+        ) : (
+          <View style={styles.profileAvatar}>
+            <Text style={styles.profileInitial}>{user.displayName.slice(0, 1).toUpperCase()}</Text>
+          </View>
+        )}
         <View style={styles.profileText}>
           <Text style={styles.profileName} numberOfLines={1}>
             {user.displayName}
@@ -1352,7 +1357,7 @@ const styles = StyleSheet.create({
   },
   conciseTooltipText: {
     fontSize: 11,
-    color: colors.textMuted,
+    color: colors.text,
   },
   threadArea: {
     flex: 1,

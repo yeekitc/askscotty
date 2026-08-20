@@ -14,9 +14,11 @@
  */
 
 import { router } from 'expo-router'
+import * as ImagePicker from 'expo-image-picker'
 import { type ReactNode, useEffect, useMemo, useState } from 'react'
 import {
   ActivityIndicator,
+  Image,
   Keyboard,
   Linking,
   Modal,
@@ -42,7 +44,7 @@ import { durations, easing, offsets, useReducedMotion } from '../lib/motion'
 import { getSessionId, resetSessionId, setSessionId } from '../lib/session'
 import { colors, radius, shadows, spacing, WIDE_BREAKPOINT } from '../lib/theme'
 import type { Connection, Provider } from '../lib/types'
-import { setDisplayName, useCurrentUser } from '../lib/user'
+import { setDisplayName, setProfilePicture, useCurrentUser } from '../lib/user'
 import { HoverPressable } from './HoverPressable'
 
 const AnimatedPressable = Animated.createAnimatedComponent(Pressable)
@@ -165,7 +167,7 @@ export function ConnectionsModal({ visible, onClose, onCountChange }: Props) {
   const insets = useSafeAreaInsets()
   const isWide = width >= WIDE_BREAKPOINT
   const reduceMotion = useReducedMotion()
-  const { displayName } = useCurrentUser()
+  const { displayName, profilePicture } = useCurrentUser()
 
   // The card pulls up and the backdrop fades in on open, and reverses on close.
   // `mounted` keeps the Modal in the tree through the exit so it can animate out
@@ -204,35 +206,56 @@ export function ConnectionsModal({ visible, onClose, onCountChange }: Props) {
   const [rowError, setRowError] = useState<Partial<Record<Provider, string>>>({})
 
   const [nameInput, setNameInput] = useState(displayName)
+  const [pictureInput, setPictureInput] = useState(profilePicture ?? '')
   const [savedAccounts, setSavedAccounts] = useState<SavedAccount[]>([])
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null)
 
-  // Pre-fill with the saved name each time the modal opens.
-  // Intentionally excludes displayName from deps — we don't want to overwrite
-  // in-progress edits while the modal is already open.
+  // Pre-fill with the saved name/picture each time the modal opens.
+  // Intentionally excludes displayName/profilePicture from deps — we don't want
+  // to overwrite in-progress edits while the modal is already open.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(() => { if (visible) setNameInput(displayName) }, [visible])
+  useEffect(() => { if (visible) { setNameInput(displayName); setPictureInput(profilePicture ?? '') } }, [visible])
 
   const handleSaveName = async () => {
+    const sid = await getSessionId()
     await setDisplayName(nameInput.trim())
+    await saveAccount(sid, nameInput.trim(), pictureInput)
     Keyboard.dismiss()
+  }
+
+  const handlePickPhoto = async () => {
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      allowsEditing: true,
+      aspect: [1, 1],
+      quality: 0.6,
+      base64: true,
+    })
+    if (!result.canceled && result.assets[0]) {
+      const uri = `data:image/jpeg;base64,${result.assets[0].base64}`
+      setPictureInput(uri)
+      await setProfilePicture(uri)
+    }
   }
 
   const handleNewAccount = async () => {
     const sid = await getSessionId()
-    await saveAccount(sid, displayName)
+    await saveAccount(sid, displayName, pictureInput)
     await resetSessionId()
     await setDisplayName('')
+    await setProfilePicture('')
     setNameInput('')
+    setPictureInput('')
     close()
     router.replace('/')
   }
 
   const handleSwitchToAccount = async (account: SavedAccount) => {
     const sid = await getSessionId()
-    await saveAccount(sid, displayName)
+    await saveAccount(sid, displayName, pictureInput)
     await setSessionId(account.sessionId)
     await setDisplayName(account.displayName)
+    await setProfilePicture(account.profilePicture ?? '')
     close()
     router.replace('/')
   }
@@ -384,6 +407,20 @@ export function ConnectionsModal({ visible, onClose, onCountChange }: Props) {
           </Text>
 
           <View style={styles.profileSection}>
+            <View style={styles.avatarWrap}>
+              {pictureInput ? (
+                <Image source={{ uri: pictureInput }} style={styles.photoAvatar} />
+              ) : (
+                <View style={[styles.photoAvatar, styles.photoAvatarPlaceholder]}>
+                  <Text style={styles.photoAvatarInitial}>
+                    {(nameInput || displayName).slice(0, 1).toUpperCase() || '?'}
+                  </Text>
+                </View>
+              )}
+              <Pressable onPress={handlePickPhoto} style={styles.photoEditBtn} accessibilityRole="button">
+                <Text style={styles.photoEditBtnText}>Edit photo</Text>
+              </Pressable>
+            </View>
             <Text style={styles.fieldLabel}>Display name</Text>
             <View style={styles.profileRow}>
               <TextInput
@@ -605,7 +642,16 @@ export function ConnectionsModal({ visible, onClose, onCountChange }: Props) {
 
           {/* Current session row */}
           <View style={styles.accountRow}>
-            <Text style={styles.accountName}>
+            {pictureInput ? (
+              <Image source={{ uri: pictureInput }} style={styles.photoAvatarSmall} />
+            ) : (
+              <View style={[styles.photoAvatarSmall, styles.photoAvatarPlaceholder]}>
+                <Text style={styles.photoAvatarSmallInitial}>
+                  {(displayName || '?').slice(0, 1).toUpperCase()}
+                </Text>
+              </View>
+            )}
+            <Text style={[styles.accountName, { marginLeft: spacing.sm }]}>
               {displayName || 'Unnamed account'}{' '}
               <Text style={styles.accountYou}>(you)</Text>
             </Text>
@@ -616,7 +662,16 @@ export function ConnectionsModal({ visible, onClose, onCountChange }: Props) {
             .filter((a) => a.sessionId !== currentSessionId)
             .map((account) => (
               <View key={account.sessionId} style={styles.accountRow}>
-                <Text style={styles.accountName}>{account.displayName || 'Unnamed account'}</Text>
+                {account.profilePicture ? (
+                  <Image source={{ uri: account.profilePicture }} style={styles.photoAvatarSmall} />
+                ) : (
+                  <View style={[styles.photoAvatarSmall, styles.photoAvatarPlaceholder]}>
+                    <Text style={styles.photoAvatarSmallInitial}>
+                      {(account.displayName || '?').slice(0, 1).toUpperCase()}
+                    </Text>
+                  </View>
+                )}
+                <Text style={[styles.accountName, { marginLeft: spacing.sm }]}>{account.displayName || 'Unnamed account'}</Text>
                 <View style={styles.accountActions}>
                   <Pressable
                     onPress={() => handleRemoveAccount(account)}
@@ -901,6 +956,46 @@ const styles = StyleSheet.create({
   },
   profileSection: {
     gap: spacing.xs,
+  },
+  avatarWrap: {
+    alignItems: 'center',
+    marginBottom: spacing.md,
+  },
+  photoAvatar: {
+    width: 80,
+    height: 80,
+    borderRadius: 40,
+  },
+  photoAvatarPlaceholder: {
+    backgroundColor: colors.accent,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  photoAvatarInitial: {
+    color: colors.accentText,
+    fontSize: 32,
+    fontWeight: '700',
+  },
+  photoAvatarSmall: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    flexShrink: 0,
+  },
+  photoAvatarSmallInitial: {
+    color: colors.accentText,
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  photoEditBtn: {
+    marginTop: spacing.xs,
+    paddingVertical: spacing.xs,
+    paddingHorizontal: spacing.md,
+  },
+  photoEditBtnText: {
+    fontSize: 12,
+    color: colors.accent,
+    fontWeight: '600',
   },
   profileRow: {
     flexDirection: 'row',
