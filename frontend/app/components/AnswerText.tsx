@@ -23,8 +23,8 @@
  * and passed down, and only accumulate locally inside a single synchronous map.
  */
 
-import { useMemo } from 'react'
-import { Linking, StyleSheet, Text, View } from 'react-native'
+import { useMemo, useState } from 'react'
+import { Linking, Pressable, StyleSheet, Text, View } from 'react-native'
 
 import { colors, fonts, radius, spacing } from '../lib/theme'
 import { listMarker, parseMarkdown, type Block, type InlineSpan } from '../lib/markdown'
@@ -32,6 +32,10 @@ import { toWords, type Word } from '../lib/citations'
 import { FADE_RAMP, FADE_WORDS, splitWords, useBlink, useSmoothReveal } from '../lib/reveal'
 import { CitationMarker } from './CitationMarker'
 import { AssignmentList } from './AssignmentList'
+import { ScheduleGrid } from './ScheduleGrid'
+import { TaskMap } from './TaskMap'
+import { CourseList } from './CourseList'
+import { EventList } from './EventList'
 
 /** One span's words. */
 type SpanWords = Word[]
@@ -66,6 +70,10 @@ function chunkBlock(block: Block): BlockWords {
     // wrote as code, not a citation of its own output.
     case 'code':
       if (block.language === 'assignments') return [[[]]]
+      if (block.language === 'schedule') return [[[]]]
+      if (block.language === 'taskmap') return [[[]]]
+      if (block.language === 'courses') return [[[]]]
+      if (block.language === 'events') return [[[]]]
       return [[splitWords(block.text).map((text) => ({ text, markers: [] }))]]
     default:
       return [block.spans.map((span) => toWords(span.text))]
@@ -74,6 +82,71 @@ function chunkBlock(block: Block): BlockWords {
 
 const countWords = (words: BlockWords) =>
   words.reduce((total, group) => total + group.reduce((sum, span) => sum + span.length, 0), 0)
+
+function ToggledView({ title, language, text, defaultMode = 'list' }: { title: string; language: string; text: string; defaultMode?: 'list' | 'grid' }) {
+  const [viewMode, setViewMode] = useState<'list' | 'grid'>(defaultMode)
+
+  return (
+    <View>
+      <View style={toggleStyles.toggleHeader}>
+        <Text style={toggleStyles.headerTitle}>{title}</Text>
+        <View style={toggleStyles.toggleBtnGroup}>
+          <Pressable
+            style={[toggleStyles.toggleBtn, viewMode === 'grid' && toggleStyles.toggleBtnActive]}
+            onPress={() => setViewMode('grid')}
+          >
+            <Text style={[toggleStyles.toggleIcon, viewMode === 'grid' && toggleStyles.toggleIconActive]}>⊞</Text>
+          </Pressable>
+          <Pressable
+            style={[toggleStyles.toggleBtn, viewMode === 'list' && toggleStyles.toggleBtnActive]}
+            onPress={() => setViewMode('list')}
+          >
+            <Text style={[toggleStyles.toggleIcon, viewMode === 'list' && toggleStyles.toggleIconActive]}>☰</Text>
+          </Pressable>
+        </View>
+      </View>
+      {language === 'events' && <EventList text={text} viewMode={viewMode} />}
+      {language === 'courses' && <CourseList text={text} viewMode={viewMode} />}
+      {language === 'assignments' && <AssignmentList text={text} viewMode={viewMode} />}
+    </View>
+  )
+}
+
+const toggleStyles = StyleSheet.create({
+  toggleHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: spacing.sm,
+  },
+  headerTitle: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: colors.text,
+  },
+  toggleBtnGroup: {
+    flexDirection: 'row',
+    gap: 4,
+  },
+  toggleBtn: {
+    borderWidth: 1,
+    borderColor: colors.borderSoft,
+    borderRadius: radius.sm,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: 4,
+  },
+  toggleBtnActive: {
+    backgroundColor: colors.accent,
+    borderColor: colors.accent,
+  },
+  toggleIcon: {
+    fontSize: 14,
+    color: colors.textMuted,
+  },
+  toggleIconActive: {
+    color: colors.accentText,
+  },
+})
 
 export function AnswerText({ text, style, streaming = false }: Props) {
   // Memoised because the reveal re-renders every 40ms, and reparsing the whole
@@ -165,7 +238,39 @@ function BlockView({ block, words, start, first, style, reveal, caretOn }: Block
         if (reveal.caret !== null) return null
         return (
           <View style={spacer}>
-            <AssignmentList text={block.text} />
+            <ToggledView title="Assignments" language="assignments" text={block.text} />
+          </View>
+        )
+      }
+      if (block.language === 'schedule') {
+        if (reveal.caret !== null) return null
+        return (
+          <View style={spacer}>
+            <ScheduleGrid text={block.text} />
+          </View>
+        )
+      }
+      if (block.language === 'taskmap') {
+        if (reveal.caret !== null) return null
+        return (
+          <View style={spacer}>
+            <TaskMap text={block.text} />
+          </View>
+        )
+      }
+      if (block.language === 'courses') {
+        if (reveal.caret !== null) return null
+        return (
+          <View style={spacer}>
+            <ToggledView title="Courses" language="courses" text={block.text} />
+          </View>
+        )
+      }
+      if (block.language === 'events') {
+        if (reveal.caret !== null) return null
+        return (
+          <View style={spacer}>
+            <ToggledView title="Upcoming Events" language="events" text={block.text} defaultMode="grid" />
           </View>
         )
       }

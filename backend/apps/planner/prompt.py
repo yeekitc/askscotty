@@ -159,6 +159,150 @@ assignments from a previous semester instead. Do not emit an assignments block \
 when there is nothing to show.\
 """
 
+_SCHEDULE_FORMAT = """
+
+# Schedule views
+
+When answering a question about when and where courses meet — "my schedule", \
+"what time is X", "show me my timetable", or a planned/past schedule — and the \
+tool results include meeting times, output the data in a fenced schedule block \
+immediately before or after your prose:
+
+```schedule
+[
+  {
+    "course": "15-213",
+    "title": "Introduction to Computer Systems",
+    "days": ["M", "W", "F"],
+    "begin": "09:30AM",
+    "end": "10:50AM",
+    "room": "Wean 5419"
+  }
+]
+```
+
+Include every section with confirmed meeting times. Omit courses with no meeting \
+data. Use the same day codes the tool returned ("M", "T", "W", "R", "F"). \
+Do not emit a schedule block for questions about course content, prerequisites, \
+or grades — only for schedule/timetable/when-does-X-meet questions.\
+"""
+
+_TASKMAP_FORMAT = """
+
+# Task maps
+
+Emit a fenced taskmap block immediately before or after your prose when ANY of \
+these is true:
+
+1. The user explicitly asks to "visualize", "show a task map", "make a visual", \
+"show me a graph", or similar — always honour this even if everything is past due \
+or already submitted.
+2. The question asks for a prioritised plan or reveals dependencies between tasks \
+— "what do I need to finish before the exam?", "what assignments depend on \
+completing another?", "walk me through the lab sequence", graduation requirements.
+
+For past or completed tasks, set "done" true and still draw the graph — a \
+finished dependency map is as useful as a pending one.
+
+```taskmap
+{
+  "groups": [
+    {
+      "id": "g1",
+      "course": "15-213",
+      "title": "Introduction to Computer Systems",
+      "nodes": [
+        { "id": "n1", "title": "Bomb Lab",   "due": "9/27 11:59 PM", "done": false },
+        { "id": "n2", "title": "Buffer Lab", "due": "10/5 11:59 PM", "done": false },
+        { "id": "n3", "title": "Exam 1",     "due": "10/8 7:30 PM",  "done": false }
+      ]
+    }
+  ],
+  "edges": [
+    { "from": "n1", "to": "n2" },
+    { "from": "n1", "to": "n3" },
+    { "from": "n2", "to": "n3" }
+  ]
+}
+```
+
+Each group is one course or category; its nodes appear top-to-bottom in the \
+column. Infer edges using these rules — do not wait for the user to specify them:
+
+- Every assignment, lab, and homework due before an exam is a prerequisite of \
+that exam. Add an edge from each such task to the exam node.
+- A "study guide" or "review" is a prerequisite of the exam it prepares for.
+- Within a course, if labs or problem sets are numbered or clearly sequential \
+(Lab 1 → Lab 2, PS1 → PS2), add edges along that sequence.
+- Add a cross-course edge only when one course's task genuinely blocks another \
+(e.g., a prerequisite course's final must be passed before enrolling in the next).
+- Order nodes by due date, earliest first. When due dates are equal, put \
+assignments before exams.
+
+Set "done" true when the tool reports the task submitted, graded, or past its \
+due date. Omit "due" when not available. \
+Do not emit a taskmap block for simple lookups, schedule questions, or plain \
+assignment lists — use the schedule and assignments blocks instead. Never refuse \
+a taskmap when the user has explicitly asked for one.\
+"""
+
+_COURSE_FORMAT = """
+
+# Course cards
+
+Use a fenced courses block whenever any of these is true:
+- get_course or search_courses returns results
+- campus_search or a web search returns data for two or more CMU courses
+- Your answer would otherwise list two or more CMU courses by number
+
+Place the block immediately before or after your prose. For courses found through
+campus_search or web sources, include the fields you have and fill unknowns with
+null (units) or an empty string (prereqs, description):
+
+```courses
+[
+  {
+    "course_number": "15-213",
+    "title": "Introduction to Computer Systems",
+    "units": 12,
+    "description": "A programmer's view of how programs are compiled ...",
+    "prereqs": "15-122"
+  }
+]
+```
+
+Include every course in the result. The only exceptions: a question whose entire
+point is the meeting schedule ("when does 15-213 meet?") uses the schedule block
+instead, and a simple yes/no fact about a single field ("does 15-213 have prereqs?")
+may be answered in prose alone.\
+"""
+
+_EVENTS_FORMAT = """
+
+# Event cards
+
+When find_events returns results, emit a fenced events block. The block is the
+complete presentation — do not list events in prose or bullets alongside it. A single
+short framing sentence before the block is fine ("Here are events this week:"), but
+never repeat event details in text.
+
+```events
+[
+  {
+    "title": "CMU Fall Career Fair",
+    "start": "Mon, Nov 14, 2026 9:00 AM",
+    "end": "Mon, Nov 14, 2026 5:00 PM",
+    "location": "Cohon University Center",
+    "org": "Career and Professional Development Center",
+    "link": "https://tartanconnect.cmu.edu/rsvp?id=1234"
+  }
+]
+```
+
+Use the exact start, end, location, org, and link values the tool returned.
+Omit org when empty. Do not emit an events block when find_events returned nothing.\
+"""
+
 _MARKER_RULES = """\
 
 # Citing sources inline
@@ -179,7 +323,7 @@ def agent_system_text() -> str:
     citations on a re-provision instead of an env-var flip. `loop.py` strips the
     markers while the setting is off.
     """
-    return _BASE + _ASSIGNMENT_FORMAT + _MARKER_RULES
+    return _BASE + _ASSIGNMENT_FORMAT + _COURSE_FORMAT + _EVENTS_FORMAT + _SCHEDULE_FORMAT + _TASKMAP_FORMAT + _MARKER_RULES
 
 
 def user_turn(

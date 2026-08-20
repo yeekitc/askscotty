@@ -104,6 +104,7 @@ def _normalize_event(raw: dict) -> dict:
         "end": end,
         "location": _text(row.get("eventLocation")),
         "org": _text(row.get("clubName")),
+        "description": _text(row.get("eventDescription") or ""),
         "categories": _categories(row),
         "link": f"{_SITE}{link}" if link.startswith("/") else link,
         "source": "TartanConnect events",
