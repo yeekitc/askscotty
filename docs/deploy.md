@@ -184,6 +184,7 @@ cannot answer.
 | Answers are vague, citations thin | `OPENAI_API_KEY` unset — retrieval fell back to full-text only |
 | 403 on `/admin/` login | `CSRF_TRUSTED_ORIGINS` missing the API's own origin |
 | First request of the day takes a minute | Free-tier cold start — see above |
+| Deploy never goes live, health check 400s | `DJANGO_ALLOWED_HOSTS` missing the real hostname — Django's `DisallowedHost`, which logs as a bare 400 |
 
 Logs are `docker compose logs -f backend` locally, or the **Logs** tab on Render.
 To confirm the toolset registered at all:

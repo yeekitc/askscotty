@@ -32,13 +32,13 @@ services:
       - key: DJANGO_SECRET_KEY
         generateValue: true
 
-      # Render injects the service's own hostname, so this needs no editing even
-      # if the service is renamed.
+      # NOT fromService: `property: host` resolves to the service *name*
+      # ("askscotty-api"), not the hostname, and Django then 400s every request
+      # as DisallowedHost — health checks included, so the deploy never goes
+      # live. settings.py also appends RENDER_EXTERNAL_HOSTNAME, which is what
+      # covers a custom domain.
       - key: DJANGO_ALLOWED_HOSTS
-        fromService:
-          type: web
-          name: askscotty-api
-          property: host
+        value: .onrender.com,localhost,127.0.0.1
 
       # The deployed app's origin, e.g. https://askscotty.pages.dev — no trailing
       # slash. Blank here means every browser request fails CORS the moment
