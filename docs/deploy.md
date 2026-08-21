@@ -126,12 +126,16 @@ the app as a bare "network error" rather than anything mentioning CORS.
 Render's free tier spins a service down after 15 minutes idle and takes ~50s to
 come back. On top of a 60s answer that is a poor first impression for a judge.
 
-Either:
+Put the service on **Starter ($7/mo)** for any period when someone might arrive
+unannounced. Render prorates by the second, so a known three-day window costs
+about $0.70 — but that only helps if the window is known.
 
-- Put the service on **Starter ($7/mo) for the judging window**. Render prorates
-  by the second, so three days is about $0.70. Downgrade after.
-- Or stay free and keep it warm with an uptime pinger (cron-job.org, UptimeRobot)
-  hitting `/api/health/` every 10 minutes.
+Do **not** solve this with an uptime pinger. A workspace gets 750 free instance
+hours a month and a month is ~720, so a service kept awake around the clock runs
+the allowance down to roughly a day of margin. Exhaust it and Render suspends
+every free web service in the workspace until the next month begins: not a slow
+first request, a dead URL for days. A paid instance draws no free hours at all,
+which is the real reason to buy one.
 
 Neon also scales to zero and adds ~500ms on the first query. Harmless alone, but
 it stacks with a cold start.
