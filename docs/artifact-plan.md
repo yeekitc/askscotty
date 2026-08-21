@@ -1,7 +1,10 @@
 # Artifacts — answers that aren't just prose
 
-> ⚠️ **Early plan. Expect it to change.**
-> This exists so the team has visibility and so we don't paint ourselves into a
+> ⚠️ **Design sketch — none of this is built.** There is no `artifacts` field on
+> the API response, no renderer registry, and no artifact route. Read this as a
+> plan, not a feature list.
+>
+> It exists so the team has visibility and so we don't paint ourselves into a
 > corner. Most of it is deliberately undecided. Where something *is* fixed, it's
 > because a PRD rule or a platform constraint fixes it — not because someone
 > picked a favourite.
@@ -56,8 +59,8 @@ Four, each with its reason, so anyone can overrule them knowingly.
 
 ### 🟢 1. An unknown `type` must never crash the app
 
-Phones run stale builds. A client from three days ago will meet an artifact type
-it's never heard of.
+Phones run stale builds, so a client will meet artifact types it has never heard
+of.
 
 → Every artifact carries `fallback_text`. Unknown type renders that. The
 renderer registry always has a default case.
@@ -96,7 +99,7 @@ a synthesised plan graph might not. Worth holding to where it's possible.
 
 ## Two kinds of artifact, different trust levels
 
-🟡 Worth keeping these distinct in our heads:
+🟡 Different amounts of trust behind them:
 
 | | Source | Example | Risk |
 |---|---|---|---|
@@ -116,15 +119,15 @@ it, and structured outputs on the final turn is a real alternative.
 ### 🟢 We can't embed someone else's map
 
 No iframes on native, and CMU Maps has no public REST API (PRD §5). A WebView
-would be web-only, which breaks the one-codebase rule in CLAUDE.md.
+would be web-only, which breaks the one-codebase rule in [CLAUDE.md](../CLAUDE.md).
 
 → Deep-link out to cmumaps, and render our own view inline.
 
 ### 🟡 Rendering our own is more tractable than it sounds
 
-B2 already needs a fixture of ~10 landmarks with coordinates and walking times.
-Ten pins and a polyline is `<View>`s plus SVG — no API key, no map SDK, all three
-platforms.
+B2's maps tool already carries a fixture of ~10 landmarks with coordinates and
+walking times. Ten pins and a polyline is `<View>`s plus SVG — no API key, no map
+SDK, all three platforms.
 
 The dependency graph uses the same toolkit. The real work there is **layout**
 (topological layering), not drawing.
@@ -146,9 +149,9 @@ persistence:
   screen from one file, so this part is nearly free with expo-router
 - the scoping rule from guideline 3
 
-🟢 **This is a different requirement from thread persistence.** Artifacts
-surviving a reload could ride in the existing `Message.content` parts array. A
-URL someone can share needs its own row.
+🟢 **Not the same requirement as thread persistence.** Artifacts surviving a
+reload could ride in the existing `Message.content` parts array; a URL someone
+can share needs its own row.
 
 ⚪ Expiry, or whether artifacts live forever. ⚪ Whether an artifact URL is
 readable by anyone who has it, or needs the session that made it even when it
@@ -163,7 +166,7 @@ contains nothing personal.
 - rendering tools register like any other tool — the loop doesn't change
 - the loop collects artifacts the way it collects citations
 - `modes_used` is unaffected
-- deadline hits before the render call? prose without the artifact. Correct
+- the turn ends before the render call? prose without the artifact. Correct
   degradation.
 
 🟢 **One real cost:** an artifact means an extra round trip on a request that's

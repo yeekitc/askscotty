@@ -1,341 +1,161 @@
 # B5 — Canvas, Ed Discussion, Stellic
 
-Hand this to whoever (or whatever) builds it. Written to be pasted whole.
+The three personal sources that need no password. Canvas and Ed both
+authenticate with a **scoped personal access token** the student generates and
+can revoke without touching their account — the safe half of B5, unlike the
+two connectors in [b5-piazza-gradescope.md](./b5-piazza-gradescope.md). Stellic
+is a labelled mock: no real integration, by explicit direction.
 
-**The one-line version:** the last three personal sources. Canvas finishes an
-existing stub against a well-documented official API. Ed Discussion is new,
-against an API confirmed by reading `edapi`'s actual source rather than
-guessing — it turns out to be the same official token, not the scraper it
-was assumed to be a few messages ago (correction below). Stellic is mock
-only — no real integration, per explicit direction.
-
-**Depends on `docs/b5-connections.md`** for the connections endpoint and the
-`get_credential()`/`set_credential()` convention. Canvas and Ed also need
-**Part 0 below**, a small extension to the shared HTTP client neither can
-work without.
+Builds on [b5-connections.md](./b5-connections.md) for the connections endpoint
+and the `get_credential()`/`get_token()` convention.
 
 ---
 
-## Correction to something said earlier in this project's history
+## Part 0 — authenticated calls through the shared HTTP client
 
-Ed Discussion's unofficial `edapi` library was described as authenticating
-via "a scraped session cookie from a logged-in browser." Having now read its
-actual source (`edapi/edapi.py`), that's wrong: it uses the exact same
-official API token this doc builds against (`Authorization: Bearer
-<token>`, generated at `https://edstem.org/us/settings/api-tokens`). The
-recommendation to skip `edapi` in favor of the official token still stands —
-there's no reason to add the dependency when the token path is this simple
-to call directly — but the reasoning was inaccurate. Worth knowing since it
-changes nothing about what to build, but the earlier claim shouldn't stand
-uncorrected.
+`backend/apps/core/http.py`'s `get_json()` takes a `headers` argument, merged
+over the `User-Agent` for one request, which is how a connector sends
+`Authorization: Bearer <token>`.
 
----
+**A request with headers is never cached, whatever `ttl` says.** The cache is
+process-wide and keyed only on url and params, so caching an authenticated
+response would let two students hitting the same endpoint with different tokens
+collide and be served each other's data (PRD §9). A header makes the cache key
+`None` outright: the trap is unreachable rather than being a rule every caller
+has to remember. Don't route around it with a hand-rolled `httpx` call.
 
-## Part 0 — the shared HTTP client can't send auth headers
-
-`backend/apps/core/http.py`'s `get_json()` hardcodes one header
-(`User-Agent`) and has no way for a caller to add another. Canvas and Ed both
-need `Authorization: Bearer <token>` on every request — this has to be fixed
-first, or both parts below are stuck reinventing B0 to work around it.
-
-```python
-def get_json(
-    url: str,
-    *,
-    params: dict[str, Any] | None = None,
-    timeout: float = DEFAULT_TIMEOUT,
-    ttl: float = 0.0,
-    headers: dict[str, str] | None = None,
-) -> Any:
-    # ...docstring gains a line about `headers`...
-    key = _cache_key(url, params) if (ttl > 0 and not headers) else None
-    ...
-    data = _fetch(url, params=params, timeout=timeout, headers=headers)
-    ...
-
-
-def _fetch(url, *, params, timeout, headers=None) -> Any:
-    host = httpx.URL(url).host
-    request_headers = {"User-Agent": settings.CRAWLER_USER_AGENT}
-    if headers:
-        request_headers.update(headers)
-    ...
-    response = _client().get(url, params=params, timeout=timeout, headers=request_headers)
-```
-
-**The important line is `ttl > 0 and not headers`, not just a comment
-telling people not to cache authenticated calls.** This is the third time in
-this project a cache-key-doesn't-include-identity trap has come up (B0's own
-non-negotiable, then again in `docs/b5-connections.md`) — worth actually
-making it impossible this time instead of documenting it as a rule someone
-has to remember. Any call that sends a header is never cached, full stop,
-regardless of what `ttl` it passes.
+`_get_json()` in `backend/apps/personal/tools.py` wraps it with the other
+thing every connector call needs: every `httpx` failure translated to a
+`ToolError`, with the exception text dropped — an httpx error can carry the
+request URL with its query string, and a personal call's params can identify
+the student.
 
 ---
 
 ## Part A — Canvas
 
-Finishes `backend/apps/personal/tools.py`'s existing stubs
-(`canvas_list_courses`, `canvas_get_assignments`) — both already registered,
-gated, and call `connection.get_token()` correctly. They just
-`raise ToolError(_NOT_WIRED)`. Replace that.
+Base URL `https://canvas.cmu.edu/api/v1` (PRD Appendix A), auth
+`Authorization: Bearer <token>`, grounded in Canvas's official public API docs
+(`canvas.instructure.com/doc/api/`).
 
-Grounded in Canvas's official public API docs
-(`canvas.instructure.com/doc/api/`) — this is a large, stable, extensively
-documented product, not a guess. Base URL: `https://canvas.cmu.edu/api/v1`
-(PRD Appendix A). Auth: `Authorization: Bearer <token>`.
+- **`canvas_list_courses`** — `GET /courses?enrollment_state=active`. Resolves
+  a vague "my systems class" to a real course id.
+- **`canvas_get_assignments`** — `GET /planner/items`, deliberately not
+  per-course `/assignments`: it aggregates every enrolled course in one call,
+  already ordered by date, which is exactly the "what's due this week"
+  question. Looping `/courses/{id}/assignments` would be one request per class
+  for the same answer. The `plannable` sub-object's fields vary by
+  `plannable_type`, and the docs give no guarantee that every type carries
+  `due_at`, so it is read through `.get()` with `plannable_date` as the
+  fallback.
+- **`canvas_get_announcements`** — `GET /announcements`, which requires
+  `context_codes`, so the enrolled course list is fetched either way (it also
+  supplies the course *names*, which the announcement payload does not carry).
+  Both date bounds are always sent: with only `start_date`, Canvas narrows the
+  window and returns nothing. The default lookback is a term, not Canvas's own
+  14 days, which routinely comes back empty; every result carries `posted_at`
+  so the model can still say what is genuinely recent.
 
-```python
-from apps.core.http import get_json
+**Pagination is Link-header based, and `get_json` only returns the decoded
+body** — it never sees the `Link` header. `_PAGE = 100` is the maximum page
+size and covers a normal student's course and thread load; a heavier account is
+truncated at one page, which the tool descriptions *say* rather than hide. Link
+following was not built; that is the known limit, not an oversight.
 
-_BASE = "https://canvas.cmu.edu/api/v1"
-
-
-def canvas_list_courses(*, session_id: str) -> dict:
-    connection = _canvas_connection(session_id)
-    headers = {"Authorization": f"Bearer {connection.get_token()}"}
-
-    try:
-        courses = get_json(f"{_BASE}/courses", params={"enrollment_state": "active"}, headers=headers)
-    except httpx.HTTPError as exc:
-        raise ToolError(f"Canvas unreachable: {exc}") from exc
-
-    mark_synced(connection)
-    results = [{"id": c["id"], "name": c["name"], "course_code": c.get("course_code", "")} for c in courses]
-    return {"results": results, "citations": [_course_citation(c) for c in results]}
-
-
-def canvas_get_assignments(*, session_id: str, due_before: str | None = None, course_id: str | None = None) -> dict:
-    connection = _canvas_connection(session_id)
-    headers = {"Authorization": f"Bearer {connection.get_token()}"}
-
-    params: dict[str, Any] = {}
-    if due_before:
-        params["end_date"] = due_before
-    if course_id:
-        params["context_codes[]"] = f"course_{course_id}"
-
-    try:
-        items = get_json(f"{_BASE}/planner/items", params=params, headers=headers)
-    except httpx.HTTPError as exc:
-        raise ToolError(f"Canvas unreachable: {exc}") from exc
-
-    mark_synced(connection)
-    results = [_normalize_planner_item(item) for item in items]
-    return {"results": results, "citations": [_assignment_citation(a) for a in results]}
-```
-
-`GET /planner/items` (not per-course `/assignments`) is the deliberate
-choice: it aggregates across every enrolled course in one call, already
-sorted by due date, which is exactly "what's due this week" (tasklist B5) —
-looping `/courses/{id}/assignments` per course would mean one request per
-class for the same answer.
-
-**Two things to confirm before trusting this, both from reading docs rather
-than a live token — same discipline as every other doc in this project:**
-
-- The `plannable` field's exact shape per `plannable_type` (`assignment`,
-  `quiz`, `discussion_topic`, ...) — the sample response shows
-  `plannable: {...}` without full detail. Confirm the fields you actually
-  need (`title`, `due_at`) exist on every type you plan to surface, or filter
-  to `plannable_type == "assignment"` if the others turn out to be noisy.
-- **Pagination is Link-header based** (confirmed: "List endpoints use Link
-  header pagination"), and `get_json` only returns the decoded body — it
-  never sees the `Link` header. For a hackathon-scale course load this is a
-  real but survivable gap: don't build Link-header following, just note the
-  limit (`per_page` up to 100 covers a normal student's course list
-  comfortably) rather than silently truncating without saying so.
-
-Citation `url`: Canvas courses and assignments both come with a real,
-student-visible page — construct it as `https://canvas.cmu.edu/courses/{id}`
-/ the `html_url` field the planner-items response already includes (use the
-API's own `html_url`, don't hand-build the assignment path yourself).
+Citations use Canvas's own student-facing links — `html_url` from the response,
+or `https://canvas.cmu.edu/courses/{id}` — never a hand-built assignment path.
 
 ---
 
 ## Part B — Ed Discussion
 
-New from scratch. Confirmed by reading `edapi/edapi.py` directly (see the
-correction above) — this is real, not a guess from a README summary.
+Base URL `https://us.edstem.org/api/`, and the **same official Bearer token**
+as Canvas — the one generated at `edstem.org/us/settings/api-tokens`. This was
+confirmed by reading the unofficial `edapi` library's own source rather than
+its README: it authenticates with that same token, so there is no reason to add
+the dependency when the token path is this simple to call directly.
 
-- Base URL: `https://us.edstem.org/api/`
-- Auth: `Authorization: Bearer <token>` (the token from
-  `edstem.org/us/settings/api-tokens` — the same one PRD already names)
-- `GET user` → the logged-in user's own info
-- `GET courses/{course_id}/threads?limit=&offset=&sort=new` → `{"threads": [...]}`
-- `GET threads/{thread_id}` → one thread with comments
+- **`ed_list_courses`** — `GET user`, whose payload carries the student's
+  course enrolments. Course resolution therefore mirrors Canvas's. Archived
+  courses are dropped: a class the student cannot act on is noise in a "which
+  class?" lookup.
+- **`ed_search_threads`** — `GET courses/{course_id}/threads`. **Ed has no
+  server-side thread search**; `list_threads` takes only `limit`/`offset`/
+  `sort`. So this is an honest client-side keyword filter over one page of the
+  most recent threads, and the tool description says so: a miss means "not in
+  the recent threads", not "never discussed".
+- **`ed_get_announcements`** — the same thread endpoint filtered on
+  `type == "announcement"` (confirmed live). It is a field on the ordinary
+  thread shape, so no separate endpoint is needed.
 
-```python
-_ED_BASE = "https://us.edstem.org/api/"
+Ed threads are a shared class space written by classmates and staff, not the
+student's private data — the same privacy shape as Piazza, and the tool
+description carries the same instruction: summarise what a thread established,
+don't repeat posts verbatim or name their authors.
 
-
-def ed_search_threads(*, session_id: str, course_id: str, keywords: str | None = None, limit: int = 20) -> dict:
-    connection = _ed_connection(session_id)
-    headers = {"Authorization": f"Bearer {connection.get_token()}"}
-
-    try:
-        payload = get_json(
-            f"{_ED_BASE}courses/{course_id}/threads",
-            params={"limit": min(limit, 100), "offset": 0, "sort": "new"},
-            headers=headers,
-        )
-    except httpx.HTTPError as exc:
-        raise ToolError(f"Ed Discussion unreachable: {exc}") from exc
-
-    mark_synced(connection)
-    threads = payload.get("threads", [])
-    if keywords:
-        needle = keywords.lower()
-        threads = [t for t in threads if needle in (t.get("title", "") + t.get("content", "")).lower()]
-
-    return {"results": threads, "citations": [_thread_citation(t, course_id) for t in threads]}
-```
-
-**Two open questions Phase 0 has to resolve, not guess at:**
-
-- **There is no confirmed "list my Ed courses" endpoint.** `edapi`'s source
-  doesn't show one. Check whether `GET user` returns course enrollments in
-  its response — if it does, that's how `ed_search_threads` resolves a vague
-  "my systems class" reference to a real `course_id`, the same way
-  `canvas_list_courses` does for Canvas. If it doesn't, this tool needs
-  `course_id` supplied some other way (stored at connect time? asked of the
-  model?) — don't ship a tool the model can never actually call because it
-  has no way to learn a valid `course_id`.
-- **No native keyword search was found in the API.** `list_threads` takes
-  `limit`/`offset`/`sort`, not a query string. The client-side filter above
-  is a stopgap — it only searches whatever page of recent threads got
-  fetched, not the whole course's history. Good enough for "did staff say
-  anything about the late policy recently"; not a real search. Say so in the
-  tool's `description` rather than let the model assume it's exhaustive.
-
-Citation `url`: **don't invent one.** No confirmed frontend URL pattern for
-a single Ed thread was found in what got read here — check whether the API
-response itself carries a usable link (Canvas's does; Ed's might not), and
-if nothing reliable turns up, leave `url` empty rather than guess at
-`edstem.org/us/courses/{id}/discussion/{thread_id}` — same rule
-`docs/b2-courses.md` and `docs/b3-web-verify.md` already established for
-Courses and web results.
+**Ed citations carry no `url`.** The API response has no link field, and the
+`discussion/{number}` pattern is a guess. Empty beats invented.
 
 ---
 
 ## Part C — Stellic (mock only)
 
-**Explicitly scoped down: no real Stellic integration, no JSON upload
-parser.** PRD's own reasoning already rules out anything else — Stellic has
-"institutional PAT only; no student OAuth," so there is no safe student-facing
-credential to build against at all, live or otherwise.
+**No real Stellic integration, and no scraping of Stellic.** The PRD's own
+reasoning rules it out: Stellic offers an institutional PAT only, no student
+OAuth, so there is no safe student-facing credential to build against at all.
 
-Register it the same shape as `apps/tools/maps.py` — a pure fixture, always
-`is_mock: True` — but still gated through the connections flow so the
-settings UI (F4) has something real to toggle, matching Ed/Canvas's UX
-rather than being a special case:
+`stellic_degree_audit` is fixture data, the same way
+`backend/apps/tools/maps.py`'s buildings are — `is_mock=True` on every citation
+it produces. Nothing in the app renders that flag yet (an open PRD §9 gap), so
+what actually tells a reader the data is fake is the tool description, which
+instructs the model to say in the answer that this is placeholder data rather
+than the student's real record. It makes no network call.
 
-```python
-STELLIC = "stellic"
+It is still gated through the connections flow, connecting with an empty
+credential (`CREDENTIAL_FIELDS[STELLIC] = ()`), so the settings UI has a real
+toggle instead of a special case.
 
-@register_tool(
-    name="stellic_degree_audit",
-    description=(
-        "Check progress toward a degree or minor requirement, using a mock degree "
-        "audit. This is placeholder data, not the student's real Stellic record — "
-        "say so in the answer. Combine with search_courses/get_course for live "
-        "course data; this tool only covers what's 'required,' not what's offered."
-    ),
-    json_schema={
-        "type": "object",
-        "properties": {
-            "program": {"type": "string", "description": "e.g. 'CS minor', 'ECE major'."},
-        },
-        "required": ["program"],
-    },
-    mode="personal",
-    requires_connector=STELLIC,
-    is_mock=True,
-)
-def stellic_degree_audit(*, session_id: str, program: str) -> dict:
-    _ = require_connection(session_id, STELLIC)  # confirms it's "connected"; nothing else read from it
-    audit = _MOCK_AUDITS.get(program.lower(), _MOCK_AUDITS["cs minor"])
-    return {"results": [audit], "citations": [{
-        "title": f"{audit['program']} — mock degree audit",
-        "url": "",
-        "snippet": f"{audit['completed']}/{audit['required']} units completed (mock data)",
-        "indexed_at": None,
-    }]}
-```
-
-"Connecting" Stellic through `POST /api/connections/` doesn't need a real
-credential — `{"provider": "stellic", "credential": {}}` is enough, since
-nothing here is ever actually authenticated against anything. Don't add
-`STELLIC` to `CREDENTIAL_FIELDS`' required-keys check in
-`docs/b5-connections.md` (or map it to an empty tuple) so an empty
-credential isn't rejected as incomplete.
-
-`_MOCK_AUDITS`: two or three canned programs (CS minor is the PRD's own
-example query) with made-up but plausible-looking requirement/completed
-counts — this is fixture data the same way `maps.py`'s buildings are.
+What makes the fixture *Stellic* and not the course catalog: it is keyed to the
+student's progress — completed vs required units and what is left — not to what
+courses exist. Programs are matched forgivingly on aliases, because the model
+passes whatever the student typed ("information systems", "stats minor").
 
 ---
 
 ## Non-negotiables
 
-- **Never log a token, a Canvas/Ed response header, or anything containing
-  `Authorization`.** `run_tool()` already omits tool call *arguments* from
-  its log line; a `headers` dict built inside a tool function is a second
-  place a stray debug line could leak one — same caution as the
-  Piazza/Gradescope doc's password warning, one level less severe (a token
-  is revocable; nothing here should still make logging it acceptable).
-- **`get_json`'s `headers` param never gets cached, structurally** — Part 0's
-  whole point. Don't build a version of Canvas/Ed that routes around it with
-  a hand-rolled `httpx` call "just this once."
-- **Stellic never becomes real.** If someone's tempted to add actual Stellic
-  scraping later, that's the exact SSO-login question already settled
-  earlier in this project — re-read that reasoning before revisiting it, not
-  after.
-- **No citation from any of these three carries an invented `url`** — same
-  rule as everywhere else in this project.
+- **Never log a token, a response header, or anything containing
+  `Authorization`.** `run_tool()` already omits tool call *arguments* from its
+  log line; a `headers` dict built inside a tool function is a second place a
+  stray debug line could leak one. A token is revocable, which makes this one
+  degree less severe than the password warning in
+  [b5-piazza-gradescope.md](./b5-piazza-gradescope.md) — and nothing about that
+  makes logging it acceptable.
+- **`get_json`'s `headers` argument is never cached, structurally.** Part 0's
+  whole point.
+- **Stellic never becomes real.** Anything more than this mock means scraping
+  behind an SSO login, which CLAUDE.md and the PRD both forbid.
+- **No citation from any of these three carries an invented `url`.**
 
 ---
 
-## How to verify
+## What the tests hold
 
-`backend/apps/personal/tests.py` (doesn't exist yet). Mock `get_json`
-entirely for Canvas/Ed — don't call the real APIs from the test suite.
+`backend/apps/personal/tests.py`, with `get_json` mocked — the real APIs are
+never called from the test suite:
 
-- [ ] `canvas_list_courses`/`canvas_get_assignments` send `Authorization:
-      Bearer <token>` and hit the right endpoints (`/courses`,
-      `/planner/items`)
-- [ ] `ed_search_threads` sends the same header shape against
-      `us.edstem.org/api/`
-- [ ] Neither tool ever calls `get_json` with `ttl > 0`
-- [ ] A 401/403 from either API becomes a `ToolError`, not an unhandled
-      exception
-- [ ] `stellic_degree_audit` returns `is_mock: True` on every citation and
-      never makes a network call
-- [ ] `Provider.STELLIC` connects with an empty credential without a
-      validation error
-
-Then, once, live: a real Canvas PAT against a real course load, checked for
-correct `due_before`/`course_id` filtering. Ed's live check depends on
-Phase 0's two open questions actually being answered first — don't attempt
-it before then.
+- Canvas's tools send `Authorization: Bearer <token>` and hit `/courses`,
+  `/planner/items` and `/announcements`, passing the `due_before`/`course_id`
+  filters and both announcement date bounds.
+- Citations use Canvas's own `html_url` and course path.
+- Ed sends the same header shape against `us.edstem.org/api/`, and its
+  citations invent no thread url.
+- An HTTP error from either becomes a `ToolError` that leaks neither the
+  credential nor the request URL.
+- `stellic_degree_audit` is `is_mock` on every citation and makes no network
+  call.
+- A successful call stamps `last_sync_at`.
 
 ```
 docker compose exec backend python manage.py test apps.personal
 ```
-
----
-
-## Done when
-
-- [ ] `get_json` accepts `headers`, and caching is structurally impossible
-      when they're present
-- [ ] Canvas's two tools return real data, with citations
-- [ ] Ed's course-resolution and search-scope questions have real answers,
-      not TODOs
-- [ ] Stellic returns mock data, clearly labeled, no network calls
-- [ ] Boxes ticked in `tasklist.md` B5, same commit
-
-## Style
-
-Follow `CLAUDE.md`. Comments explain *why*, never what. If a comment could be
-deleted without losing information, delete it.

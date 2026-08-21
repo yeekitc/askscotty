@@ -1,257 +1,135 @@
 # B5, Step 0+1 — the connections contract and endpoint
 
-Hand this to whoever (or whatever) builds it. Written to be pasted whole.
+The front door to every personal source: `GET`/`POST /api/connections/` and
+`DELETE /api/connections/{provider}/`, on top of `UserConnection`, Fernet
+encryption at rest, and per-session connector gating.
 
-**The one-line version:** nothing in B5 is reachable yet — `POST
-/api/connections/` and `DELETE /api/connections/{provider}/` don't exist
-anywhere (`apps/core/urls.py` has no route, `apps/core/views.py` has no view
-class). `UserConnection`, Fernet encryption, and per-session connector gating
-are already built and correct; this is the missing front door to all of it.
-
----
-
-## Read first, in order
-
-1. This document.
-2. `CLAUDE.md` — "Keeping the API contract in sync" (serializers.py ↔ types.ts).
-3. `backend/apps/personal/models.py` — `UserConnection`, `Provider`.
-4. `backend/apps/personal/crypto.py` — `encrypt`/`decrypt`. Read the
-   docstring on `decrypt`: never log the return value, never put it in a
-   response.
-5. `backend/apps/personal/context.py` — `get_user_connectors`,
-   `get_connector`, `require_connection`, `mark_synced`, **`disconnect`**
-   (already does exactly what `DELETE` needs — read it before writing a new
-   version).
-6. `backend/apps/core/views.py` — `ThreadListView`/`ThreadDetailView` and
-   `_session_id(request)`. This is the pattern to copy: session id from the
-   `X-Session-Id` header, never the body or the URL.
-7. `backend/apps/core/serializers.py` — how `MODES`/`ACCESS`/`TIERS` get
-   imported from the apps that own them, at module level. Same pattern applies
-   to importing `Provider` from `apps.personal.models` here.
-8. `frontend/app/lib/api.ts` — `fetchThreads`/`saveThread`/`deleteThread`, for
-   the header-setting pattern (`xhr.setRequestHeader('X-Session-Id', ...)`)
-   and the `request<T>()` helper to build the new calls on top of.
-9. `tasklist.md` B5 (the four boxes this closes) and PRD §7 (personal, the
-   rules this enforces).
+The tools that spend these credentials live in
+[b5-canvas-ed-stellic.md](./b5-canvas-ed-stellic.md) (Canvas, Ed, Stellic) and
+[b5-piazza-gradescope.md](./b5-piazza-gradescope.md) (Piazza, Gradescope —
+read that one for the password trade-off those two carry).
 
 ---
 
-## The credential-shape problem, and the decision
+## The rules this enforces — PRD §7 and §9
 
-`UserConnection.encrypted_token` is one `TextField`, and today's `set_token`/
-`get_token` treat it as one raw string — fine for Canvas and Ed (one token
-each), broken for Piazza and Gradescope (email **and** password). No existing
-row depends on the current format — nothing in B5 has shipped yet — so this
-is free to change now and expensive to change after `personal_search` exists.
+- **Credentials are encrypted at rest, never logged, never returned by any
+  endpoint.**
+- **Everything is scoped to one `session_id`.** One session can neither read
+  nor disconnect another's sources.
+- **Disconnecting deletes that source's synced data** along with the
+  credential.
+- **Personal data never enters the shared vector index.** Nothing here is
+  crawled, embedded, or shared; personal sources are read live, per session,
+  per request.
 
-**Decision: always store a JSON object, never a bare string.** Extend
-`UserConnection` in `models.py`:
+---
 
-```python
-import json
+## Read first
 
-def set_credential(self, credential: dict) -> None:
-    """Encrypt and store a credential dict. Does not save."""
-    self.encrypted_token = encrypt(json.dumps(credential))
+1. `backend/apps/personal/models.py` — `UserConnection`, `Provider`,
+   `CREDENTIAL_FIELDS`.
+2. `backend/apps/personal/crypto.py` — `encrypt`/`decrypt`, and the docstring
+   on `decrypt`: never log the return value, never put it in a response.
+3. `backend/apps/personal/context.py` — `get_user_connectors`, `get_connector`,
+   `require_connection`, `mark_synced`, **`disconnect`** (already does exactly
+   what `DELETE` needs; don't write a second version).
+4. `backend/apps/core/views.py` — `ThreadListView` and `_session_id(request)`:
+   session id comes from the `X-Session-Id` header, never the body or the URL.
+5. `CLAUDE.md` — "Keeping the API contract in sync" (`serializers.py` ↔
+   `types.ts`).
 
-def get_credential(self) -> dict:
-    """Decrypt and parse the stored credential."""
-    return json.loads(decrypt(self.encrypted_token))
+---
 
-def get_token(self) -> str:
-    """Convenience for single-token providers (Canvas, Ed)."""
-    return self.get_credential()["token"]
+## Credential shape
 
-def set_token(self, raw_token: str) -> None:
-    """Convenience for single-token providers."""
-    self.set_credential({"token": raw_token.strip()})
-```
+`UserConnection.encrypted_token` is one `TextField` holding Fernet ciphertext
+of a JSON object — **always an object, never a bare string.** Canvas and Ed
+hand over a single token; Piazza and Gradescope need an email *and* a
+password, and one stored shape means the endpoint and the tools never have to
+ask which kind of provider they are holding.
 
-`get_token()`/`set_token()` keep working exactly as before for every existing
-call site (`apps/personal/tools.py`'s Canvas stubs already call
-`connection.get_token()`) — they're now convenience wrappers over the general
-path. Piazza/Gradescope code calls `get_credential()` directly.
+`set_credential()`/`get_credential()` are the general path;
+`set_token()`/`get_token()` are convenience wrappers for the single-token
+providers. A decrypted credential stays local to the function that read it:
+never logged, never attached to an exception, never returned.
 
-**Required keys per provider** — add next to `Provider` in `models.py`, one
-place that knows the shape so the endpoint and the tools agree:
+`CREDENTIAL_FIELDS` is the one place that knows what each provider needs, so
+the endpoint and the tools cannot disagree. **A provider absent from that map
+cannot be connected at all.**
 
-```python
-CREDENTIAL_FIELDS: dict[str, tuple[str, ...]] = {
-    Provider.CANVAS: ("token",),
-    Provider.ED: ("token",),
-    Provider.PIAZZA: ("email", "password"),
-    Provider.GRADESCOPE: ("email", "password"),
-}
-```
+| provider | required keys |
+|---|---|
+| `canvas` | `token` |
+| `ed` | `token` |
+| `piazza` | `email`, `password` |
+| `gradescope` | `email`, `password` |
+| `stellic` | *(none)* |
 
-Add `PIAZZA = "piazza", "Piazza"` and `GRADESCOPE = "gradescope",
-"Gradescope"` to `Provider.choices` here too — this doc doesn't build the
-Piazza/Gradescope tools themselves (see `docs/b5-piazza-gradescope.md`), but
-the endpoint needs to accept them.
+Stellic maps to no required keys: it is a mock with nothing to authenticate
+([b5-canvas-ed-stellic.md](./b5-canvas-ed-stellic.md) Part C), but it still
+connects — with an empty credential — so the settings UI can toggle it like
+any other source instead of special-casing it.
 
-Leave `STELLIC` alone: its "credential" is an uploaded degree-audit JSON
-file, not a login, and doesn't fit this shape. Out of scope for this doc —
-don't try to design it here.
+## When a source is not connected
+
+A session that has not connected a provider is never told its tools exist
+(`tools_for_session` in `backend/apps/tools/registry.py`), so the model can
+neither call them nor mention data it has no business seeing. Each provider
+also has a demo stand-in — `canvas_sample`, `ed_sample`, `piazza_sample`,
+`gradescope_sample` — offered *only* while the real provider is disconnected
+(`shadows=`). They take no `session_id`, so no personal data reaches them, and
+every citation they produce carries `is_mock=True`. Note that the app does not
+yet render a badge for it — see PRD §9 in [architecture.md](./architecture.md).
 
 ---
 
 ## The endpoint
 
-`backend/apps/core/views.py`, following `ThreadListView`'s shape exactly
-(`_session_id(request)`, no `authentication_classes`/`permission_classes`,
-`APIView`):
+`ConnectionsView` and `ConnectionDetailView` in `backend/apps/core/views.py`,
+following `ThreadListView`'s shape: `APIView`, no
+`authentication_classes`/`permission_classes`, session id from
+`_session_id(request)`.
 
-```python
-class ConnectionsView(APIView):
-    """GET / POST /api/connections/ — what this session has connected, and
-    connecting a new source.
-
-    GET is not in tasklist B5's literal checklist but the settings UI (F4)
-    needs it to render connected state on load — same reasoning as
-    SourcesView existing at all. Added here rather than as a third doc.
-    """
-
-    authentication_classes: list = []
-    permission_classes: list = []
-
-    def get(self, request: Request) -> Response:
-        session_id = _session_id(request)
-        connections = get_user_connectors(session_id)
-        payload = {"connections": [_serialize_connection(c) for c in connections]}
-        return Response(
-            ConnectionListResponseSerializer(payload).data, status=status.HTTP_200_OK
-        )
-
-    def post(self, request: Request) -> Response:
-        session_id = _session_id(request)
-        serializer = ConnectionSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-        provider = serializer.validated_data["provider"]
-        credential = serializer.validated_data["credential"]
-
-        expected = CREDENTIAL_FIELDS[provider]
-        missing = [k for k in expected if not credential.get(k)]
-        if missing:
-            raise serializers.ValidationError(
-                {"credential": f"{provider} needs: {', '.join(expected)}. Missing: {', '.join(missing)}."}
-            )
-
-        connection, _created = UserConnection.objects.get_or_create(
-            session_id=session_id, provider=provider
-        )
-        connection.set_credential(credential)
-        connection.save(update_fields=["encrypted_token"])
-
-        return Response(_serialize_connection(connection), status=status.HTTP_200_OK)
-
-
-class ConnectionDetailView(APIView):
-    """DELETE /api/connections/{provider}/ — disconnect a source.
-
-    All the work is already in apps/personal/context.disconnect(): deletes the
-    UserConnection row, which is the whole PRD §7 "disconnect deletes synced
-    data" requirement — anything that ever stores synced data must FK to it
-    with CASCADE, so there is nothing else to clean up here or in the future.
-    """
-
-    authentication_classes: list = []
-    permission_classes: list = []
-
-    def delete(self, request: Request, provider: str) -> Response:
-        session_id = _session_id(request)
-        if not disconnect(session_id, provider):
-            raise NotFound(f"No connection for {provider!r}.")
-        return Response(status=status.HTTP_204_NO_CONTENT)
-
-
-def _serialize_connection(connection: UserConnection) -> dict:
-    """Never the credential. Not even shaped to accept one — see
-    ConnectionSerializer.credential's write_only below."""
-    return {
-        "provider": connection.provider,
-        "connected_at": connection.connected_at,
-        "last_sync_at": connection.last_sync_at,
-    }
-```
-
-Wire into `urls.py`:
-
-```python
-path("connections/", ConnectionsView.as_view(), name="connections"),
-path("connections/<str:provider>/", ConnectionDetailView.as_view(), name="connection-detail"),
-```
+- **`GET`** lists this session's connections. Not in tasklist B5's literal
+  checklist, but the settings UI needs it to render connected state on load —
+  the same reason `SourcesView` exists.
+- **`POST`** validates, then encrypts *before* the row is written: inserting
+  first would leave a row holding an empty credential if encryption raised,
+  and every later `get_credential()` on it would fail with no way to tell why.
+  Reconnecting rewrites the existing row rather than leaving a stale
+  credential behind, which the model's
+  `unique_connection_per_session_provider` constraint requires anyway.
+- **`DELETE`** delegates entirely to `context.disconnect()`. That function
+  deletes the `UserConnection` row, which is the whole of PRD §7's
+  "disconnecting deletes the synced data" — anything that ever stores synced
+  data must FK to that row with `CASCADE`, so there is nothing else to clean
+  up here, now or later. A provider with no connection is a 404.
 
 ## Serializers
 
-`backend/apps/core/serializers.py`, same top-of-file import pattern already
-used for `MODES`/`ACCESS`/`TIERS`:
+`ConnectionSerializer` in `backend/apps/core/serializers.py` carries the
+request and — minus `credential` — the response:
 
-```python
-from apps.personal.models import Provider
+- `credential` is `write_only`. Even if something upstream tried to echo it
+  back, DRF drops it from the serialized output. That is defence in depth on
+  top of `_serialize_connection()` simply never touching it (PRD §9). **Keep
+  both; neither is redundant.**
+- `validate_credential` rejects a non-object, so a bare string or list is a
+  400 rather than an `AttributeError` 500 in the per-provider key check.
+- `validate()` holds the `CREDENTIAL_FIELDS` check. It is cross-field —
+  `credential` is only meaningful against a `provider` — so it belongs on the
+  serializer, not in the view.
 
-class ConnectionSerializer(serializers.Serializer):
-    """POST /api/connections/ request, and (minus `credential`) the response."""
+## Frontend
 
-    provider = serializers.ChoiceField(choices=Provider.choices)
-    # write_only: even if something upstream tried to echo this back, DRF
-    # would drop it from the serialized output. Defense in depth on top of
-    # _serialize_connection() simply never touching it.
-    credential = serializers.JSONField(write_only=True)
-    connected_at = serializers.DateTimeField(read_only=True, required=False)
-    last_sync_at = serializers.DateTimeField(read_only=True, required=False, allow_null=True)
-
-
-class ConnectionListResponseSerializer(serializers.Serializer):
-    connections = ConnectionSerializer(many=True)
-```
-
-Response payloads should be validated through
-`ConnectionSerializer(_serialize_connection(connection)).data` (or the list
-variant) before returning, matching every other view in this file — don't
-return a bare dict.
-
----
-
-## Frontend: `frontend/app/lib/types.ts` + `frontend/app/lib/api.ts`
-
-New types, matching the response shape above:
-
-```typescript
-export type Connection = {
-  provider: 'canvas' | 'ed' | 'stellic' | 'piazza' | 'gradescope'
-  connected_at: string
-  last_sync_at: string | null
-}
-
-export type ConnectionListResponse = {
-  connections: Connection[]
-}
-```
-
-New calls in `api.ts`, alongside `fetchThreads`/`saveThread`/`deleteThread` —
-same `request<T>()` helper, same `X-Session-Id` header:
-
-```typescript
-export function fetchConnections(): Promise<Connection[]> {
-  return request<ConnectionListResponse>('/api/connections/').then(r => r.connections)
-}
-
-export function connect(provider: string, credential: Record<string, string>): Promise<Connection> {
-  return request<Connection>('/api/connections/', {
-    method: 'POST',
-    body: JSON.stringify({ provider, credential }),
-  })
-}
-
-export function disconnect(provider: string): Promise<void> {
-  return request<void>(`/api/connections/${encodeURIComponent(provider)}/`, { method: 'DELETE' })
-}
-```
-
-This doc doesn't build the settings screen itself (F4) — that's a separate
-piece of work that can start the moment this contract is frozen, in parallel
-with the Piazza/Gradescope tools (`docs/b5-piazza-gradescope.md`), since
-neither depends on the other once this endpoint exists.
+`frontend/app/lib/types.ts` mirrors the response shape (`Connection`,
+`ConnectionListResponse`); `frontend/app/lib/api.ts` has `fetchConnections`,
+`connect` and `disconnect` built on the same `request<T>()` helper and
+`X-Session-Id` header as `fetchThreads`/`saveThread`/`deleteThread`;
+`frontend/app/components/ConnectionsModal.tsx` renders it. Per-provider copy
+— including the warning Piazza and Gradescope must carry — is specified in
+[b5-piazza-gradescope.md](./b5-piazza-gradescope.md).
 
 ---
 
@@ -259,61 +137,35 @@ neither depends on the other once this endpoint exists.
 
 - **Never return a credential.** `_serialize_connection` never touches it;
   `ConnectionSerializer.credential` is `write_only`. Both independently
-  enforce PRD §9's "never returned by any endpoint" — keep both, don't treat
-  one as redundant.
-- **`X-Session-Id` header, never the body.** Matches every other
-  session-scoped endpoint in this file. A session id is a bearer token
-  (`apps/personal/models.py`'s own docstring) — it doesn't belong in a query
-  string or a body that ends up in a log line.
+  enforce PRD §9's "never returned by any endpoint".
+- **`X-Session-Id` header, never the body.** A session id is a bearer token
+  (see `backend/apps/personal/models.py`'s docstring) — it does not belong in
+  a query string, or in a body that ends up in a log line.
 - **Disconnect only ever calls `context.disconnect()`.** Don't hand-roll a
-  second delete path — the CASCADE guarantee lives in that function's
-  docstring being true, not in this view remembering to replicate it.
-- **`get_token()`/`set_token()` keep their exact current signatures.** Canvas
-  tool stubs already call `get_token()` — changing its return type or
-  argument shape breaks code you didn't touch.
+  second delete path: the CASCADE guarantee lives in that function being the
+  only one, not in this view remembering to replicate it.
+- **`get_token()`/`set_token()` keep their exact signatures.** The Canvas and
+  Ed tools call `get_token()`; changing its return type breaks code you
+  didn't touch.
 
 ---
 
-## How to verify
+## What the tests hold
 
-New tests in `backend/apps/core/tests.py` (or wherever `apps.core`'s test
-file lives once one exists — check first, don't assume `apps/core/tests.py`
-is empty).
+`backend/apps/core/tests.py`:
 
-- [ ] `POST /api/connections/` with a valid Canvas token creates a
-      `UserConnection`; the response contains no `credential`/`token` key
-      anywhere
-- [ ] `POST /api/connections/` with a Piazza credential missing `password`
-      is a 400, not a 500 or a silently-accepted partial credential
-- [ ] Reconnecting the same provider updates the existing row rather than
-      creating a second one (the model's `unique_connection_per_session_provider`
-      constraint should make a duplicate impossible either way — test that
-      too)
-- [ ] `GET /api/connections/` never includes a credential field
-- [ ] `DELETE /api/connections/{provider}/` on a real connection returns 204
-      and the row is gone; on a nonexistent one returns 404
-- [ ] Missing `X-Session-Id` header is a 400 on all three, same as
-      `ThreadListView`
-- [ ] `UserConnection.get_token()` still works against a row written with the
-      old `set_token()` call shape — or confirm there's no data to migrate and
-      skip this
+- Connecting Canvas stores an *encrypted* credential, and the response carries
+  no credential or token key anywhere.
+- A Piazza credential missing `password` is a 400 — not a 500, and not a
+  silently-accepted partial credential.
+- Stellic connects with an empty credential.
+- Reconnecting replaces the credential in place rather than creating a second
+  row.
+- Listing never includes a credential field, and one session can see neither
+  another session's connections nor disconnect its sources.
+- `DELETE` on a real connection returns 204 and the row is gone; on a
+  nonexistent one, 404.
 
 ```
 docker compose exec backend python manage.py test apps.core
 ```
-
----
-
-## Done when
-
-- [ ] `GET`/`POST /api/connections/` and `DELETE /api/connections/{provider}/`
-      all exist and are tested
-- [ ] `Provider` includes `PIAZZA` and `GRADESCOPE`
-- [ ] No response, ever, contains a credential
-- [ ] `frontend/app/lib/types.ts` and `api.ts` have the matching client calls
-- [ ] Boxes ticked in `tasklist.md` B5, same commit
-
-## Style
-
-Follow `CLAUDE.md`. Comments explain *why*, never what. If a comment could be
-deleted without losing information, delete it.

@@ -1,11 +1,18 @@
 # Browser Extension — AskScotty Demo Connector
 
-Chrome Manifest V3 extension at `browser-extension/`. **DEBUG/demo use only.**
-It lets Piazza and Gradescope work via a live session cookie already in the
-browser rather than storing a CMU password.
+Chrome Manifest V3 extension at `browser-extension/`. It lets Piazza and
+Gradescope work from a session cookie already in your browser, so a demo does
+not need a CMU password or a Duo push.
 
-Canvas and Ed are not supported here — they use revocable personal access tokens
-and have a proper connect flow (`docs/b5-canvas-ed-stellic.md`).
+> **Local DEBUG builds only. This does not work against a deployed AskScotty.**
+> The route it posts to is mounted by `backend/config/urls.py` only when
+> `settings.DEBUG` is true, so with `DJANGO_DEBUG=false` the endpoint is not
+> merely restricted — it does not exist, and the extension gets a 404. Nothing
+> in a deployed build accepts captured cookies, by design.
+
+Canvas and Ed are deliberately not supported here: they authenticate with
+revocable personal access tokens and go through the real connect flow
+([b5-canvas-ed-stellic.md](./b5-canvas-ed-stellic.md)) instead.
 
 ---
 
@@ -13,76 +20,69 @@ and have a proper connect flow (`docs/b5-canvas-ed-stellic.md`).
 
 1. Open `chrome://extensions/`
 2. Enable **Developer mode** (top-right toggle)
-3. Click **Load unpacked**
-4. Select the `browser-extension/` folder in this repo
+3. **Load unpacked** → select `browser-extension/`
 
-The extension appears in the toolbar as "AskScotty Demo Connector".
+It appears in the toolbar as "AskScotty Demo Connector".
 
 ---
 
 ## Use it
 
-### Prerequisites
+You need the backend running locally (`docker compose up -d` with
+`DJANGO_DEBUG=true`), to be signed in to Gradescope or Piazza in the **same
+Chrome profile**, and your AskScotty session id.
 
-- Backend running locally (`docker compose up -d`)
-- Signed in to Gradescope or Piazza in the **same Chrome profile**
-- AskScotty app open in a browser tab so you can get your session ID
+**Finding your session id:** open the app on web, then DevTools → Application →
+Local Storage → the Expo origin (`http://localhost:8081` by default) → copy
+`askscotty.session_id`. Or pick any API request in the Network tab and copy its
+`X-Session-Id` header.
 
-### Find your session ID
+**Connecting:**
 
-Open the app, open DevTools → Application → Local Storage →
-`http://localhost:19006` (or whatever Expo serves). Copy the value of
-`askscotty.session_id`.
-
-Alternatively, open the app's network tab, pick any API request, and copy the
-`X-Session-ID` request header.
-
-### Connect
-
-1. Navigate to `gradescope.com` or `piazza.com` in Chrome — the extension
-   auto-detects the provider from the active tab.
-2. Click the extension icon. The popup shows the detected provider.
-3. Paste your session ID into the **Session ID** field.
-4. Confirm the **Backend URL** is `http://localhost:8000` (saved across uses).
+1. Open a `gradescope.com` or `piazza.com` tab — the extension reads the
+   provider from the active tab.
+2. Click the extension icon; the popup shows the detected provider.
+3. Paste your session id.
+4. Confirm **Backend URL** is `http://localhost:8000` (remembered across uses).
 5. Click **Connect \<provider\>**.
 
-The extension collects every cookie set for that domain and POSTs to:
+The extension collects every cookie set for that domain and POSTs:
 
 ```
 POST /api/personal/demo/cookies/
-X-Session-ID: <your session id>
+X-Session-Id: <your session id>
 
-{ "provider": "gradescope", "cookies": { "_gradescope_session": "...", ... } }
+{ "provider": "gradescope", "cookies": { "_gradescope_session": "…", … } }
 ```
 
-The backend stores them as the connection credential. The next time a personal
-tool runs for that session, `tools.py` injects the cookies into the library's
-HTTP session instead of calling `login()`, bypassing Duo.
+The backend stores them as that connection's credential. Next time a personal
+tool runs for the session, `apps/personal/tools.py` injects the cookies into the
+library's HTTP session instead of calling `login()`, which is what gets past Duo.
 
 ---
 
 ## Backend endpoint
 
-`backend/apps/personal/demo_only/` — registered only when `settings.DEBUG` is
-`True` (see `config/urls.py`). A production build does not expose this path.
+`backend/apps/personal/demo_only/` — see that folder's `README.md`.
 
-`DemoCookieConnectView` validates the payload (provider in allowlist,
-≤25 cookies, each ≤8192 bytes) and calls `UserConnection.set_credential` —
-the same write-only discipline as the real connect endpoint. Nothing here reads
-the credential back out.
+`DemoCookieConnectView` validates the payload (provider in `COOKIE_PROVIDERS`,
+≤25 cookies, each ≤8192 bytes) and calls `UserConnection.set_credential`, the
+same write-only discipline as the real connect endpoint: cookies go in and
+nothing reads them back out. It returns `{provider, connected_at, last_sync_at}`
+— never the credential.
 
-`COOKIE_PROVIDERS` in `views.py` lists the accepted providers. The URL is
-`/api/personal/demo/cookies/`.
+`COOKIE_PROVIDERS` is limited to Piazza and Gradescope, the two providers whose
+libraries authenticate by session cookie at all.
 
 ---
 
 ## Security scope
 
-- **localhost only.** `host_permissions` in `manifest.json` covers
-  `www.gradescope.com`, `gradescope.com`, `piazza.com`, and `localhost` only.
-- **DEBUG only.** The Django route does not exist when `DEBUG=False`.
-- **Do not ship.** The extension should never leave your machine. Do not add it
-  to the Chrome Web Store or distribute it to users.
+- **Narrow host permissions.** `manifest.json` grants `www.gradescope.com`,
+  `gradescope.com`, `piazza.com` and `localhost` — nothing else.
+- **DEBUG only**, as above.
+- **Do not ship.** This should never leave your machine: not the Chrome Web
+  Store, not other users.
 
 ---
 
@@ -90,19 +90,16 @@ the credential back out.
 
 Two places:
 
-1. `browser-extension/popup.js` — add an entry to the `PROVIDERS` object:
+1. `browser-extension/popup.js` — add to `PROVIDERS`:
    ```js
    "example.com": { name: "example", keys: ["session_cookie_name"] }
    ```
-   `keys` documents the expected cookies (the extension now sends all cookies
-   for the domain regardless, but the list is useful reference).
+   `keys` documents which cookies matter; the extension sends every cookie for
+   the domain regardless.
 
 2. `backend/apps/personal/demo_only/views.py` — add the provider slug to
-   `COOKIE_PROVIDERS`:
-   ```python
-   COOKIE_PROVIDERS = frozenset({Provider.PIAZZA.value, Provider.GRADESCOPE.value, Provider.EXAMPLE.value})
-   ```
+   `COOKIE_PROVIDERS`.
 
-Also ensure the corresponding personal tool in `apps/personal/tools.py` checks
-for a `cookies` key in the credential and injects it (see the Piazza/Gradescope
-blocks for the pattern).
+Then make sure the matching tool in `apps/personal/tools.py` looks for a
+`cookies` key in the credential and injects it — follow the Piazza/Gradescope
+blocks.
