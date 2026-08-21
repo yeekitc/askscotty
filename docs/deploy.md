@@ -97,8 +97,12 @@ The API URL is compiled in, so build against the real one:
 
 ```bash
 cd frontend/app
-EXPO_PUBLIC_API_URL=https://<service>.onrender.com npx expo export -p web
+EXPO_PUBLIC_API_URL=https://<service>.onrender.com npx expo export -p web --clear
 ```
+
+Pass `--clear`. `EXPO_PUBLIC_API_URL` is compiled into the bundle, but Metro's
+cache is keyed on source rather than environment — without it a cached bundle
+keeps the previous build's URL and the change appears to do nothing.
 
 Upload `dist/` at [pages.cloudflare.com](https://pages.cloudflare.com) (drag and
 drop, or `npx wrangler pages deploy dist`). Then go back to Render and set both
