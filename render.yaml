@@ -112,7 +112,7 @@ services:
     # bundle silently keeps whatever URL the previous build used, so changing
     # the variable without this appears to do nothing.
     buildCommand: cd frontend/app && npm ci && npx expo export -p web --clear
-    staticPublishPath: frontend/app/dist
+    staticPublishPath: ./frontend/app/dist
     envVars:
       # Baked into the bundle at build time, so it cannot be wired with
       # fromService: that yields a bare hostname and this needs the scheme.
