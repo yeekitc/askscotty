@@ -101,3 +101,23 @@ services:
 
       - key: LOG_LEVEL
         value: INFO
+
+  # The app. Expo builds `web.output: "single"` — one HTML file plus a JS bundle
+  # — so it deploys as a static site rather than a second container.
+  - type: web
+    name: askscotty-app
+    runtime: static
+    buildCommand: cd frontend/app && npm ci && npx expo export -p web
+    staticPublishPath: frontend/app/dist
+    envVars:
+      # Baked into the bundle at build time, so it cannot be wired with
+      # fromService: that yields a bare hostname and this needs the scheme.
+      # Set it to https://<api-host> after the first deploy, which rebuilds.
+      - key: EXPO_PUBLIC_API_URL
+        sync: false
+    routes:
+      # expo-router owns the routes client-side. Without this, every deep link
+      # (/about, a shared thread) is a 404 from the CDN before the app loads.
+      - type: rewrite
+        source: /*
+        destination: /index.html
