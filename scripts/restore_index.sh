@@ -54,7 +54,9 @@ if [[ ! "${EXISTING:-}" =~ ^[0-9]+$ ]]; then
 fi
 
 echo "Restoring the campus index (~1,400 chunks)…"
-gunzip -c "$DUMP" | run_psql -q -v ON_ERROR_STOP=1
+# -o /dev/null because the dump's trailing setval() calls each print a result
+# table, which buries any real error in noise. Errors still reach stderr.
+gunzip -c "$DUMP" | run_psql -q -o /dev/null -v ON_ERROR_STOP=1
 
 COUNT="$(run_psql -tAc 'SELECT count(*) FROM rag_chunk;' | tr -d '[:space:]')"
 echo "Done — ${COUNT} chunks indexed."
