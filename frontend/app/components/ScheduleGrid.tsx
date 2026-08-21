@@ -29,7 +29,8 @@ const COURSE_COLORS = [
   '#922b21',
 ]
 
-function toMinutes(t: string): number {
+function toMinutes(t: unknown): number {
+  if (typeof t !== 'string') return 0
   const match = t.trim().match(/^(\d{1,2}):(\d{2})\s*(AM|PM)$/i)
   if (!match) return 0
   let hours = parseInt(match[1], 10)
@@ -43,13 +44,20 @@ function toMinutes(t: string): number {
 export function ScheduleGrid({ text }: { text: string }) {
   const [gridWidth, setGridWidth] = useState(0)
 
-  let slots: CourseSlot[] = []
+  let parsed: unknown
   try {
-    slots = JSON.parse(text)
+    parsed = JSON.parse(text)
   } catch {
     return null
   }
-  if (!Array.isArray(slots) || slots.length === 0) return null
+  if (!Array.isArray(parsed)) return null
+
+  // A slot the model sent without usable meeting times has nowhere to sit on
+  // the grid. Drop it rather than reading `.trim()`/`.map()` off undefined.
+  const slots: CourseSlot[] = parsed.filter(
+    (slot) => !!slot && typeof slot === 'object' && Array.isArray(slot.days) && toMinutes(slot.begin) > 0,
+  )
+  if (slots.length === 0) return null
 
   const gridHeight = (TIME_END - TIME_START) * HOUR_HEIGHT
   const hours = Array.from({ length: TIME_END - TIME_START + 1 }, (_, i) => TIME_START + i)
