@@ -153,12 +153,34 @@ elif ! grep -qE '^ANTHROPIC_API_KEY=.+' .env 2>/dev/null; then
   dim "docker compose exec backend python manage.py provision_planner"
 else
   # Creates the agent and environment on Anthropic's side and prints two ids.
-  # They are config rather than secrets, which is why .env.example ships real
-  # ones — but a different org needs its own, so this runs on first setup.
-  if docker compose exec -T backend python manage.py provision_planner; then
+  # They are config rather than secrets, but they are scoped to the organisation
+  # behind ANTHROPIC_API_KEY, so every clone mints its own.
+  #
+  # The ids are captured and written here rather than by the command itself: it
+  # runs inside the container, where the root .env is not mounted. Leaving it as
+  # "now copy these two lines" is how a fresh clone ends up fully set up and
+  # still failing every question with "not provisioned".
+  if PROVISION_OUT="$(docker compose exec -T backend python manage.py provision_planner 2>&1)"; then
+    echo "$PROVISION_OUT"
     ok "Planner agent provisioned"
-    warn "Copy the two ids above into .env if they are not already there"
+
+    for KEY in PLANNER_AGENT_ID PLANNER_ENVIRONMENT_ID; do
+      VALUE="$(printf '%s\n' "$PROVISION_OUT" | sed -n "s/^${KEY}=//p" | tail -1 | tr -d '[:space:]')"
+      [[ -n "$VALUE" ]] || continue
+      if grep -qE "^${KEY}=" .env; then
+        # GNU and BSD sed disagree about -i, so round-trip through a temp file.
+        sed "s|^${KEY}=.*|${KEY}=${VALUE}|" .env > .env.provision.tmp \
+          && mv .env.provision.tmp .env
+      else
+        printf '%s=%s\n' "$KEY" "$VALUE" >> .env
+      fi
+      ok "Wrote ${KEY} to .env"
+    done
+
+    # The API read its environment at boot, before those ids existed.
+    docker compose up -d backend >/dev/null 2>&1 || true
   else
+    echo "$PROVISION_OUT"
     warn "Provisioning failed — the app will start but cannot answer"
     dim "Managed Agents is beta; check the key and that it is enabled for the org"
   fi

@@ -1,0 +1,103 @@
+# Render Blueprint — the deployed API. See docs/deploy.md for the full walkthrough.
+#
+# Deploy: Render dashboard → New → Blueprint → pick this repo. Render reads this
+# file and prompts once for every value marked `sync: false`.
+#
+# The database is deliberately NOT declared here. Render's free Postgres expires
+# 30 days after creation, which outlives a hackathon but not the project; Neon's
+# free tier does not expire and supports pgvector, so the connection details are
+# pasted in as secrets instead. Point them at any Postgres 16 that permits
+# `CREATE EXTENSION vector` — the first migration creates it.
+
+services:
+  - type: web
+    name: askscotty-api
+    runtime: docker
+    # Both paths matter: the Dockerfile does `COPY requirements.txt .`, which
+    # only resolves with backend/ as the build context, not the repo root.
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    plan: free
+    region: ohio
+    healthCheckPath: /api/health/
+    # entrypoint.sh runs migrate + collectstatic before gunicorn on every boot,
+    # so there is no separate release step to configure.
+    envVars:
+      # --- Django ---
+      - key: DJANGO_DEBUG
+        value: "false"
+      # Also switches off CORS_ALLOW_ALL_ORIGINS and unmounts the browser
+      # extension's demo-only cookie routes (config/urls.py). Both intended.
+
+      - key: DJANGO_SECRET_KEY
+        generateValue: true
+
+      # Render injects the service's own hostname, so this needs no editing even
+      # if the service is renamed.
+      - key: DJANGO_ALLOWED_HOSTS
+        fromService:
+          type: web
+          name: askscotty-api
+          property: host
+
+      # The deployed app's origin, e.g. https://askscotty.pages.dev — no trailing
+      # slash. Blank here means every browser request fails CORS the moment
+      # DEBUG is off, which surfaces in the app as a bare "network error".
+      - key: CORS_ALLOWED_ORIGINS
+        sync: false
+      # Only /admin/ and the browsable API need this; the JSON endpoints do not.
+      - key: CSRF_TRUSTED_ORIGINS
+        sync: false
+
+      # --- Database (Neon) ---
+      - key: POSTGRES_HOST
+        sync: false
+      - key: POSTGRES_DB
+        sync: false
+      - key: POSTGRES_USER
+        sync: false
+      - key: POSTGRES_PASSWORD
+        sync: false
+      - key: POSTGRES_PORT
+        value: "5432"
+
+      # --- Planner ---
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      # Printed by `manage.py provision_planner`. Scoped to the organisation
+      # behind the key above, so these cannot be shared between accounts.
+      - key: PLANNER_AGENT_ID
+        sync: false
+      - key: PLANNER_ENVIRONMENT_ID
+        sync: false
+      - key: PLANNER_MODEL
+        value: claude-sonnet-5
+      - key: PLANNER_EFFORT
+        value: low
+      # Lower than the local default of 500. This caps one conversation thread,
+      # and the deployed URL is unauthenticated — anyone who finds it spends this
+      # much of your Anthropic balance per thread they open. Set a hard spend
+      # limit in the Anthropic console as well; this is a loop guard, not a
+      # budget.
+      - key: PLANNER_SESSION_BUDGET_CENTS
+        value: "100"
+
+      # --- Retrieval ---
+      # Embeds the user's question at query time. Without it search.py falls back
+      # to full-text only — degraded, not broken.
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: EMBEDDING_MODEL
+        value: text-embedding-3-small
+      - key: EMBEDDING_DIMENSIONS
+        value: "1536"
+
+      # --- Connectors ---
+      # crypto.py raises ImproperlyConfigured at first use once DEBUG is off, so
+      # this is required rather than optional. Any passphrase works — it is
+      # hashed to the 32 bytes Fernet needs.
+      - key: CONNECTOR_ENCRYPTION_KEY
+        generateValue: true
+
+      - key: LOG_LEVEL
+        value: INFO

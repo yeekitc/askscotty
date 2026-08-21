@@ -132,6 +132,21 @@ LOGGING = {
     },
 }
 
+# Render, Fly and every other managed host terminate TLS at a proxy and forward
+# plain HTTP, so without this Django believes an https:// request is insecure and
+# rejects its own admin login as a CSRF failure.
+SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
+
+# Needed once the site is served over https from a host Django did not originate
+# — /admin/ and the browsable API POST both fail with 403 otherwise. The JSON
+# endpoints are unaffected: their authentication_classes are empty, so DRF never
+# reaches the session-auth CSRF check.
+CSRF_TRUSTED_ORIGINS = [
+    origin.strip()
+    for origin in os.getenv("CSRF_TRUSTED_ORIGINS", "").split(",")
+    if origin.strip()
+]
+
 CORS_ALLOWED_ORIGINS = [
     origin.strip()
     for origin in os.getenv("CORS_ALLOWED_ORIGINS", "").split(",")

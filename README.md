@@ -8,6 +8,8 @@ Named for Scotty, CMU's mascot — **not** affiliated with ScottyLabs or other c
 
 **Dependencies:** see [dependencies.md](./docs/dependencies.md) — what every package and API key is for, and why it was picked over the alternatives. Add a row there in the same commit that adds a dependency.
 
+**Deploying:** see [deploy.md](./docs/deploy.md) — the public deployment on Render, Neon and Cloudflare Pages, and what changes once `DEBUG` is off.
+
 Hackathon: [Stellic Pathfinders Challenge](https://www.stellic.com/pathfinders).
 
 ---
@@ -73,8 +75,10 @@ docker compose down
 ├── docs/PRD.md            # product requirements — the source of truth
 ├── tasklist.md            # the build checklist, and where the API contract is agreed
 ├── docs/dependencies.md  # every dependency and why it's there — read before adding one
+├── docs/deploy.md         # deploying it somewhere judges can open
 ├── setup.sh               # one-command setup
 ├── docker-compose.yml     # database + API containers
+├── render.yaml            # the deployed API, as a Render blueprint
 ├── .env.example           # backend settings (setup.sh copies to .env)
 ├── backend/               # Django REST API
 │   ├── config/settings.py # Django configuration
