@@ -135,34 +135,37 @@ changes.
 <details>
 <summary><b>No search provider: Claude searches server-side</b></summary>
 
-`web_search_20260318` and `web_fetch_20260318` run on Anthropic's infrastructure
-under `ANTHROPIC_API_KEY`. Their parameters cover the entire B3 requirement list,
-which is why `tavily-python` was removed and **why a search provider should not be
-added back** without re-running the test below.
+`tavily-python` was removed because Claude already does this: `web_search` and
+`web_fetch` run on Anthropic's infrastructure under `ANTHROPIC_API_KEY`. **Do not
+add a search provider back** — a second one buys nothing the planner can reach.
 
-| B3 / PRD §6 needs | Built-in parameter |
-|---|---|
-| Site-filtered search (`site:cs.cmu.edu`) | `allowed_domains` |
-| Allowlist of public hosts for `fetch_url` | `allowed_domains` |
-| Canvas / SIO / Stellic never fetched | `blocked_domains` |
-| Rate-limit the verify lane | `max_uses` |
+**The domain-filter caveat, which is easy to get wrong.** The *Messages API*
+versions of these tools take `allowed_domains` / `blocked_domains` / `max_uses` /
+`max_content_tokens`, and they were verified live: a search restricted to
+`cs.cmu.edu` returned 30 hits with zero off-domain leaks, and a blocked fetch of
+`canvas.cmu.edu` failed with `url_not_allowed` while the same URL under a
+*non-covering* denylist failed with `url_not_accessible` — two different codes, so
+the denylist did real work rather than coinciding with Canvas being login-walled.
 
-Verified live rather than read off a docs page: a search restricted to
-`cs.cmu.edu` returned 30 hits with **zero** off-domain leaks, and a blocked fetch
-of `canvas.cmu.edu` failed with `url_not_allowed` — while the same URL under a
-*non-covering* denylist failed with `url_not_accessible`. Two different codes, so
-the denylist does real work rather than coinciding with Canvas being login-walled.
-That control is the whole test; without it the result means nothing, because
-Canvas fails either way.
+**None of that is in force here.** The planner runs on Managed Agents, whose
+prebuilt `agent_toolset_20260401` is a single opaque entry: no domain parameters,
+no use caps. Its only per-tool control is `enabled`, which is how unchecking web
+verification switches the pair off ([`planner/client.py`](../backend/apps/planner/client.py)).
+The environment is `networking: unrestricted`. Domain filtering on this surface
+is an open item in tasklist §B3.
 
-**The cost is the catch.** Results land in the context window: one searching query
-measured **~35.9k input tokens and ~26 seconds**. Verify only when the index is
-genuinely stale, and cap with `max_uses` / `max_content_tokens`.
+**What holds PRD §6 instead:** `web_fetch` carries no credentials. Canvas, SIO and
+Stellic are login-walled, so an unauthenticated fetch gets a login page rather
+than anyone's data. That is the real guarantee — narrower than a denylist, and
+sound for the risk that matters, but do not describe it as a blocklist.
 
-Two wiring traps: do not declare `code_execution` alongside these (dynamic
-filtering is built in, and a second execution environment confuses the model), and
-handle `pause_turn`, which otherwise ends the loop early looking like a finished
-answer.
+**The cost is the other catch.** Results land in the context window and are re-sent
+each call: one searching query measured **~35.9k input tokens and ~26 seconds**.
+Verify only when the index is genuinely stale.
+
+One wiring trap: do not declare `code_execution` alongside these — dynamic
+filtering is built in, and a second execution environment confuses the model.
+`pause_turn` is handled by the platform now, which is what ruled out `tool_runner`.
 
 </details>
 
