@@ -137,9 +137,9 @@ every free web service in the workspace until the next month begins: not a slow
 first request, a dead URL for days. A paid instance draws no free hours at all,
 which is the real reason to buy one.
 
-Neon also scales to zero, after 5 minutes idle. Measured cost of the resume:
-about 300ms, which is noise beside a 32-70s answer — so paying to disable it
-buys nothing. The free plan cannot disable it in any case; Launch can.
+Neon also scales to zero, after 5 minutes idle. The resume is sub-second in
+Neon's own documentation and is noise beside a 32-70s answer, so paying to
+disable it buys nothing. The free plan cannot disable it in any case; Launch can.
 
 **Do not make `/api/health/` touch the database.** It returns a static dict today
 ([`core/views.py`](../backend/apps/core/views.py)), and that is load-bearing:
