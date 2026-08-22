@@ -6,6 +6,8 @@ citations you can check.
 Named for Scotty, CMU's mascot. **Not** affiliated with ScottyLabs or other
 campus "Scotty*" products.
 
+**Deploying:** see [deploy.md](./docs/deploy.md) — the public deployment on Render and Neon, and what changes once `DEBUG` is off.
+
 Hackathon: [Stellic Pathfinders Challenge](https://www.stellic.com/pathfinders).
 
 ---
@@ -147,9 +149,10 @@ Or install **Expo Go** on your phone and scan the QR code.
 
 ```
 .
-├── docs/                   # PRD.md · runbook.md · dependencies.md
+├── docs/                   # PRD.md · runbook.md · deploy.md · dependencies.md
 ├── setup.sh                # one-command setup
 ├── docker-compose.yml      # database + API containers
+├── render.yaml             # the deployed API and app, as a Render blueprint
 ├── backend/                # Django REST API
 │   ├── fixtures/           #   the prebuilt campus index
 │   └── apps/

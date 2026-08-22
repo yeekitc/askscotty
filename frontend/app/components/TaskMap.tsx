@@ -114,15 +114,41 @@ function NodeCard({ node, left, top }: NodeCardProps) {
   )
 }
 
-export function TaskMap({ text }: { text: string }) {
-  let data: TaskMapData
+// The block is model-generated, so a group missing `nodes`, or a bare `null`,
+// is an ordinary failure mode rather than a bug. Valid JSON of the wrong shape
+// still has to degrade to nothing — throwing here takes the whole answer down.
+function parseTaskMap(text: string): TaskMapData | null {
+  let raw: unknown
   try {
-    data = JSON.parse(text) as TaskMapData
+    raw = JSON.parse(text)
   } catch {
     return null
   }
+  if (!raw || typeof raw !== 'object') return null
 
-  if (!data.groups || data.groups.length === 0) return null
+  const source = raw as Partial<TaskMapData>
+  if (!Array.isArray(source.groups)) return null
+
+  const groups = source.groups
+    .filter((group) => !!group && typeof group === 'object')
+    .map((group) => ({
+      ...group,
+      nodes: Array.isArray(group.nodes) ? group.nodes.filter((node) => !!node && !!node.id) : [],
+    }))
+    .filter((group) => group.nodes.length > 0)
+
+  if (groups.length === 0) return null
+
+  const edges = Array.isArray(source.edges)
+    ? source.edges.filter((edge) => !!edge && !!edge.from && !!edge.to)
+    : []
+
+  return { groups, edges }
+}
+
+export function TaskMap({ text }: { text: string }) {
+  const data = parseTaskMap(text)
+  if (!data) return null
 
   const positions = buildPositions(data.groups)
 
@@ -169,7 +195,7 @@ export function TaskMap({ text }: { text: string }) {
           {/* SVG edge layer last so dots render on top of card edges */}
           <View pointerEvents="none" style={StyleSheet.absoluteFill}>
             <Svg width={canvasWidth} height={canvasHeight}>
-              {(data.edges ?? []).flatMap((edge, i) => {
+              {data.edges.flatMap((edge, i) => {
                 const src = positions.get(edge.from)
                 const dst = positions.get(edge.to)
                 if (!src || !dst) return []

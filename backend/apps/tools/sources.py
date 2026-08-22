@@ -145,6 +145,7 @@ register_source(
     "Web verify",
     tier="public",
     access="Live",
+    implemented=True,
     note="Live search and fetch used to re-check anything stale or missing.",
 )
 register_source(

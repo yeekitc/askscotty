@@ -415,8 +415,7 @@ one during any period when someone might arrive unannounced.
 
 </details>
 
-Deployment procedure, secrets and troubleshooting live in `docs/deploy.md`,
-which lands on `main` when the `deploy` branch merges.
+Deployment procedure, secrets and troubleshooting live in [deploy.md](./deploy.md).
 
 ---
 

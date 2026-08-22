@@ -23,6 +23,15 @@ ALLOWED_HOSTS = [
     if host.strip()
 ]
 
+# Render injects the real public hostname here. Worth trusting over anything the
+# blueprint can express: `fromService … property: host` yields the *service name*
+# ("askscotty-api"), not the hostname, so a deploy configured that way rejects
+# every request — including the platform's own health check — as DisallowedHost.
+# A 400 on a health check reads like the app crashed; nothing says "hostname".
+_render_hostname = os.getenv("RENDER_EXTERNAL_HOSTNAME", "").strip()
+if _render_hostname and _render_hostname not in ALLOWED_HOSTS:
+    ALLOWED_HOSTS.append(_render_hostname)
+
 INSTALLED_APPS = [
     "django.contrib.admin",
     "django.contrib.auth",
@@ -131,6 +140,21 @@ LOGGING = {
         }
     },
 }
+
+# Render, Fly and every other managed host terminate TLS at a proxy and forward
+# plain HTTP, so without this Django believes an https:// request is insecure and
+# rejects its own admin login as a CSRF failure.
+SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
+
+# Needed once the site is served over https from a host Django did not originate
+# — /admin/ and the browsable API POST both fail with 403 otherwise. The JSON
+# endpoints are unaffected: their authentication_classes are empty, so DRF never
+# reaches the session-auth CSRF check.
+CSRF_TRUSTED_ORIGINS = [
+    origin.strip()
+    for origin in os.getenv("CSRF_TRUSTED_ORIGINS", "").split(",")
+    if origin.strip()
+]
 
 CORS_ALLOWED_ORIGINS = [
     origin.strip()

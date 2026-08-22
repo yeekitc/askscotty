@@ -10,17 +10,22 @@ type Event = {
   location: string
   org: string
   link: string
-  description?: string
+}
+
+// Event fields come from a model-generated block, so a missing or non-string
+// date is an ordinary case. Coerce once here so the matchers below cannot throw.
+function asText(s: unknown): string {
+  return typeof s === 'string' ? s : ''
 }
 
 // "Mon, Nov 14, 2026 9:00 AM" → "Nov 14"
-function shortDate(s: string): string {
-  const m = s.match(/,\s+(\w+ \d+),/)
+function shortDate(s: unknown): string {
+  const m = asText(s).match(/,\s+(\w+ \d+),/)
   return m ? m[1] : ''
 }
 
 // Returns "Nov 14" for same-day, "Nov 14–15" for same-month, "Nov 14 – Dec 2" cross-month
-function shortDateRange(start: string, end: string): string {
+function shortDateRange(start: unknown, end: unknown): string {
   const sd = shortDate(start)
   const ed = shortDate(end)
   if (!sd || !ed || sd === ed) return sd
@@ -32,14 +37,14 @@ function shortDateRange(start: string, end: string): string {
 }
 
 // "Mon, Nov 14, 2026 9:00 AM" → "MON"
-function dayAbbr(s: string): string {
-  const m = s.match(/^(\w{3})/)
+function dayAbbr(s: unknown): string {
+  const m = asText(s).match(/^(\w{3})/)
   return m ? m[1].toUpperCase() : ''
 }
 
 // "Mon, Nov 14, 2026 9:00 AM" → "11/14"
-function shortDateNum(s: string): string {
-  const m = s.match(/,\s+(\w+)\s+(\d+),/)
+function shortDateNum(s: unknown): string {
+  const m = asText(s).match(/,\s+(\w+)\s+(\d+),/)
   if (!m) return ''
   const months: Record<string, string> = {
     Jan: '1', Feb: '2', Mar: '3', Apr: '4', May: '5', Jun: '6',
@@ -49,13 +54,13 @@ function shortDateNum(s: string): string {
 }
 
 // "Mon, Nov 14, 2026 9:00 AM" → "9:00 AM"
-function extractTime(s: string): string {
-  const m = s.match(/\d{4}\s+(\d+:\d+\s+[AP]M)/)
+function extractTime(s: unknown): string {
+  const m = asText(s).match(/\d{4}\s+(\d+:\d+\s+[AP]M)/)
   return m ? m[1] : ''
 }
 
 // "9:00 AM – 5:00 PM", or "" when no time present
-function timeRange(start: string, end: string): string {
+function timeRange(start: unknown, end: unknown): string {
   const t1 = extractTime(start)
   const t2 = extractTime(end)
   if (!t1) return ''
@@ -68,7 +73,7 @@ function EventRow({ event, viewMode }: { event: Event; viewMode: 'list' | 'grid'
   const day = dayAbbr(event.start)
   const dateNum = shortDateNum(event.start)
   const time = timeRange(event.start, event.end)
-  const descOrOrg = event.description || event.org || ''
+  const org = event.org || ''
 
   if (viewMode === 'list') {
     return (
@@ -84,7 +89,7 @@ function EventRow({ event, viewMode }: { event: Event; viewMode: 'list' | 'grid'
           ) : null}
         </View>
         <View style={styles.listRight}>
-          <Text style={styles.listDesc} numberOfLines={3}>{descOrOrg}</Text>
+          <Text style={styles.listDesc} numberOfLines={3}>{org}</Text>
         </View>
       </Pressable>
     )
@@ -103,8 +108,8 @@ function EventRow({ event, viewMode }: { event: Event; viewMode: 'list' | 'grid'
         {event.location ? (
           <Text style={styles.gridLocation}>📍 {event.location}</Text>
         ) : null}
-        {descOrOrg ? (
-          <Text style={styles.gridDesc} numberOfLines={3}>{descOrOrg}</Text>
+        {org ? (
+          <Text style={styles.gridDesc} numberOfLines={3}>{org}</Text>
         ) : null}
         {event.link ? (
           <Text
@@ -127,7 +132,10 @@ export function EventList({ text, viewMode }: { text: string; viewMode: 'list' |
   let events: Event[] | null = null
   try {
     const parsed = JSON.parse(text)
-    if (Array.isArray(parsed) && parsed.length > 0) events = parsed as Event[]
+    if (Array.isArray(parsed)) {
+      const rows = parsed.filter((event) => !!event && typeof event === 'object')
+      if (rows.length > 0) events = rows as Event[]
+    }
   } catch {
     return null
   }
