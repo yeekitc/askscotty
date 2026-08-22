@@ -406,3 +406,189 @@ def get_course(course_number: str) -> dict:
     _add_schedules([course], None)
 
     return {"results": [course], "citations": [_course_citation(course)]}
+
+
+# --- Requisites and gen-eds ---------------------------------------------------
+
+# Schools whose gen-ed lists the upstream actually publishes. DC, CFA, TSB and
+# SHS all answer 200 with an empty array rather than an error, so an unlisted
+# school would otherwise look like "no gen-eds" instead of "not published".
+_GENED_SCHOOLS: tuple[str, ...] = ("SCS", "CIT", "MCS")
+
+_MAX_GENEDS = 40
+
+# A gen-ed list is a quarter of a megabyte and changes once a semester, so it is
+# the one courses call worth caching between requests.
+_GENED_TTL = 6 * 60 * 60.0
+
+
+def _unit_value(raw: object) -> float | None:
+    """Units arrive as a string ("9.0"); mirror _normalize_course's handling."""
+    try:
+        return float(raw) if raw is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _requisite_citation(course_number: str, prereqs: list, postreqs: list) -> dict:
+    bits = []
+    bits.append(f"prereqs: {', '.join(prereqs)}" if prereqs else "no prereqs")
+    if postreqs:
+        bits.append(f"{len(postreqs)} courses require it")
+    return {
+        "title": f"{course_number}: requisites",
+        "url": "",  # no confirmed public per-course page (docs/b2-courses.md)
+        "source": "CMU Courses",
+        "snippet": " · ".join(bits),
+        "indexed_at": None,
+        "verified_at": timezone.now(),
+    }
+
+
+@register_tool(
+    name="course_requisites",
+    description=(
+        "Fetch the prerequisite and postrequisite courses for one CMU course. "
+        "`postreqs` are the courses that require this one, which is what answers "
+        "'what does 15-213 unlock?' and what to build a dependency graph from. "
+        "Use this rather than reading prereqs out of a course description."
+    ),
+    json_schema={
+        "type": "object",
+        "properties": {
+            "course_number": {
+                "type": "string",
+                "description": "The course number, e.g. '15-213'.",
+            },
+        },
+        "required": ["course_number"],
+    },
+    mode="courses",
+    is_mock=False,
+)
+def course_requisites(course_number: str) -> dict:
+    try:
+        raw = get_json(f"{_BASE}/courses/requisites/{course_number}")
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code in (404, 500):
+            # Same upstream quirk get_course documents: an unknown course number
+            # is a bare 500, and reporting it as an outage sends the model
+            # hunting for a working API instead of a real course number.
+            raise ToolError(f"Course {course_number!r} not found in the CMU catalog.") from exc
+        raise ToolError(
+            f"CMU Courses API returned {exc.response.status_code} for {course_number!r}."
+        ) from exc
+    except httpx.HTTPError as exc:
+        raise ToolError(f"CMU Courses API unreachable: {exc}") from exc
+
+    payload = raw if isinstance(raw, dict) else {}
+    prereqs = [str(c) for c in payload.get("prereqs") or []]
+    postreqs = [str(c) for c in payload.get("postreqs") or []]
+    coreqs = [str(c) for c in payload.get("coreqs") or []]
+
+    result = {
+        "course_number": course_number,
+        "prereqs": prereqs,
+        "postreqs": postreqs,
+        "coreqs": coreqs,
+        "source": "CMU Courses",
+        "is_mock": False,
+    }
+    return {
+        "results": [result],
+        "citations": [_requisite_citation(course_number, prereqs, postreqs)],
+    }
+
+
+@register_tool(
+    name="find_geneds",
+    description=(
+        "List the courses that count toward a college's general education "
+        "requirement. Only SCS, CIT and MCS publish a list; the other colleges "
+        "do not, so say the list is unavailable rather than guessing."
+    ),
+    json_schema={
+        "type": "object",
+        "properties": {
+            "school": {
+                "type": "string",
+                "enum": list(_GENED_SCHOOLS),
+                "description": "College code: SCS, CIT or MCS.",
+            },
+            "limit": {
+                "type": "integer",
+                "description": f"Maximum courses to return (default {_MAX_GENEDS}).",
+                "default": _MAX_GENEDS,
+            },
+        },
+        "required": ["school"],
+    },
+    mode="courses",
+    is_mock=False,
+)
+def find_geneds(school: str, limit: int = _MAX_GENEDS) -> dict:
+    code = str(school).strip().upper()
+    if code not in _GENED_SCHOOLS:
+        raise ToolError(
+            f"{school!r} does not publish a gen-ed list. Available: "
+            f"{', '.join(_GENED_SCHOOLS)}."
+        )
+
+    try:
+        raw = get_json(f"{_BASE}/geneds", params={"school": code}, ttl=_GENED_TTL)
+    except httpx.HTTPError as exc:
+        raise ToolError(f"CMU Courses API unreachable: {exc}") from exc
+
+    rows = raw if isinstance(raw, list) else []
+    if not rows:
+        raise ToolError(f"CMU Courses published no gen-ed list for {code}.")
+
+    capped = max(1, min(int(limit or _MAX_GENEDS), _MAX_RESULTS * 5))
+    # The full payload is a quarter of a megabyte; only the identifying fields
+    # are worth spending context on, and the model can call get_course for more.
+    results = [
+        {
+            "course_number": str(row.get("courseID", "")),
+            "title": str(row.get("name", "")),
+            "units": _unit_value(row.get("units")),
+            "tags": [str(tag) for tag in row.get("tags") or []],
+            "school": code,
+            "source": "CMU Courses",
+            "is_mock": False,
+        }
+        for row in rows[:capped]
+        if isinstance(row, dict)
+    ]
+
+    payload = {
+        "results": results,
+        "citations": [
+            {
+                "title": f"{course['course_number']}: {course['title']}",
+                "url": "",
+                "source": "CMU Courses",
+                "snippet": " · ".join(
+                    bit
+                    for bit in (
+                        f"{course['units']:g} units" if course["units"] is not None else "",
+                        ", ".join(course["tags"][:3]),
+                        f"{code} gen-ed",
+                    )
+                    if bit
+                ),
+                "indexed_at": None,
+                "verified_at": timezone.now(),
+            }
+            for course in results
+        ],
+    }
+
+    unread = len(rows) - len(results)
+    if unread > 0:
+        # Same contract search_courses uses: a capped list must never read as
+        # the complete one.
+        payload["note"] = (
+            f"Showing {len(results)} of {len(rows)} {code} gen-ed courses. "
+            "Raise limit or narrow the question if the answer needs all of them."
+        )
+    return payload
