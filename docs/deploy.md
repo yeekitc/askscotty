@@ -139,14 +139,17 @@ the app as a bare "network error" rather than anything mentioning CORS.
 
 ## Cold starts
 
-Render's free tier spins a service down after 15 minutes idle and takes ~50s to
-come back. On top of a 60s answer that is a poor first impression for a judge.
+The API runs on **Starter ($7/mo)**, which does not sleep. Render's free tier
+spins a service down after 15 minutes idle and takes ~50s to come back, and on
+top of a 60s answer that is a poor first impression for a judge. Render prorates
+by the second, so a known three-day window costs about $0.70.
 
-Put the service on **Starter ($7/mo)** for any period when someone might arrive
-unannounced. Render prorates by the second, so a known three-day window costs
-about $0.70 — but that only helps if the window is known.
+`plan: starter` is declared in [render.yaml](../render.yaml) as well as set on
+the service. Both, because a Blueprint sync overwrites any dashboard change that
+conflicts with the file — a plan upgrade made only in the dashboard is reverted
+the next time anyone edits render.yaml, and nothing announces it.
 
-Do **not** solve this with an uptime pinger. A workspace gets 750 free instance
+Do **not** solve a free-tier cold start with an uptime pinger. A workspace gets 750 free instance
 hours a month and a month is ~720, so a service kept awake around the clock runs
 the allowance down to roughly a day of margin. Exhaust it and Render suspends
 every free web service in the workspace until the next month begins: not a slow
@@ -213,7 +216,7 @@ cannot answer.
 | Answers cut off around 30s | `--timeout` missing from the gunicorn CMD |
 | Answers are vague, citations thin | `OPENAI_API_KEY` unset — retrieval fell back to full-text only |
 | 403 on `/admin/` login | `CSRF_TRUSTED_ORIGINS` missing the API's own origin |
-| First request of the day takes a minute | Free-tier cold start — see above |
+| First request of the day takes a minute | Cold start — the service is on `free`, not `starter`; check render.yaml and the dashboard agree (see above) |
 | Deploy never goes live, health check 400s | `DJANGO_ALLOWED_HOSTS` missing the real hostname — Django's `DisallowedHost`, which logs as a bare 400 |
 
 Logs are `docker compose logs -f backend` locally, or the **Logs** tab on Render.

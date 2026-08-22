@@ -17,7 +17,12 @@ services:
     # only resolves with backend/ as the build context, not the repo root.
     dockerfilePath: ./backend/Dockerfile
     dockerContext: ./backend
-    plan: free
+    # Must match what the service is actually running. A dashboard upgrade does
+    # not update this file, and a Blueprint sync overwrites any dashboard change
+    # that conflicts with it — so leaving this at `free` silently downgrades a
+    # paid service the next time anyone edits this file, reintroducing 15-minute
+    # sleeps and the 750-hour cap (docs/deploy.md § Cold starts).
+    plan: starter
     region: ohio
     healthCheckPath: /api/health/
     # entrypoint.sh runs migrate + collectstatic before gunicorn on every boot,
