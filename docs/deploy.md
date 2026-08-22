@@ -57,6 +57,22 @@ It prints `PLANNER_AGENT_ID` and `PLANNER_ENVIRONMENT_ID`. **Both are scoped to
 the Anthropic organisation behind your API key** — they are not secret, but they
 are also not portable between accounts. Keep them for step 3.
 
+> **Re-running this later updates the agent the deployed API is using.** Step 3
+> puts this same id into Render, so once `PLANNER_AGENT_ID` is set,
+> `provision_planner` calls `agents.update` on it and mints a new version under
+> that id — and production serves that version to every session opened after it.
+> There is no separate staging agent.
+>
+> A prompt change is exactly what this command exists to ship, so that is usually
+> what you want. When it isn't — testing a prompt edit from a feature branch —
+> blank `PLANNER_AGENT_ID` in your local `.env` first. The command then *creates*
+> a second agent and prints its id, which stays local and leaves production on
+> the version it has. `--dry-run` prints the target and sends nothing.
+>
+> Tool changes need none of this: the toolset is built from the registry on every
+> request, which is why adding a tool stays a two-line change (CLAUDE.md
+> § Registering a tool).
+
 ### 3. Render — both services
 
 Dashboard → **New** → **Blueprint** → pick this repo, branch `deploy`.
