@@ -20,10 +20,10 @@ from unittest.mock import MagicMock, patch
 import httpx
 from django.test import SimpleTestCase
 
-from apps.tools.courses import get_course, search_courses
+from apps.tools.courses import course_requisites, find_geneds, get_course, search_courses
 from apps.tools.dining import find_dining
 from apps.tools.events import find_events
-from apps.tools.maps import nearby, walk_time
+from apps.tools.maps import find_place, nearby, walk_time
 from apps.tools.registry import ToolError
 
 # --- Shared helpers -----------------------------------------------------------
@@ -595,46 +595,362 @@ class EventsToolTests(SimpleTestCase):
                 find_events()
 
 
-# --- Maps (pure fixture, no network) -----------------------------------------
+# --- Maps (live API, patched) -------------------------------------------------
+
+# Real coordinates and names from api.maps.scottylabs.org/buildings, which keys
+# by building code. HAM/PC are here on purpose: they are what `/search` returns
+# ahead of HH/POS for "hamerschlag" and "posner", so they are what the alias
+# table has to beat.
+def _building(code: str, name: str, lat: float, lng: float) -> dict:
+    return {
+        "code": code,
+        "name": name,
+        "defaultOrdinal": None,
+        "defaultFloor": "1",
+        "labelLatitude": lat,
+        "labelLongitude": lng,
+        "shape": [],
+        "hitbox": None,
+        "floors": ["1"],
+        "isMapped": True,
+    }
 
 
-class MapsToolTests(SimpleTestCase):
-    def test_walk_time_by_alias(self) -> None:
-        result = walk_time(from_building="Wean", to_building="Gates")["results"][0]
+_CATALOG = {
+    "GHC": _building("GHC", "Gates & Hillman Centers", 40.44348909465742, -79.9446062625),
+    "WEH": _building("WEH", "Wean Hall", 40.44268084296874, -79.94563372513628),
+    "CUC": _building("CUC", "Cohon University Center", 40.443478, -79.942077),
+    "BH": _building("BH", "Baker Hall", 40.441412, -79.944652),
+    "DH": _building("DH", "Doherty Hall", 40.442523, -79.944677),
+    "HL": _building("HL", "Hunt Library", 40.441090, -79.943641),
+    "TEP": _building("TEP", "Tepper Building", 40.444982, -79.945304),
+    "MI": _building("MI", "Mellon Institute", 40.446134, -79.951058),
+    "HH": _building("HH", "Hamerschlag Hall", 40.44238029153567, -79.94678460859375),
+    "HAM": _building("HAM", "Hamerschlag House", 40.44135313142273, -79.93879856796875),
+    "POS": _building("POS", "Posner Hall", 40.44144832861169, -79.94208255156249),
+    "PC": _building("PC", "Posner Center", 40.44150469133797, -79.94246261718749),
+}
 
-        self.assertEqual(result["from"], "Wean Hall")
-        self.assertEqual(result["to"], "Gates-Hillman Center")
-        self.assertEqual(result["walk_minutes"], 2)
+# The real /search shape, and the real ranking: rooms come back above buildings.
+_SEARCH_ROHR = [
+    {
+        "id": "ec67378d-bf14-4c5a-a830-0aadaca1c8fa",
+        "nameWithSpace": "GHC 3101",
+        "fullNameWithSpace": "Gates & Hillman Centers 3101",
+        "labelPosition": {"latitude": 40.44347617300122, "longitude": -79.94480928001676},
+        "type": "room",
+        "roomType": "Food",
+        "alias": "Rohr Café — La Prima",
+        "numTerms": 107,
+    },
+    {
+        "id": "GHC",
+        "nameWithSpace": "Gates & Hillman Centers",
+        "fullNameWithSpace": "Gates & Hillman Centers",
+        "labelPosition": {"latitude": 40.44348909465742, "longitude": -79.9446062625},
+        "type": "building",
+        "alias": "",
+        "numTerms": 12,
+    },
+]
 
-    def test_walk_time_same_building_is_zero(self) -> None:
-        result = walk_time(from_building="Wean", to_building="Wean Hall")["results"][0]
-        self.assertEqual(result["walk_minutes"], 0)
 
-    def test_nearby_radius_filter(self) -> None:
-        results = nearby(building="Wean Hall", radius_minutes=3)["results"]
+class MapsResolutionTests(SimpleTestCase):
+    """Name → building code. The part most likely to regress silently."""
 
-        names = {result["name"] for result in results}
-        self.assertIn("Gates-Hillman Center", names)
-        self.assertIn("Cohon University Center", names)
-        # Baker Hall is 6 min — well past the radius ceiling.
-        self.assertNotIn("Baker Hall", names)
-        self.assertTrue(all(result["walk_minutes"] <= 3 for result in results))
+    def _patch(self, **kwargs):
+        patcher = patch("apps.tools.maps.get_json", **kwargs)
+        started = patcher.start()
+        self.addCleanup(patcher.stop)
+        return started
+
+    def _catalog_only(self):
+        return self._patch(return_value=_CATALOG)
+
+    def test_resolves_by_code_alias_and_full_name(self) -> None:
+        self._catalog_only()
+        for typed, expected in (
+            ("WEH", "Wean Hall"),
+            ("wean", "Wean Hall"),
+            ("Wean Hall", "Wean Hall"),
+            ("ghc", "Gates & Hillman Centers"),
+            ("uc", "Cohon University Center"),
+        ):
+            with self.subTest(typed=typed):
+                result = walk_time(from_building=typed, to_building="DH")["results"][0]
+                self.assertEqual(result["from"], expected)
+
+    def test_ambiguous_words_resolve_to_the_academic_building(self) -> None:
+        # `/search` ranks Hamerschlag House and Posner Center first; the alias
+        # table exists so the bare word still lands on the building people mean.
+        self._catalog_only()
+
+        walk = walk_time(from_building="hamerschlag", to_building="posner")["results"][0]
+        self.assertEqual(walk["from_code"], "HH", "hamerschlag must not resolve to HAM")
+        self.assertEqual(walk["to_code"], "POS", "posner must not resolve to PC")
+
+    def test_names_our_other_tools_emit_still_resolve(self) -> None:
+        # rooms.py's schema enum and dining.py's _NEAR_ALIASES were written
+        # against the old fixture names. Upstream calls GHC "Gates & Hillman
+        # Centers" and has no "University Center", so these must keep working
+        # or those tools stop composing with maps.
+        self._catalog_only()
+        for legacy, expected in (
+            ("Gates-Hillman Center", "GHC"),
+            ("University Center", "CUC"),
+            ("Hamerschlag Hall", "HH"),
+            ("Posner Hall", "POS"),
+            ("Wean Hall", "WEH"),
+            ("Baker Hall", "BH"),
+            ("Doherty Hall", "DH"),
+        ):
+            with self.subTest(legacy=legacy):
+                result = walk_time(from_building=legacy, to_building="DH")["results"][0]
+                self.assertEqual(result["from_code"], expected)
 
     def test_unknown_building_raises_tool_error(self) -> None:
+        self._patch(side_effect=[_CATALOG, []])
         with self.assertRaises(ToolError):
             walk_time(from_building="Hogwarts", to_building="Wean")
 
-    def test_is_mock_true_on_all_results(self) -> None:
-        self.assertTrue(walk_time(from_building="Wean", to_building="Gates")["results"][0]["is_mock"])
-        self.assertTrue(all(r["is_mock"] for r in nearby(building="Wean Hall")["results"]))
+    def test_search_is_only_consulted_when_nothing_else_matches(self) -> None:
+        api = self._patch(return_value=_CATALOG)
+        walk_time(from_building="wean", to_building="ghc")
+        self.assertTrue(
+            all("/search" not in call.args[0] for call in api.call_args_list),
+            "a curated alias must not cost a search request",
+        )
 
-    def test_citations_say_the_data_is_a_fixture_and_link_nowhere(self) -> None:
+
+class WalkTimeTests(SimpleTestCase):
+    def _patch(self):
+        patcher = patch("apps.tools.maps.get_json", return_value=_CATALOG)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_estimates_from_real_coordinates(self) -> None:
+        self._patch()
+        result = walk_time(from_building="Wean", to_building="Gates")["results"][0]
+
+        self.assertEqual(result["from"], "Wean Hall")
+        self.assertEqual(result["to"], "Gates & Hillman Centers")
+        self.assertEqual(result["distance_m"], 125)
+        self.assertEqual(result["walk_minutes"], 2)
+
+    def test_same_building_is_zero_not_rounded_up_to_one(self) -> None:
+        self._patch()
+        result = walk_time(from_building="Wean", to_building="Wean Hall")["results"][0]
+        self.assertEqual(result["walk_minutes"], 0)
+
+    def test_nothing_is_flagged_as_a_fixture(self) -> None:
+        self._patch()
+        self.assertFalse(walk_time(from_building="Wean", to_building="Gates")["results"][0]["is_mock"])
+
+    def test_an_api_failure_raises_tool_error(self) -> None:
+        with patch("apps.tools.maps.get_json", side_effect=_status_error(503)):
+            with self.assertRaises(ToolError):
+                walk_time(from_building="Wean", to_building="Gates")
+
+    def test_an_unreachable_api_degrades_to_a_tool_error(self) -> None:
+        with patch("apps.tools.maps.get_json", side_effect=httpx.ConnectError("no route")):
+            with self.assertRaises(ToolError):
+                nearby(building="Wean Hall")
+
+
+class NearbyTests(SimpleTestCase):
+    def _patch(self):
+        patcher = patch("apps.tools.maps.get_json", return_value=_CATALOG)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_radius_filters_and_sorts(self) -> None:
+        self._patch()
+        results = nearby(building="Wean Hall", radius_minutes=3)["results"]
+
+        names = {result["name"] for result in results}
+        self.assertIn("Gates & Hillman Centers", names)  # 125 m, 2 min
+        self.assertIn("Baker Hall", names)  # 164 m, 3 min
+        self.assertNotIn("Mellon Institute", names)  # 599 m, 10 min
+        self.assertTrue(all(r["walk_minutes"] <= 3 for r in results))
+        self.assertEqual(
+            [r["walk_minutes"] for r in results],
+            sorted(r["walk_minutes"] for r in results),
+        )
+
+    def test_the_origin_is_not_listed_as_near_itself(self) -> None:
+        self._patch()
+        self.assertNotIn(
+            "Wean Hall", {r["name"] for r in nearby(building="Wean Hall")["results"]}
+        )
+
+    def test_a_capped_list_says_what_it_left_out(self) -> None:
+        # The live catalog is 74 buildings, so a generous radius can match
+        # dozens; each one costs a citation card.
+        self._patch()
+        payload = nearby(building="Wean Hall", radius_minutes=8, limit=3)
+
+        self.assertEqual(len(payload["results"]), 3)
+        self.assertIn("closest of", payload["note"])
+        self.assertEqual(len(payload["citations"]), 3, "a capped list must not over-cite")
+
+    def test_one_upstream_call_serves_the_whole_lookup(self) -> None:
+        with patch("apps.tools.maps.get_json", return_value=_CATALOG) as api:
+            nearby(building="Wean Hall", radius_minutes=8)
+        self.assertEqual(api.call_count, 1, "nearby must not fan out per building")
+
+
+class MapsCitationTests(SimpleTestCase):
+    def _patch(self):
+        patcher = patch("apps.tools.maps.get_json", return_value=_CATALOG)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_citations_link_to_the_map_and_name_one_source(self) -> None:
+        self._patch()
         payload = nearby(building="Wean Hall", radius_minutes=3)
 
         self.assertEqual(len(payload["citations"]), len(payload["results"]))
-        self.assertEqual(_urls(payload["citations"]), {""})
-        self.assertTrue(all("mock data" in c["snippet"] for c in payload["citations"]))
+        self.assertTrue(all(c["source"] == "CMU Maps" for c in payload["citations"]))
+        self.assertNotIn("", _urls(payload["citations"]), "live maps citations must link")
+        self.assertTrue(
+            all(url.startswith("https://maps.scottylabs.org/") for url in _urls(payload["citations"]))
+        )
+        self.assertTrue(all(c["verified_at"] is not None for c in payload["citations"]))
 
+    def test_every_estimate_says_it_is_not_a_route(self) -> None:
+        # The routing endpoint only answers for CUC, so these numbers are
+        # straight-line. If that disclosure ever drops out, the model can
+        # present an estimate as turn-by-turn directions.
+        self._patch()
         walk = walk_time(from_building="Wean", to_building="Gates")["citations"][0]
-        self.assertEqual(walk["title"], "Wean Hall → Gates-Hillman Center")
-        self.assertIn("mock data", walk["snippet"])
+
+        self.assertEqual(walk["title"], "Wean Hall → Gates & Hillman Centers")
+        self.assertIn("straight-line", walk["snippet"])
+        self.assertIn("not a walking route", walk["snippet"])
+        self.assertTrue(
+            all("straight-line" in c["snippet"] for c in nearby(building="Wean Hall")["citations"])
+        )
+
+
+class FindPlaceTests(SimpleTestCase):
+    def test_returns_rooms_with_their_building(self) -> None:
+        with patch("apps.tools.maps.get_json", return_value=_SEARCH_ROHR):
+            payload = find_place(query="rohr cafe")
+
+        room = payload["results"][0]
+        self.assertEqual(room["type"], "room")
+        self.assertEqual(room["alias"], "Rohr Café — La Prima")
+        self.assertEqual(room["building_code"], "GHC", "a room must report its building")
+        self.assertEqual(payload["results"][1]["building_code"], "GHC")
+        self.assertFalse(room["is_mock"])
+
+    def test_the_alias_titles_the_citation(self) -> None:
+        with patch("apps.tools.maps.get_json", return_value=_SEARCH_ROHR):
+            citation = find_place(query="rohr cafe")["citations"][0]
+
+        self.assertEqual(citation["title"], "Rohr Café — La Prima")
+        self.assertEqual(citation["source"], "CMU Maps")
+        self.assertEqual(citation["url"], "https://maps.scottylabs.org/GHC?dst=GHC")
+
+    def test_no_matches_raises_tool_error(self) -> None:
+        with patch("apps.tools.maps.get_json", return_value=[]):
+            with self.assertRaises(ToolError):
+                find_place(query="atlantis")
+
+
+# --- Requisites and gen-eds ---------------------------------------------------
+
+# The real /courses/requisites/15-213 shape: prereqRelations rides along beside
+# prereqs, and postreqs is the list nothing else in the API exposes.
+_REQUISITES_213 = {
+    "prereqs": ["15-122"],
+    "prereqRelations": [["15122"]],
+    "postreqs": ["15-411", "15-418", "15-440"],
+}
+
+_GENEDS_SCS = [
+    {
+        "courseID": "03-121",
+        "name": "Modern Biology",
+        "units": "9.0",
+        "desc": "An introductory course ...",
+        "tags": ["Science"],
+        "fces": [],
+        "startsCounting": None,
+        "stopsCounting": None,
+    },
+    {
+        "courseID": "76-101",
+        "name": "Interpretation and Argument",
+        "units": "9.0",
+        "desc": "Writing ...",
+        "tags": ["Writing"],
+        "fces": [],
+        "startsCounting": None,
+        "stopsCounting": None,
+    },
+]
+
+
+class CourseRequisitesTests(SimpleTestCase):
+    def test_returns_prereqs_and_the_postreqs_nothing_else_exposes(self) -> None:
+        with patch("apps.tools.courses.get_json", return_value=_REQUISITES_213):
+            result = course_requisites(course_number="15-213")["results"][0]
+
+        self.assertEqual(result["prereqs"], ["15-122"])
+        self.assertEqual(result["postreqs"], ["15-411", "15-418", "15-440"])
+        self.assertEqual(result["coreqs"], [])
+        self.assertFalse(result["is_mock"])
+
+    def test_the_citation_summarizes_both_directions(self) -> None:
+        with patch("apps.tools.courses.get_json", return_value=_REQUISITES_213):
+            citation = course_requisites(course_number="15-213")["citations"][0]
+
+        self.assertEqual(citation["source"], "CMU Courses")
+        self.assertIn("15-122", citation["snippet"])
+        self.assertIn("3 courses require it", citation["snippet"])
+
+    def test_an_unknown_course_number_is_not_found_rather_than_an_outage(self) -> None:
+        # Same upstream quirk get_course documents: a bare 500 for a course
+        # number that does not exist.
+        with patch("apps.tools.courses.get_json", side_effect=_status_error(500)):
+            with self.assertRaises(ToolError) as caught:
+                course_requisites(course_number="99-999")
+        self.assertIn("not found", str(caught.exception))
+
+    def test_an_unreachable_api_degrades_to_a_tool_error(self) -> None:
+        with patch("apps.tools.courses.get_json", side_effect=httpx.ConnectError("no route")):
+            with self.assertRaises(ToolError):
+                course_requisites(course_number="15-213")
+
+
+class GenedsTests(SimpleTestCase):
+    def test_projects_the_fields_worth_context(self) -> None:
+        with patch("apps.tools.courses.get_json", return_value=_GENEDS_SCS):
+            payload = find_geneds(school="SCS")
+
+        first = payload["results"][0]
+        self.assertEqual(first["course_number"], "03-121")
+        self.assertEqual(first["units"], 9.0, "units arrive as a string upstream")
+        self.assertEqual(first["tags"], ["Science"])
+        self.assertNotIn("desc", first, "the 266 KB payload must not reach the model whole")
+        self.assertIsNone(payload.get("note"), "nothing was truncated")
+
+    def test_a_capped_list_says_so(self) -> None:
+        with patch("apps.tools.courses.get_json", return_value=_GENEDS_SCS):
+            payload = find_geneds(school="SCS", limit=1)
+
+        self.assertEqual(len(payload["results"]), 1)
+        self.assertIn("1 of 2", payload["note"])
+
+    def test_a_school_that_publishes_no_list_is_refused_by_name(self) -> None:
+        # DC/CFA/TSB/SHS answer 200 with [], which would otherwise read as
+        # "this college has no gen-eds".
+        with self.assertRaises(ToolError) as caught:
+            find_geneds(school="DC")
+        self.assertIn("SCS", str(caught.exception))
+
+    def test_an_empty_upstream_list_is_not_an_empty_answer(self) -> None:
+        with patch("apps.tools.courses.get_json", return_value=[]):
+            with self.assertRaises(ToolError):
+                find_geneds(school="SCS")
