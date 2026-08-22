@@ -66,7 +66,7 @@ not come from a crawl taken last week.
 
 ### Honesty guarantees
 
-Enforced in code, not policy — with one gap called out below:
+Enforced in code, not policy:
 
 - **Mock data is flagged.** Any citation not from a live source carries
   `is_mock`. The model cannot relabel a mock as live — the
