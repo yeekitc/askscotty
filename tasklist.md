@@ -2,12 +2,24 @@
 
 Working checklist derived from [PRD.md](./docs/PRD.md). Tick boxes as you go.
 
+**Where things are**
+
+| | |
+|---|---|
+| **§0. Everyone — first hour** | setup, and what to read before writing anything |
+| **§1. Shared decisions — settled** | model, embeddings, vector store, web search, auth scope |
+| **§2. The API contract — frozen** | request/response shapes both sides code against |
+| **B0–B6** | backend: foundations · RAG · live tools · web verify · planner · connectors · ops |
+| **F0–F6** | frontend: foundations · ask flow · citations · polish · connectors · phone · demo |
+| **§3. Demo & submission** | the run-through |
+| **§4. Guardrails** | PRD §10, checked before submitting |
+
 **How to use**
 
 - Claim a task by appending your name: `- [ ] Wire `campus_search` — @yeekit`
 - Commit the checked box in the same PR as the work, so `main` always shows real state.
 - `P0` = required for a working demo · `P1` = strong submission · `P2` = stretch / pitch-only.
-- Anything marked **Mock** must be visibly labelled as mock in the UI (PRD §9, Privacy).
+- Anything marked **Mock** must be visibly labelled as mock in the UI (PRD §10).
 
 Legend for source access (PRD §3): `Live` = public API now · `Crawl` = we index it · `Token` = user pastes key · `Mock` = stub · `Link` = deep-link only.
 
@@ -35,9 +47,9 @@ These blocked both sides. **Decided — do not re-litigate without editing this 
 - [x] **Freeze the `/api/ask/` response contract** (see §2 below). Frontend codes against it; backend fills it in.
 - [x] **LLM + model:** Anthropic **`claude-sonnet-5`** (`PLANNER_MODEL` in `.env`). The planner is mostly routing and tool selection rather than deep reasoning, and Sonnet is roughly half Opus's cost per token. Switch the env var to `claude-opus-5` if multi-hop answers come out weak — no code change needed.
 - [x] **Embeddings:** OpenAI **`text-embedding-3-small`**, 1536 dimensions (`OPENAI_API_KEY`, `EMBEDDING_MODEL`). Anthropic has no embeddings endpoint, so this is a second provider for one narrow job. Dimensions must match the pgvector column, so changing the model means a migration *and* a full re-index.
-- [x] **Web search: none — use Claude's built-in `web_search` / `web_fetch`.** *(Reversed 2026-08-15; was Tavily.)* These are **server-side** tools: declare them in the `tools` array and they run on Anthropic's infrastructure under `ANTHROPIC_API_KEY`. No second provider, no second key, no client to write. **No domain filters** *(decided 2026-08-15, hackathon scope)* — the built-in toolset B4 now runs on is not known to accept `allowed_domains` / `blocked_domains`, and §6 holds without them: `web_fetch` carries no credentials, so Canvas / SIO / Stellic have nothing to give it. Source choice is steered by prompt guidance seeded from Appendix B instead. See [docs/b4-planner.md](./docs/b4-planner.md) §4 for the one risk this accepts. **Budget for it:** one searching query cost ~35.9k input tokens / ~26s. Only verify when the index is actually stale.
-- [x] **RAG takes precedence over web search.** The index is the default; web verify is the fallback, not the reflex. This is a cost decision with a measured number behind it: one searching query is **~35.9k input tokens and ~26 seconds**, and those results then sit in the message list and are re-sent as input on *every* subsequent call in that turn — our cache breakpoint is on the system block, so nothing in message position is ever cached. A four-hop answer that searched once pays for it four times. Enforced in three places, weakest to strongest: the tool description (which is what actually decides whether the model picks it), the lane ordering in the system prompt, and `max_uses` as the only hard cap. Search when the index has nothing or the page is genuinely stale — see [docs/b3-web-verify.md](./docs/b3-web-verify.md).
-- [x] **Vector store:** **pgvector** in the existing Postgres. Fewer moving parts, and `docker compose down -v && ./setup.sh` still has to work on a teammate's laptop. *(The extension still needs enabling on the DB — tasklist B0.)*
+- [x] **Web search: Claude's built-in `web_search` / `web_fetch`, no separate provider.** They are **server-side** tools that run on Anthropic's infrastructure under `ANTHROPIC_API_KEY` — no second key, no client to write. **No domain filters:** the built-in toolset the planner runs on is not known to accept `allowed_domains` / `blocked_domains`, and PRD §6 holds without them — `web_fetch` carries no credentials, so Canvas / SIO / Stellic have nothing to give it. Source choice is steered by prompt guidance seeded from PRD Appendix B instead. The risk that accepts is written up in [docs/b4-planner.md](./docs/b4-planner.md) §4.
+- [x] **RAG takes precedence over web search.** The index is the default; web verify is the fallback, not the reflex. It is a cost decision with a measured number behind it: one searching query is **~35.9k input tokens and ~26 seconds**, and those results then sit in the message list and are re-sent as input on *every* subsequent call in that turn — our cache breakpoint is on the system block, so nothing in message position is ever cached. A four-hop answer that searched once pays for it four times. Enforced in three places, weakest to strongest: the tool description (which is what actually decides whether the model picks it), the lane ordering in the system prompt, and `max_uses` as the only hard cap. Search when the index has nothing or the page is genuinely stale — see [docs/b3-web-verify.md](./docs/b3-web-verify.md).
+- [x] **Vector store:** **pgvector** in the existing Postgres. Fewer moving parts, and `docker compose down -v && ./setup.sh` still has to work on a teammate's laptop.
 - [x] **Auth scope:** **anonymous session id**, passed as `session_id` in the request body. The app generates one and keeps it on the device; no login screen to build. Trade-off, stated plainly: anyone who learns a session id can read that session's connected data. It is a bearer token, not an identity — real accounts are the upgrade path if this outlives the hackathon.
 - [x] Add every new key to `.env.example` (never `.env`) and post it in the team chat
 
@@ -57,64 +69,47 @@ so a malformed answer fails in the backend rather than rendering wrong in the ap
 - [x] Response keeps `answer`, `citations[]`, `modes_used[]`, `note` (`note` is nullable)
 - [x] Each citation carries `title`, `url`, `source`, `indexed_at`, `verified_at` (PRD §3 — every answer shows freshness)
 - [x] Add `is_mock: bool` to each citation so the UI can badge mock sources
-- [x] **Amendment (AGREED and shipped, b4-planner): add `id` and `snippet` to each citation.**
-      Needed for inline citations — a tap-to-open preview that shows only the title
-      is pointless, and `title` is all a citation carries today. `id` is the stable
-      handle the planner issues (`"S1"`, `"S2"`, …) and the *only* thing the model
-      ever writes about a source, so it can neither invent one nor relabel a mock as
-      live (PRD §9 by construction). It is explicit rather than positional so that
-      filtering the citation list later cannot silently rebind every marker.
-      `snippet` is the supporting excerpt, `""` when there isn't one.
-      **This is cheap now and expensive later** — every tool has to populate
-      `snippet`, so B1/B2/B3 should know before they write their return shapes:
-      `campus_search` returns the matched chunk (it has it for free), the live tools
-      return a one-line rendering of the row they matched, web verify returns the
-      excerpt the API already gives us. `domain` is *not* stored — derive it from
-      `url` at render time. See [docs/b4-planner.md](./docs/b4-planner.md).
-      **Both fields are live in the serializer and `types.ts`.** A tool populates
-      them by returning a `citations` list; `id` is assigned by the planner and a
-      tool never sets it. Backward-compatible — both default to `""`.
-- [ ] **Amendment (proposed, b4-planner): add `artifacts: []` to the response — the
-      empty seam only.** Some answers want to be more than prose: a campus map with
-      a route, a study plan you can tick off, a schedule grid. Adding the (always
-      empty) array and its discriminated-union type now costs nothing and means the
-      first real artifact is an additive change rather than a contract
-      renegotiation during demo week. **No artifact types are being proposed here** —
-      only the channel. Two rules travel with it because the PRD forces them:
-      an unknown `type` must never crash an older client (so every artifact carries
-      `fallback_text`), and anything derived from a personal tool is session-scoped
-      like everything else user-scoped (PRD §7). See
-      [docs/artifact-plan.md](./docs/artifact-plan.md) — that doc is explicitly a
-      draft and marks what is fixed vs. still open.
+- [x] **Each citation also carries `id` and `snippet`** — both live in the serializer
+      and `types.ts`, both defaulting to `""`.
+      `id` is the stable handle the planner issues (`"S1"`, `"S2"`, …) and the *only*
+      thing the model ever writes about a source, so it can neither invent one nor
+      relabel a mock as live (PRD §10 by construction). It is explicit rather than
+      positional so that filtering the citation list later cannot silently rebind
+      every marker; the planner assigns it and a tool never sets it.
+      `snippet` is the supporting excerpt, `""` when there isn't one: `campus_search`
+      returns the matched chunk, the live tools a one-line rendering of the row they
+      matched, web verify the excerpt the API already gives us. `domain` is *not*
+      stored — derive it from `url` at render time.
+      See [docs/b4-planner.md](./docs/b4-planner.md).
+- [ ] **Proposed: add `artifacts: []` to the response — the empty seam only.** Some
+      answers want to be more than prose: a campus map with a route, a study plan you
+      can tick off, a schedule grid. Adding the (always empty) array and its
+      discriminated-union type costs nothing now and makes the first real artifact an
+      additive change rather than a contract renegotiation during demo week. **No
+      artifact types are proposed here** — only the channel. Two rules travel with it
+      because the PRD forces them: an unknown `type` must never crash an older client
+      (so every artifact carries `fallback_text`), and anything derived from a
+      personal tool is session-scoped like everything else user-scoped (PRD §7).
+      See [docs/artifact-plan.md](./docs/artifact-plan.md), a draft that marks what is
+      fixed vs. still open.
 - [x] `modes_used` values are fixed strings: `rag` · `courses` · `dining` · `events` · `maps` · `web_verify` · `personal` — validated server-side against `MODES` in `backend/apps/tools/registry.py`
 - [x] **Error shape:** `{"error": {"code", "message"}}` with a real HTTP status, for every failure. Codes: `validation_error` · `unauthenticated` · `forbidden` · `not_found` · `method_not_allowed` · `unsupported_media_type` · `rate_limited` · `upstream_error` · `unavailable` · `timeout` · `error`. See `backend/apps/core/errors.py`.
-- [x] ~~**Streaming: no.**~~ **SUPERSEDED — see the amendment directly below.** *(Original: non-streaming for P0, one request one JSON answer, revisit only if the demo feels slow and agree SSE here first. That revisit happened and SSE shipped; the box is kept because the reasoning still explains why the plain endpoint remains a fallback.)*
-- [x] **Amendment (AGREED and shipped — supersedes the box above): SSE, as progress events.**
-      This was the "agree SSE here first" step, and it's agreed. Three separate
-      things were being conflated:
-      **(1) the client's 30s timeout** — a single web-search turn was measured at
-      ~26s, so a multi-hop answer cannot land inside it. **Remove it**, keep a ~2min
-      backstop. This is a one-line change in `frontend/app/lib/api.ts` and needs no
-      contract change. **(2) backend ↔ Anthropic streaming** — use `messages.stream()`
-      internally for long turns. Invisible to the app, no contract change, just do it.
-      **(3) backend ↔ app SSE** — the actual amendment. Proposed as *progress events,
-      not token streaming*: `mode_start` / `mode_end` to drive the mode chips (F1
-      already calls that the demo's wow moment), then a final `done` event carrying
-      **the same validated `AskResponse` we send today**. That keeps SSE strictly
-      additive — the non-streaming path stays as a fallback and the serializer keeps
-      validating. **`text_delta` was added straight after, and additively, exactly
-      as this predicted** — no other event changed. It is provisional text: drop
-      what has streamed when a `mode_start` arrives (that was preamble to a lookup)
-      and let `done` replace it. Expect a handful of chunks, not a typewriter —
-      the API batches its own output.
-      Note `createHttpAdapter` is already an async generator, so the frontend is
-      shaped for this already. See [docs/b4-planner.md](./docs/b4-planner.md).
-      **Shipped as `POST /api/ask/stream/`** — POST, not GET, because the body
-      carries `query`/`history` and `EventSource` is GET-only and absent on React
-      Native. Transport is **XMLHttpRequest**, not `fetch`: RN's fetch is the
-      whatwg-fetch polyfill, which exposes no `response.body`, so streaming is
-      unreadable on iOS/Android. XHR works on all three, so it is one code path
-      (`askEvents` in `lib/api.ts`).
+- [x] **Streaming: SSE, as progress events — `POST /api/ask/stream/`.**
+      Events are `mode_start` / `mode_end` to drive the mode chips (F1 calls that the
+      demo's wow moment), `text_delta`, and a final `done` carrying **the same
+      validated `AskResponse` the plain endpoint returns**. That keeps SSE strictly
+      additive: `POST /api/ask/` stays as the non-streaming fallback and the
+      serializer validates either way.
+      `text_delta` is *provisional* text — drop what has streamed when a `mode_start`
+      arrives (it was preamble to a lookup) and let `done` replace it. Expect a
+      handful of chunks, not a typewriter; the API batches its own output.
+      **POST, not GET**, because the body carries `query`/`history` and `EventSource`
+      is GET-only and absent on React Native. Transport is **XMLHttpRequest**, not
+      `fetch`: RN's fetch is the whatwg-fetch polyfill, which exposes no
+      `response.body`, so streaming is unreadable on iOS/Android. XHR works on all
+      three, so it is one code path (`askEvents` in `lib/api.ts`).
+      The backend uses `messages.stream()` internally for long turns — invisible to
+      the app. See [docs/b4-planner.md](./docs/b4-planner.md).
 - [x] Add `GET /api/sources/` returning the source registry (`name`, `tier`, `access`, `indexed_at`, plus `implemented` and `note`) — powers the credits/freshness UI
 - [x] **Chat history endpoints.** `GET /api/threads/` → `{threads: [{id, title, messages, updated_at}]}` · `PUT /api/threads/{id}/` (upsert, body `{messages, title?}`) · `DELETE /api/threads/{id}/`. `title` is set only by an explicit rename — blank means the app derives it from the first message — and it is **optional on PUT**, where an omitted key leaves a stored rename alone and `""` clears it. A message is `{role, content}` where `content` is assistant-ui's *parts* array, not a string — that is what keeps citations alive across a reload. Scoped by an **`X-Session-Id` header**, not the body: it is a bearer token and query strings end up in server logs. Missing header → `validation_error`.
 - [x] Update the API table in [README.md](./README.md) when this changes
@@ -138,7 +133,7 @@ Django 5.1 + DRF + Postgres. Everything lives under `backend/`. Code is bind-mou
 - [x] Add a settings block for external API keys, read from env with safe defaults
 - [x] Add a shared HTTP client helper: timeout, retry, identifying User-Agent, per-host rate limit — `apps/core/http.py:get_json`, the one place `httpx` is imported. GET only; every known caller is a read.
 - [x] Add a response cache (per-tool TTL) so demo reloads don't hammer public APIs — same function, `ttl=` per call. Django's default `LocMemCache`, so a second worker won't share a hit; accepted at this scale rather than adding Redis. **Defaults to off:** the key is only `(url, params)`, so caching an authenticated response would collide across students (PRD §9).
-- [ ] Add structured logging for every tool call: tool name, args, latency, cache hit/miss — name/mode/latency/outcome done in `tools/registry.py:run_tool`; cache hit/miss is its own `http_cache` line from `core/http.py`, because tool dispatch runs in a thread pool and contextvars don't cross it. **Args are deliberately not logged** (a personal tool's args can identify a student). *(b4: those lines were being emitted into the void — Django only configures the `django` logger, so `settings.LOGGING` now wires up `apps.*` and they actually appear.)*
+- [x] Add structured logging for every tool call: tool name, latency, cache hit/miss — name/mode/latency/outcome in `tools/registry.py:run_tool`; cache hit/miss is its own `http_cache` line from `core/http.py`, because tool dispatch runs in a thread pool and contextvars don't cross it. **Args are deliberately not logged** (a personal tool's args can identify a student). `settings.LOGGING` has to name `apps.*` explicitly — Django configures only the `django` logger, so anything else logs into the void.
 
 ## B1. Campus index / RAG — P0 (Days 1–2)
 
@@ -186,9 +181,11 @@ Django 5.1 + DRF + Postgres. Everything lives under `backend/`. Code is bind-mou
 
 **Courses** (`course-tools.apis.scottylabs.org`, no auth)
 
-📋 **[docs/b2-courses.md](./docs/b2-courses.md)** — every endpoint fact verified
-live against the real API. Read it before changing anything here; the surprises
-(a 500 for "no such course", string units, int meeting days) are all written down.
+**Endpoint facts, verified live against the real API.** An unknown course number
+comes back as a bare 500, units are strings, meeting days are ints, and meeting
+times exist only behind `/schedules?courseID=...`. The rest is in the module
+docstring of [`backend/apps/tools/courses.py`](./backend/apps/tools/courses.py) —
+read it before changing anything here.
 
 - [x] Client for `/courses/search`, `/course/{id}`, `/schedules` — through `apps.core.http.get_json`
 - [x] Normalize to an internal shape: number, title, units, instructors, meeting times, prereqs
@@ -209,7 +206,7 @@ live against the real API. Read it before changing anything here; the surprises
 - [x] Client for the mobile events JSON feed
 - [x] Normalize: title, start/end, location, org, categories, link — the feed is JSON in transport only: a row names its columns in a `fields` string and sends the values as `p0`, `p1`, …, with dates as HTML
 - [x] `find_events(before?, after?, keywords?, limit?)` tool
-- [ ] Keyword match for "startup" / "AI" hits the signature query — the matching is right (word-start, so "startup" finds "startups" and "AI" no longer fires on "the FAIR"), but **the feed only carries ~21 upcoming events**, about a week out, and `range` slides that window rather than paging it. Neither demo keyword hits anything today. Needs a second events source, not a better matcher
+- [ ] Keyword match for "startup" / "AI" hits the signature query — **blocked on the feed, not the matcher.** Matching is word-start, so "startup" finds "startups" and "AI" does not fire on "the FAIR". But the feed carries only **~21 upcoming events**, about a week out, and `range` slides that window rather than paging it, so neither demo keyword hits anything today. Needs a second events source
 
 **Maps — Mock**
 
@@ -234,33 +231,29 @@ live against the real API. Read it before changing anything here; the surprises
 
 ## B3. Web verify — P0 (Day 3)
 
-**No search provider to integrate.** Claude's server-side `web_search_20260318` /
-`web_fetch_20260318` do this lane — no HTTP client to write. On the Messages API
-they take `allowed_domains`, `blocked_domains`, `max_uses`,
-`max_content_tokens`; **we use none of them** — see below.
+**No search provider to integrate, and no tool to declare.** The planner runs on
+the built-in `agent_toolset_20260401`, which already contains `web_search` /
+`web_fetch`, so this lane arrives with the platform. There is no HTTP client to
+write and no wrapper tool of ours in the registry.
 
-> ⚠️ **B4's move to Managed Agents changes the first bullet only.** The built-in
-> `agent_toolset_20260401` already contains `web_search` / `web_fetch`, so
-> declaring them stops being B3's job. **No domain filters** — `web_fetch` carries
-> no credentials, so Canvas / SIO / Stellic return login pages either way and §6
-> is satisfied by that; source choice is steered by prompt guidance seeded from
-> Appendix B instead of by an allowlist. One thing to check: whether environment
-> `networking.allowed_hosts` gates the built-in tools, which is the anti-
-> exfiltration control, not a quality one. Everything else here — `verified_at`,
-> `resolve_course_site`, the staleness policy, `CrawlSeed` enqueue — is unaffected.
+**No domain filters**, so there is no allowlist or denylist to build: `web_fetch`
+carries no credentials, so Canvas / SIO / Stellic return login pages either way and
+PRD §6 is satisfied by that. Source choice is prompt guidance seeded from PRD
+Appendix B. One thing still to check: whether environment
+`networking.allowed_hosts` gates the built-in tools — that is the anti-exfiltration
+control, not a quality one.
 
 📋 **[docs/b3-web-verify.md](./docs/b3-web-verify.md)** — the result blocks to
 parse, what B4 already handles so it does not get rebuilt, and its Status
 section for what is still open.
 
-- [ ] ~~`fetch_url(url)` — wrap `web_fetch` with an **allowlist** of public hosts~~ — **dropped**, no domain filters (see the callout above)
-- [ ] ~~Explicit denylist so Canvas / SIO / Stellic can never be fetched here~~ — **dropped**. §6 holds without it: no credentials, nothing behind the wall to reach. Test the *outcome* instead — a Canvas fetch returns no usable content
+- [ ] Test the *outcome* an allowlist would have given: a Canvas / SIO / Stellic fetch returns no usable content
 - [x] Harvest `web_search` / `web_fetch` results into the ledger, deduped by url — nothing read them before, so the verify chip lit on an answer that cited nothing. The blocks come back on `agent.tool_result`; under Managed Agents an `agent.message` text block carries no per-sentence citations to prefer
 - [x] Return `verified_at` on every fetch — ours to stamp; the API doesn't supply it
 - [ ] `web_search(query, site?)` — wrap `web_search`; `site` becomes a `site:` prefix in the query, not `allowed_domains`
 - [ ] Cap cost/latency per call (`max_uses`, `max_content_tokens`) — one search measured ~35.9k input tokens / ~26s
 - [ ] Do **not** declare `code_execution` alongside these — dynamic filtering is built in, and a second execution environment confuses the model
-- [x] Handle `pause_turn`: a long search turn ends the loop early and looks like a finished answer. Resume it, or the demo silently truncates. — **done in B4**, capped by `PLANNER_MAX_PAUSE_RESUMES`. Don't rebuild it. *(Disappears once B4 is on Managed Agents — the platform owns the resume.)*
+- [x] Handle `pause_turn` — a long search turn ends early and looks like a finished answer, so an unresumed one truncates the demo silently. **Nothing to build: the platform owns the resume.** Don't reintroduce it
 - [ ] `resolve_course_site(course_number)` — static map from Appendix B
 - [x] Staleness policy: define what `indexed_at` age triggers a verify fetch (`WEB_VERIFY_STALE_AFTER_DAYS`) — the enforcement half of §1's RAG-first decision. The number is also prose in `prompt.py`, because a versioned system prompt cannot read a setting at request time; changing it means re-running `provision_planner`
 - [ ] Confirm web search is **enabled for the org** before demo day: if an admin disabled it in the Console, *declaring* the tool is a 400, so every request fails rather than just searching ones. No kill-switch setting for this (decided) — it is our own org, so the fix is a Console toggle, and a flag nobody remembers to flip is not insurance
@@ -272,55 +265,50 @@ Lives in `backend/apps/planner/`. `run_planner` is a **generator** — it yields
 progress events and finishes by yielding the validated `AskResponse`, which is
 why `/api/ask/` and `/api/ask/stream/` are two thin wrappers over one loop.
 
-**Decided: the loop runs on Managed Agents** — Anthropic drives it, we execute
-the tools it asks for. **Shipped 2026-08-15.** It is the only path — there is no
-hand-written fallback, because one without the web tools can only answer uncited.
-That costs **~2× end to end and ~4× to first token** against the loop it
-replaced. Numbers, the four things the build turned up, and the mitigations are
-in [b4-planner.md](./docs/b4-planner.md).
+**The loop runs on Managed Agents** — Anthropic drives it, we execute the tools it
+asks for. It is the only path: a hand-written fallback would lack the web tools and
+so could only answer uncited. The platform costs **~2× end to end and ~4× to first
+token** against a hand-driven loop; the numbers, the four things the build turned
+up, and the mitigations are in [b4-planner.md](./docs/b4-planner.md).
 
-**One amendment to §2, additive:** the ask request gains an optional
-`thread_id`. The backend keeps one planner session per thread, and without it
-there is nothing to key that session on — a follow-up would start the
-conversation over. Omitting it is still valid and answers exactly as before;
-response shapes and every SSE event are unchanged.
+**One addition to §2, additive:** the ask request takes an optional `thread_id`.
+The backend keeps one planner session per thread and has nothing to key that
+session on without it, so a follow-up would start the conversation over. Omitting
+it is still valid; response shapes and every SSE event are unchanged.
 
-- [x] Replace the stub in `backend/apps/core/views.py:25` (`AskView`) with the real planner
+- [x] Replace the `AskView` stub in `backend/apps/core/views.py` with the real planner
 - [x] Register every tool with the LLM as tool definitions (name, description, JSON schema)
-- [x] Agentic loop: ~~call tools until the model stops, with a max-iteration cap~~ — now a drain loop over the session's event stream. The iteration cap went with the deadline: a session `budget` is the runaway bound
+- [x] Agentic loop: a drain loop over the session's event stream. There is no iteration cap or wall-clock deadline — the session's dollar `budget` is the runaway bound
 - [x] System prompt: CMU context, cite everything, label mocks, never invent facts
 - [x] Collect citations from every tool result into the response
 - [x] Populate `modes_used` from which tool families actually ran — successful calls only, so a chip never claims a lane that failed
-- [x] ~~Timeout + graceful partial answer if one tool hangs~~ — built on the manual loop (deadline + iteration cap + `pause_turn` cap, all ending in one `tool_choice: none` call rather than a 504). **Removed by the Managed Agents move:** a session has no `tool_choice`, and a slow answer is resumable rather than lost, so resumability replaces partial prose. A session `budget` bounds the runaway case
-- [x] Never let personal data enter a shared-index call (PRD §3) — every dispatch goes through `run_tool`, which is what withholds `session_id` from public tools
-- [x] Parallel tool dispatch, with **all** results returned in one send. Removed during the migration on the reasoning that "the platform batches", then restored once that turned out to conflate two things: the platform batches the model's *requests*, but every tool still executes in our process. Measured at **3.0×** on a three-tool batch. Citations are harvested in call order rather than completion order, so `S1` means the same source on every run
+- [x] Graceful degradation when a tool hangs — **resumability rather than partial prose**: a session has no `tool_choice` to force a wrap-up call with, but a slow answer is resumable rather than lost, and `budget` bounds the runaway case
+- [x] Never let personal data enter a shared-index call (PRD §10) — every dispatch goes through `run_tool`, which is what withholds `session_id` from public tools
+- [x] Parallel tool dispatch, with **all** results returned in one send. The distinction is easy to lose and expensive to get wrong: the platform batches the model's tool *requests*, but every one of them still executes in our process, so serial dispatch costs the sum of a batch rather than its slowest member — measured at **3.0×** on a three-tool batch. Citations are harvested in call order rather than completion order, so `S1` means the same source on every run
 - [x] A failed tool comes back as a `tool_result` with `is_error`, never a dropped block
 - [x] Prompt caching: frozen system prompt on the agent version, the clock in the user turn, the session caching its own prefix — confirmed live via `cache_read_input_tokens`
 - [x] Loop tests against a scripted **event stream** and a tool registered in the test (`apps/planner/tests.py`)
 - [x] `Thread.cma_session_id` — one planner session per thread, so a follow-up reuses the previous turn's lookups instead of re-searching
-- [ ] Inline `[S1]` markers — plumbed and tested, gated off behind `PLANNER_CITATION_MARKERS` until F2 can render one as a chip
-- [ ] Server-side web tools — deferred with B3. Note the shape changed: under Managed Agents there is no `web_search_tool_result` block to parse, the results arrive as an `agent.tool_result` **event**. The `web_verify` chip already works; the citations do not
-- [x] **Signature multi-hop works**: "I get out of 15-213 at 4:20 tomorrow. Find somewhere nearby to eat and then an interesting startup or AI event before 8." → Courses → Maps → Dining → Events. Verified end to end from a cold start with stand-in lanes (B1–B3 have not landed): three lanes dispatched through `run_tool`, three citations, `modes_used` correct. Re-run it against each real lane as it arrives
+- [x] Inline `[S1]` markers — behind `PLANNER_CITATION_MARKERS`, which defaults on now that F2 renders a marker as a chip. Marker rules stay in the prompt whatever the flag says, so turning it off strips markers rather than changing how the model writes
+- [x] Server-side web tools — there is no `web_search_tool_result` block to parse under Managed Agents; results arrive as an `agent.tool_result` **event** and are harvested into the ledger from there. Only the web pair earns a chip — `bash` and the file tools come with the prebuilt toolset and the planner has no use for them
+- [x] **Signature multi-hop works**: "I get out of 15-213 at 4:20 tomorrow. Find somewhere nearby to eat and then an interesting startup or AI event before 8." → Courses → Maps → Dining → Events. Verified end to end from a cold start: three lanes dispatched through `run_tool`, three citations, `modes_used` correct
 - [ ] Verify each PRD §8 example query returns something sane
 
 ## B5. Personal connectors — P0/P1 (Day 5)
 
-📋 **[docs/b5-connections.md](./docs/b5-connections.md)** — the connections
-contract + endpoint. **Done** — `Provider` already includes `PIAZZA`/
-`GRADESCOPE`, `get_credential()`/`set_credential()` exist. **[docs/b5-piazza-gradescope.md](./docs/b5-piazza-gradescope.md)**
-— Piazza and Gradescope connectors, built on that contract. **Done** — both
-live in `apps/personal/tools.py` alongside Canvas, so one module docstring
-covers both credential models. Both authenticate with the student's real
-password rather than a token, an explicit accepted risk (see that doc's
-opening section), not the default pattern here; the one thing still open is
-confirming a real CMU login is not interrupted by Duo, which needs an account
-the test suite must never hold. **[docs/b5-canvas-ed-stellic.md](./docs/b5-canvas-ed-stellic.md)**
-— the other three boxes below: Canvas (finishes the existing stub), Ed
-Discussion (new — confirmed against `edapi`'s real source, not a guess),
-Stellic (mock only, no real integration, by explicit direction). Also fixes
-a real gap found while grounding it: `apps/core/http.py`'s `get_json()` has
-no way to send an `Authorization` header at all, which both Canvas and Ed
-need.
+📋 Three docs cover this lane:
+
+| Doc | Covers |
+|---|---|
+| [docs/b5-connections.md](./docs/b5-connections.md) | the connections contract and endpoint every connector is built on |
+| [docs/b5-piazza-gradescope.md](./docs/b5-piazza-gradescope.md) | Piazza and Gradescope |
+| [docs/b5-canvas-ed-stellic.md](./docs/b5-canvas-ed-stellic.md) | Canvas, Ed Discussion, and the Stellic mock |
+
+Every connector lives in `apps/personal/tools.py`, so one module docstring covers
+every credential model. **Piazza and Gradescope authenticate with the student's
+real password rather than a token** — an explicit accepted risk, argued in the
+opening section of their doc, and not the pattern to copy for a new connector.
+Stellic is a mock, with no real integration, by explicit direction.
 
 - [x] `UserConnection` model: user/session, provider, encrypted token, `connected_at`, `last_sync_at` — `apps/personal/models.py`
 - [x] Encrypt tokens at rest; never log them; never return them in any API response — `apps/personal/crypto.py`
@@ -357,43 +345,42 @@ surfaces at once. See [CLAUDE.md](./CLAUDE.md) for the component rules (`<View>`
 
 ## F0. Foundations — P0
 
-- [x] Extract the inline `fetch` into `frontend/app/lib/api.ts` — done
-- [x] Create a types file matching the §2 contract (`frontend/app/lib/types.ts`) — done
-- [x] Add `is_mock` to the `Citation` type — done
-- [x] Bring citation fields (`url`, `indexed_at`, `verified_at`) to parity — done, single codebase so parity is automatic now
-- [x] Centralize `API_URL` handling and surface a clear error when the backend is unreachable — done in `lib/api.ts` (includes a 30s timeout)
-- [x] **Drop that 30s timeout** (~2min backstop instead) — one search turn alone was measured at ~26s, so multi-hop answers fail today. One line in `lib/api.ts`; see §2 streaming amendment
+- [x] Extract the inline `fetch` into `frontend/app/lib/api.ts`
+- [x] Create a types file matching the §2 contract (`frontend/app/lib/types.ts`)
+- [x] Add `is_mock` to the `Citation` type
+- [x] Bring citation fields (`url`, `indexed_at`, `verified_at`) to parity — one codebase, so parity is automatic
+- [x] Centralize `API_URL` handling and surface a clear error when the backend is unreachable — `lib/api.ts`
+- [x] Client timeout is a **2-minute backstop** (`TIMEOUT_MS`), not the 30s it started as: one search turn alone measures ~26s, so 30s failed every multi-hop answer
 - [ ] Keep `npx tsc --noEmit` clean
 
 ## F1. Ask flow — P0
 
-- [x] Split the screen into components (`CitationCard`, `Credits` in `frontend/app/components/`) — partially done, add the rest below
-- [x] Loading state that shows *which mode is running* (not just "Asking…") — shipped as the thinking indicator in `components/TypingIndicator.tsx`: the running lanes by name, plus elapsed seconds. Progress moved off the message channel into `lib/progress.ts`, because it used to be yielded as assistant *text* — a debounced save firing mid-run could persist "Checking Dining…" as somebody's answer. **Still a line, not chips** — see the next box. It matters more than it did: Managed Agents pushed time-to-first-token to ~28s, so this is what fills the wait
+- [x] Split the screen into components (`CitationCard`, `Credits` in `frontend/app/components/`)
+- [x] Loading state that shows *which mode is running* (not just "Asking…") — the thinking indicator in `components/TypingIndicator.tsx`: running lanes by name, plus elapsed seconds. Progress rides `lib/progress.ts`, **not** the message channel: as assistant *text* it could be persisted by a debounced save firing mid-run, leaving "Checking Dining…" as somebody's stored answer. **Still a line, not chips** — see the next box, and it matters, because time-to-first-token is ~28s and this is what fills the wait
 - [ ] Upgrade that line to labelled chips, reusing whatever `modes_used` renders
 - [ ] Render `modes_used` as labelled chips (RAG · Courses · Dining · Events · Maps · Web verify · Personal)
 - [ ] Error state: network failure, 4xx, 5xx, timeout — each with a distinct message
 - [ ] Empty state before the first question, with 3–4 clickable example queries from PRD §8
 - [ ] Pre-fill the signature query as the default (already done — keep it)
-- [x] Multi-turn: keep a question/answer history in the page — threads persist to `GET/PUT/DELETE /api/threads/`, scoped to the device's anonymous session (`lib/session.ts`). Saves are debounced ~600ms and skip empty threads, so "New Chat" doesn't create a row for a conversation that never happened. **Still open:** the adapter does not yet send `history` on `/api/ask/`, so the *planner* has no memory across turns even though the UI does — see the next box.
-- [ ] Send prior turns as `history` in the ask request so follow-ups ("what about Friday?") work — backend already accepts it (max 40 turns); `createHttpAdapter` currently forwards only the latest user message
+- [x] Multi-turn: keep a question/answer history in the page — threads persist to `GET/PUT/DELETE /api/threads/`, scoped to the device's anonymous session (`lib/session.ts`). Saves are debounced ~600ms and skip empty threads, so "New Chat" doesn't create a row for a conversation that never happened
+- [x] Follow-ups ("what about Friday?") reach the planner — the adapter sends `thread_id` and the backend keeps one planner session per thread, so the previous turn's lookups are still in context. `history` on `/api/ask/` (max 40 turns) remains the stateless route for a caller with no thread
 - [ ] Cmd/Ctrl+Enter submits
 
 ## F2. Web — citations & trust — P0
 
-Freshness and honesty are the product's differentiator (PRD §3, §9). Don't cut these.
+Freshness and honesty are the product's differentiator (PRD §3, §10). Don't cut these.
 
 - [x] Every citation renders as a clickable link to its `url`
 - [x] Show `indexed_at` and/or `verified_at` as human-relative text ("indexed 3 days ago", "verified just now") — hand-rolled in `CitationCard.tsx`; `Intl.RelativeTimeFormat` is not in Hermes
-- [ ] Visible **Mock data** badge on any citation with `is_mock: true` — **deliberately not built.** `is_mock` reaches the console and nothing else. A knowing deviation from §9, not an oversight
-- [x] Group citations by source type — `components/CitationList.tsx`, rendered after the content because `renderSource` emits each source at its own position in the part list. **Folded by default** once the answer carries chips, to a row naming the count and the sources; open when it carries none, since there is then no inline route to a source. Freshness is a tap away rather than on screen — a knowing §9 deviation
+- [ ] Visible **Mock data** badge on any citation with `is_mock: true` — **not built, and it is the one open item that breaks a hard rule.** The backend half works: `is_mock` is stamped from the producing tool's registration and survives into `lib/types.ts`. It then reaches the console and nothing else, so a Maps, 25Live or Stellic answer is presented with nothing marking it as fixture data. PRD §10 rule 3 requires the label; this is a knowing deviation, not an oversight, and it is a `CitationCard` change
+- [x] Group citations by source type — `components/CitationList.tsx`, rendered after the content because `renderSource` emits each source at its own position in the part list. **Folded by default** once the answer carries chips, to a row naming the count and the sources; open when it carries none, since there is then no inline route to a source. Freshness is a tap away rather than on screen — a knowing §10 deviation
 - [x] Numbered inline markers in the answer body — **a chip that opens a source preview, not a jump link.** Tapping scrolls nobody anywhere; it opens the card over the answer, which is what a reader mid-sentence actually wants. `PLANNER_CITATION_MARKERS` is on
-- [x] Credits footer — **attribution only, not the exact PRD §9 wording.** "We are not affiliated with ScottyLabs." is deliberately cut from the app for brevity and survives only in README.md. A knowing deviation from §9 and §1's "credit in app", alongside the mock badge
+- [x] Credits footer — **attribution only, not the exact PRD §9 wording.** "We are not affiliated with ScottyLabs." is deliberately cut from the app for brevity and survives only in README.md. A knowing deviation from PRD §10 rule 9, alongside the mock badge
 - [x] Footer is present on every screen, including mobile
 
-**Markdown renders** (`lib/markdown.ts` + `components/AnswerText.tsx`). The model
-writes bold, bullets and numbered lists and nothing rendered them — assistant-ui's
-markdown package is React DOM, and `@assistant-ui/react-native` ships no renderer,
-so the asterisks reached the screen. No new dependency;
+**Markdown renders** in `lib/markdown.ts` + `components/AnswerText.tsx`, hand-rolled
+rather than installed: the model writes bold, bullets and numbered lists, assistant-ui's
+markdown package is React DOM, and `@assistant-ui/react-native` ships no renderer.
 [dependencies.md](./docs/dependencies.md) records why the three RN markdown
 libraries were all rejected.
 
@@ -404,7 +391,7 @@ marker rides with the word before it rather than taking a reveal slot of its own
 so a citation never lands a tick ahead of the claim it supports.
 
 **Still open on the chip:** its vertical nudge is unverified on a physical Android
-device. Correct on iOS and web.
+device (correct on iOS and web) — F5 carries that check.
 
 ## F3. Web — polish — P0/P1
 
@@ -418,29 +405,34 @@ device. Correct on iOS and web.
 
 ## F4. Web — connectors UI — P0/P1
 
-- [ ] `/settings` route (or a modal) listing available connectors
-- [ ] Canvas token input rendered as a **password field**, never plain text (PRD §9 Privacy) — **P0**
-- [ ] Clear copy explaining what is synced and that it is user-scoped only
-- [ ] Connected state with `last_sync_at`
-- [ ] **Disconnect** button with a confirm step, wired to the delete endpoint
-- [ ] Never render a token back to the user after saving
-- [ ] Ed / Stellic connector rows — **P1**
+Shipped as `components/ConnectionsModal.tsx` rather than a `/settings` route. Its
+forms mirror the backend's `CREDENTIAL_FIELDS`, so a provider that wants an email
+and password says so plainly rather than dressing it up as a token.
+
+- [x] A modal listing available connectors, with a row for each of Canvas, Ed, Piazza, Gradescope and Stellic — **P1** rows included
+- [ ] **Token inputs are not masked** — **P0, and a guardrail miss.** The password field for Piazza/Gradescope sets `secureTextEntry`; the **access-token field for Canvas and Ed does not**, so a Canvas PAT renders in plain text on screen. PRD §10 rule 7 wants tokens treated as passwords. One prop
+- [x] Clear copy explaining what is synced and that it is user-scoped only
+- [x] Connected state with `last_sync_at` — "Connected · synced 3 days ago"
+- [x] **Disconnect** button with an inline confirm step, wired to the delete endpoint
+- [x] Never render a credential back to the user after saving — nothing here reads one, because no response carries one
 
 ## F5. Phone-specific polish — P1
 
 The app already runs on iOS and Android from the same code as web, so there is no
 separate mobile port to build. What is left is phone-specific behaviour:
 
-- [x] Shared `api.ts`, citation parity, citation list, tappable links, mock badges,
-      freshness timestamps, credits footer — all done once in `frontend/app/`
-- [ ] Test on a real phone via Expo Go (needs `EXPO_PUBLIC_API_URL` set to your LAN IP
-      in `frontend/app/.env` — see README troubleshooting)
+- [x] Shared `api.ts`, citation parity, citation list, tappable links, freshness
+      timestamps, credits footer — all done once in `frontend/app/`. **Mock badges
+      are not among them** — see F2
+- [ ] Verify against a **physical phone** via Expo Go: set `EXPO_PUBLIC_API_URL` to
+      the laptop's LAN IP in `frontend/app/.env`, restart Expo — see README
+      troubleshooting. The `[S1]` chip's vertical nudge is the specific thing to look
+      at; it is correct on iOS and web and unverified on Android
 - [ ] Keyboard handling: the input shouldn't be hidden behind the on-screen keyboard
       (`KeyboardAvoidingView`)
 - [ ] Safe-area padding on notched devices (partly handled via `useSafeAreaInsets`)
 - [ ] Pull-to-refresh on the answer view
 - [ ] Check tap targets are at least 44pt
-- [ ] Verify against a **physical phone**: set `EXPO_PUBLIC_API_URL` to the laptop's LAN IP, restart Expo
 - [ ] Example-query shortcuts sized for thumbs
 - [ ] Dark mode — **P2**
 
@@ -468,7 +460,7 @@ separate mobile port to build. What is left is phone-specific behaviour:
 
 ## 4. Guardrails — check before submitting
 
-Straight from PRD §9. Any unchecked box here is a problem.
+Straight from PRD §10. Any unchecked box here is a problem.
 
 - [ ] No auth-walled content (SIO, Canvas, Stellic, Autolab) in the shared index
 - [ ] `robots.txt` respected; crawler identifies itself; rate-limited
@@ -476,8 +468,8 @@ Straight from PRD §9. Any unchecked box here is a problem.
 - [ ] No student PII in the shared index
 - [ ] Personal data is user-scoped only; disconnect deletes it
 - [ ] Tokens treated as passwords: encrypted at rest, password-type inputs, never logged, never returned
-- [ ] Every mock source is labelled as mock in the UI
-- [ ] Every answer shows `indexed_at` / `verified_at`
+- [ ] Every mock source is labelled as mock in the UI — **not met.** `is_mock` is stamped and plumbed all the way to the client; nothing renders it. See F2
+- [ ] Every answer shows `indexed_at` / `verified_at` — rendered on every citation card, but the card list folds by default, so freshness is one tap away rather than on screen. See F2
 - [ ] Nothing in the app or the pitch implies a ScottyLabs partnership
 - [ ] `DJANGO_SECRET_KEY` changed before any shared deploy
 - [ ] `.env` is gitignored; only `.env.example` is committed

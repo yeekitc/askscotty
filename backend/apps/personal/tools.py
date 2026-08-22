@@ -1204,7 +1204,9 @@ def stellic_degree_audit(*, session_id: str, program: str) -> dict:
 # connected (shadows= gates it). requires_connector=None means run() calls the
 # function directly, with no session_id forwarded, which keeps personal data out
 # of the call (same guarantee as any public tool). is_mock=True is stamped on
-# every citation so the MOCK badge always appears.
+# every citation; nothing in the app renders it yet, so what actually tells the
+# reader this is a stand-in is the tool description (PRD §9's visible label is
+# still open).
 
 
 @register_tool(

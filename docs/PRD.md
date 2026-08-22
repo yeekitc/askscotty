@@ -9,10 +9,12 @@ detail has moved to its own pages, one source of truth per topic:
 
 | Doc | Owns |
 |---|---|
-| [architecture.md](./architecture.md) | how the pieces fit · the safety invariants · what's built |
+| [architecture.md](./architecture.md) | how the pieces fit · the safety invariants · what's built, and what the index actually holds |
 | [b4-planner.md](./b4-planner.md) | the planner loop · citations · streaming · inline-citation UI |
 | [artifact-plan.md](./artifact-plan.md) | maps, plan graphs, schedules — *draft, mostly open* |
 | [../tasklist.md](../tasklist.md) | the frozen API contract (§2) and every task |
+
+The non-negotiable rules are **§10**. Everything else here is scope.
 
 ---
 
@@ -53,7 +55,7 @@ Query → Planner
 
 Do **not** dump volatile structured APIs into the vector DB. Shared index = public pages only.
 
-→ **[architecture.md](./architecture.md)** for the rendered version, what's actually built, and the five invariants that enforce the rules below in code rather than by convention.
+→ **[architecture.md](./architecture.md)** for the rendered version, what's actually built, and the five invariants that enforce §10 in code rather than by convention.
 
 | Include in crawl | Exclude from crawl |
 |------------------|--------------------|
@@ -70,6 +72,10 @@ Respect `robots.txt`, rate-limit, identify crawler UA.
 ## 4. RAG (campus index)
 
 Scheduled crawl → chunk → hybrid BM25 + vectors. Tool: `campus_search`. Cite `url` + `indexed_at`.
+
+The table below is the target corpus. What ships today is 174 pages of
+`www.cmu.edu`; the rest are seeded and waiting on a wider crawl —
+[architecture.md](./architecture.md) has the counts.
 
 | Tier | Source | Why | Hackathon accessibility |
 |------|--------|-----|-------------------------|
@@ -107,7 +113,7 @@ Time-sensitive structured data. Tool-calling with filters — not “just more c
 
 \* Unaffiliated consumer of public/open APIs.
 
-**25Live (one-liner):** CMU’s official room reservation system. Useful for free-room queries; auth-walled → mock for hackathon.
+**25Live** is CMU’s official room reservation system — the name is opaque unless you already know it.
 
 ---
 
@@ -125,15 +131,13 @@ Complements the index — does not replace it.
 
 **Planner default:** index hit → cite → optional verify fetch. Unmapped/stale → search/fetch → enqueue for re-index.
 
-> **Amended 2026-08-15 — no domain allowlist or denylist.** The rows above once
-> read “allowlist public hosts” and “`allowed_domains` on the same tool.” B4 runs
-> on Managed Agents, whose built-in web toolset is not known to accept those
-> filters. The **Skip** row still holds without them: `web_fetch` carries no
-> credentials, so Canvas / SIO / Stellic return login pages and there is nothing
-> behind the wall for it to reach. Source *preference* moves to prompt guidance
-> seeded from Appendix B. What this gives up is the anti-exfiltration property of
-> an allowlist — accepted for the hackathon, and the first thing to revisit after
-> it. Reasoning: [b4-planner.md](./b4-planner.md) §4.
+> **No domain allowlist or denylist.** The planner runs on Managed Agents, whose
+> built-in web toolset is not known to accept those filters. The **Skip** row holds
+> without them: `web_fetch` carries no credentials, so Canvas / SIO / Stellic
+> return login pages and there is nothing behind the wall for it to reach. Source
+> *preference* is prompt guidance seeded from Appendix B. What this gives up is the
+> anti-exfiltration property of an allowlist — accepted for the hackathon, and the
+> first thing to revisit after it. Reasoning: [b4-planner.md](./b4-planner.md) §4.
 
 ---
 
@@ -177,9 +181,6 @@ Never mixed into the shared campus index. Disconnect deletes synced data.
 
 **P2:** Discord/Slack · Andrew SSO · live Maps/25Live via future partnership  
 
-→ Build detail: **[b4-planner.md](./b4-planner.md)** (planner loop, citations, streaming) · **[artifact-plan.md](./artifact-plan.md)** (interactive answers — draft) · **[../tasklist.md](../tasklist.md)** (every task, with owners)
-
-
 | Days | Slice |
 |------|-------|
 | 1–2 | Crawl + index seeds + `campus_search` |
@@ -193,6 +194,36 @@ Never mixed into the shared campus index. Disconnect deletes synced data.
 **Non-goals:** Replace Stellic/SIO/Canvas · imply ScottyLabs partnership · SSO-scrape 25Live/Handshake · put auth data in shared index · write grades / autoregister.
 
 **Privacy:** Shared index = public web only · personal = user-scoped · show `indexed_at`/`verified_at` · label mocks · tokens as passwords.
+
+Both lines are stated as rules, with what enforces each, in §10.
+
+---
+
+## 10. Hard rules
+
+Non-negotiable. Code and docs cite these by number; the five invariants in
+[architecture.md](./architecture.md) are how they are enforced by construction
+rather than promised.
+
+1. **Public pages only in the shared index.** Never live structured API results
+   (Courses, Eats, TartanConnect), never personal or authenticated data. Volatile
+   data is fetched live at query time instead.
+2. **Personal data is user-scoped.** Never mixed into shared storage.
+   Disconnecting a source deletes its synced data.
+3. **Label mock data.** Anything not from a live source carries `is_mock` on its
+   citation and must be visibly marked as a mock in the UI.
+4. **Show freshness.** Every citation surfaces `indexed_at` / `verified_at`.
+5. **Crawl politely.** Respect `robots.txt`, rate-limit per host, identify the
+   crawler user-agent.
+6. **Never scrape behind a login.** No SIO, Stellic, Canvas-scraping, Autolab,
+   25Live, or Handshake SSO. An auth-walled source is a `Mock`, a `Link`, or a
+   token the student supplies — never a scrape.
+7. **Tokens are passwords.** Encrypted at rest, entered in password-type inputs,
+   never logged, never returned by any endpoint.
+8. **No writes.** No grade writes, no auto-registration.
+9. **No implied partnership.** We are unaffiliated consumers of ScottyLabs' and
+   TartanConnect's public APIs, and the credits say so in the app and in the
+   submission.
 
 ---
 
@@ -238,7 +269,11 @@ Never mixed into the shared campus index. Disconnect deletes synced data.
 ## Appendix C — General Crawl Seeds (B1 implementation)
 
 Seeds in addition to the Appendix B course sites. All are **public / Crawl** tier.
-Inserted into `CrawlSeed` by `manage.py load_seeds`; authoritative list in `backend/apps/rag/seed_urls.py`.
+Inserted into `CrawlSeed` by `manage.py load_seeds`; authoritative list in
+[`../backend/apps/rag/seed_urls.py`](../backend/apps/rag/seed_urls.py).
+
+A seed is where a crawl *starts*, not a page already indexed — see §4 for what
+the shipped index actually covers.
 
 | Label | URL | Notes |
 |-------|-----|-------|
