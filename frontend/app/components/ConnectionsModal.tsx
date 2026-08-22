@@ -555,6 +555,7 @@ export function ConnectionsModal({ visible, onClose, onCountChange }: Props) {
                               onChangeText={setToken}
                               placeholder="Paste your token"
                               placeholderTextColor={colors.textFaint}
+                              secureTextEntry
                               autoCapitalize="none"
                               autoCorrect={false}
                               editable={!isBusy}
