@@ -17,7 +17,9 @@ services:
     # only resolves with backend/ as the build context, not the repo root.
     dockerfilePath: ./backend/Dockerfile
     dockerContext: ./backend
-    plan: free
+    # Keep in sync with the dashboard: a Blueprint sync overwrites a plan
+    # upgrade made only there (docs/deploy.md § Cold starts).
+    plan: starter
     region: ohio
     healthCheckPath: /api/health/
     # entrypoint.sh runs migrate + collectstatic before gunicorn on every boot,
