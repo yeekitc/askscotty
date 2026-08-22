@@ -137,8 +137,18 @@ every free web service in the workspace until the next month begins: not a slow
 first request, a dead URL for days. A paid instance draws no free hours at all,
 which is the real reason to buy one.
 
-Neon also scales to zero and adds ~500ms on the first query. Harmless alone, but
-it stacks with a cold start.
+Neon also scales to zero, after 5 minutes idle. Measured cost of the resume:
+about 300ms, which is noise beside a 32-70s answer — so paying to disable it
+buys nothing. The free plan cannot disable it in any case; Launch can.
+
+**Do not make `/api/health/` touch the database.** It returns a static dict today
+([`core/views.py`](../backend/apps/core/views.py)), and that is load-bearing:
+Render health-checks every 10 seconds, so a health check that ran a query would
+hold Neon awake around the clock. The free plan allows 100 CU-hours per project
+per month against a ~720-hour month, and exceeding it suspends the compute until
+the next billing period. "Have the health check verify database connectivity" is
+a reasonable-sounding change that would take the database down about two weeks
+later, for reasons nothing would connect back to it.
 
 ## Cost
 
