@@ -104,11 +104,11 @@ Time-sensitive structured data. Tool-calling with filters — not “just more c
 | **Must** | CMU Courses API\* | Catalog, schedules, prereqs, instructors | **Live** — `course-tools` / `course.apis.scottylabs.org` (no auth) |
 | **Must** | CMU Eats / Dining\* | Open now, menus, locations | **Live** — `api.cmueats.com/v2/locations` (prefer; old dining.apis deprecated) |
 | **Must** | TartanConnect events | Clubs / campus events | **Live** — `mobile_events_list` JSON (no auth) |
-| **Must** | Maps (buildings / nearby) | Multi-hop “near Gates/Wean” | **Mock** — ~10 landmark coords/adjacency ([cmumaps.com](https://cmumaps.com) has no public REST) |
+| **Must** | CMU Maps\* (buildings / rooms / nearby) | Multi-hop “near Gates/Wean” | **Live** — `api.maps.scottylabs.org` (no auth): 74 buildings with coordinates, plus room search. Routing is *not* usable (`/path/public` answers only for one destination), so walking times are straight-line estimates, labelled as such |
 | **Should** | 25Live room occupancy | “Empty room for 90 min” | **Mock** — CollegeNET; empty without Andrew SSO; do not automate login scrape |
 | **Should** | Handshake events | Career fairs / employer sessions | **Mock** or **Link** — student GraphQL needs SSO |
 | **Should** | FCE ratings | Workload / quality filters | **Mock** subset — Andrew/Clerk-gated on Courses |
-| **Could** | Live Maps / 25Live APIs | Replace mocks | Future data partnership (not “ScottyLabs affiliate”) |
+| **Could** | Live 25Live API · Maps routing | Replace remaining mocks | 25Live needs a data partnership; Maps routing needs its graph populated beyond one destination upstream |
 | **Skip** | ScottyLabs internal Events S3/Railway | Not public | Use TartanConnect live + mocks instead |
 
 \* Unaffiliated consumer of public/open APIs.
@@ -163,30 +163,30 @@ Never mixed into the shared campus index. Disconnect deletes synced data.
 | “How do I withdraw / drop deadline?” | RAG → optional web verify |
 | “9-unit ML elective, no Friday” / “After 15-213?” | Live Courses\* |
 | “15-213 textbook / late policy?” | RAG (seeded site) → verify if stale |
-| “Open after 8:20 near Wean” | Live Dining\* + mock Maps |
+| “Open after 8:20 near Wean” | Live Dining\* + Live Maps\* |
 | “Startup/AI event before 8” | Live TartanConnect (+ mock Handshake) |
-| “Empty room near Gates 90 min” | Mock Maps × mock 25Live |
+| “Empty room near Gates 90 min” | Live Maps\* × mock 25Live |
 | “What’s due this week?” | Personal Canvas |
 | “Staff late-day policy on HW3?” | Personal Ed (else RAG course site) |
 | “On track for CS minor?” | Personal Stellic mock + Live Courses\* |
-| Signature multi-hop (§2) | Courses\* → mock Maps → Dining\* → TartanConnect |
+| Signature multi-hop (§2) | Courses\* → Maps\* → Dining\* → TartanConnect |
 
 ---
 
 ## 9. Requirements & build
 
-**P0:** Campus index + `campus_search` · Live Courses\* + Eats\* + TartanConnect · `web_search`/`fetch_url` · mock Maps (± 25Live) · Canvas token *or* strong public-only demo · signature multi-hop · credits footer  
+**P0:** Campus index + `campus_search` · Live Courses\* + Eats\* + TartanConnect + Maps\* · `web_search`/`fetch_url` · mock 25Live · Canvas token *or* strong public-only demo · signature multi-hop · credits footer  
 
 **P1:** Re-index job (even manual) for pitch · Ed · Stellic mock · Handshake mocks  
 
-**P2:** Discord/Slack · Andrew SSO · live Maps/25Live via future partnership  
+**P2:** Discord/Slack · Andrew SSO · live 25Live via future partnership · Maps routing if upstream populates it  
 
 | Days | Slice |
 |------|-------|
 | 1–2 | Crawl + index seeds + `campus_search` |
 | 1–2 | Planner + live Courses\* / Eats\* / TartanConnect |
 | 1 | Web verify + stale path |
-| 1 | Mock Maps / 25Live + signature multi-hop |
+| 1 | Maps / mock 25Live + signature multi-hop |
 | 1–2 | Canvas/Ed + Stellic mock · polish · video |
 
 **Credits copy:** “Uses publicly available CMU web pages and public campus APIs, including open APIs published by ScottyLabs (e.g. Courses). We are not affiliated with ScottyLabs.”
@@ -240,7 +240,8 @@ rather than promised.
 | Stellic (CMU) | https://academicaudit.andrew.cmu.edu |
 | Autolab | https://autolab.andrew.cmu.edu |
 | Handshake | https://cmu.joinhandshake.com |
-| CMU Maps (UI) | https://cmumaps.com |
+| CMU Maps (UI) | https://maps.scottylabs.org |
+| CMU Maps API (public tier; unaffiliated) | https://api.maps.scottylabs.org |
 | 25Live Pro | https://25live.collegenet.com/pro/cmu |
 | 25Live HUB docs | https://www.cmu.edu/hub/registrar/25live/index.html |
 | ScottyLabs projects (upstream; unaffiliated) | https://www.scottylabs.org/projects/ |

@@ -337,7 +337,8 @@ We are **unaffiliated consumers** of these (PRD §9).
 
 | API | Used for |
 |---|---|
-| `course-tools.apis.scottylabs.org` | Course catalog, schedules, prerequisites. |
+| `course-tools.apis.scottylabs.org` | Course catalog, schedules, prerequisites, postrequisites, gen-ed lists. Gen-eds are published for SCS/CIT/MCS only; FCE ratings need a token we do not have, which is why `get_fce_ratings` stays a mock. |
+| `api.maps.scottylabs.org` | Building locations, floors, and search over buildings and rooms. Public tier of a mostly-authenticated API — the write paths, floor detail and `GET /path` are all 401. `GET /path/public` exists but routes only when Cohon University Center is the destination, so we derive walking times from coordinates instead and label them as estimates. |
 | `api.cmueats.com/v2/locations` | Dining locations and hours. Use v2 — `dining.apis` is deprecated. |
 | `tartanconnect.cmu.edu/mobile_ws/...` | Public campus events feed. |
 | `canvas.cmu.edu/api/v1` | A student's own coursework — **only** with a token they paste in themselves. |

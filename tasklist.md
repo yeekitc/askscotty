@@ -199,7 +199,7 @@ read it before changing anything here.
 - [x] Client for the v2 locations endpoint (do **not** use the deprecated `dining.apis` endpoint)
 - [x] Parse per-location open/close windows into a queryable form
 - [x] `find_dining(open_at?, near?, limit?)` tool
-- [ ] "Open after 8:20 near Wean" works end to end (joins with mock Maps)
+- [ ] "Open after 8:20 near Wean" works end to end (joins with Maps)
 
 **Events** (`tartanconnect.cmu.edu/mobile_ws/v17/mobile_events_list?range=0`)
 
@@ -208,14 +208,16 @@ read it before changing anything here.
 - [x] `find_events(before?, after?, keywords?, limit?)` tool
 - [ ] Keyword match for "startup" / "AI" hits the signature query — **blocked on the feed, not the matcher.** Matching is word-start, so "startup" finds "startups" and "AI" does not fire on "the FAIR". But the feed carries only **~21 upcoming events**, about a week out, and `range` slides that window rather than paging it, so neither demo keyword hits anything today. Needs a second events source
 
-**Maps — Mock**
+**Maps — Live** (`api.maps.scottylabs.org`)
 
-- [x] Fixture file with ~10 landmark buildings: name, aliases, lat/lng
-- [x] Adjacency / walking-minutes table between landmarks
-- [x] `nearby(building, radius_or_minutes)` tool
+- [x] Building catalog from `/buildings`: 74 buildings with real coordinates, cached 24h so `nearby` costs one request rather than one per candidate
+- [x] Curated alias table ahead of `/search`, which ranks rooms above buildings and returns Hamerschlag *House* for "hamerschlag" and Posner *Center* for "posner"
+- [x] Aliases cover the names `rooms.py` and `dining.py` already emit, so those keep composing after canonical names moved upstream
+- [x] `nearby(building, radius_minutes?, limit?)` tool — capped and noted, since 74 buildings can otherwise flood the citation list
 - [x] `walk_time(a, b)` tool
-- [x] Every Maps result flagged `is_mock: true` — on the result *and* the citation, the latter from the tool's own registration rather than anything the fixture claims
-- [x] Cover the buildings the demo needs: Gates, Wean, Doherty, Tepper, UC, Hunt, Baker, Posner, Cohon, Hamerschlag
+- [x] `find_place(query, limit?)` tool — rooms and cafés inside buildings
+- [x] Walking times are straight-line estimates, disclosed on every citation: `/path/public` routes only when Cohon University Center is the destination, so it cannot back a general router
+- [ ] Routed distances, if upstream ever populates the graph beyond one destination
 
 **25Live — Mock, P1**
 
@@ -372,7 +374,7 @@ Freshness and honesty are the product's differentiator (PRD §3, §10). Don't cu
 
 - [x] Every citation renders as a clickable link to its `url`
 - [x] Show `indexed_at` and/or `verified_at` as human-relative text ("indexed 3 days ago", "verified just now") — hand-rolled in `CitationCard.tsx`; `Intl.RelativeTimeFormat` is not in Hermes
-- [ ] Visible **Mock data** badge on any citation with `is_mock: true` — **not built, and it is the one open item that breaks a hard rule.** The backend half works: `is_mock` is stamped from the producing tool's registration and survives into `lib/types.ts`. It then reaches the console and nothing else, so a Maps, 25Live or Stellic answer is presented with nothing marking it as fixture data. PRD §10 rule 3 requires the label; this is a knowing deviation, not an oversight, and it is a `CitationCard` change
+- [ ] Visible **Mock data** badge on any citation with `is_mock: true` — **not built, and it is the one open item that breaks a hard rule.** The backend half works: `is_mock` is stamped from the producing tool's registration and survives into `lib/types.ts`. It then reaches the console and nothing else, so a 25Live, Handshake, FCE or Stellic answer is presented with nothing marking it as fixture data. PRD §10 rule 3 requires the label; this is a knowing deviation, not an oversight, and it is a `CitationCard` change
 - [x] Group citations by source type — `components/CitationList.tsx`, rendered after the content because `renderSource` emits each source at its own position in the part list. **Folded by default** once the answer carries chips, to a row naming the count and the sources; open when it carries none, since there is then no inline route to a source. Freshness is a tap away rather than on screen — a knowing §10 deviation
 - [x] Numbered inline markers in the answer body — **a chip that opens a source preview, not a jump link.** Tapping scrolls nobody anywhere; it opens the card over the answer, which is what a reader mid-sentence actually wants. `PLANNER_CITATION_MARKERS` is on
 - [x] Credits footer — **attribution only, not the exact PRD §9 wording.** "We are not affiliated with ScottyLabs." is deliberately cut from the app for brevity and survives only in README.md. A knowing deviation from PRD §10 rule 9, alongside the mock badge

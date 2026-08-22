@@ -967,7 +967,7 @@ def ed_get_announcements(*, session_id: str, course_id: str) -> dict:
 #
 # No real integration, by explicit direction (docs/b5-canvas-ed-stellic.md Part
 # C): Stellic offers institutional PAT only, no student credential to build
-# against. This is fixture data the same way apps/tools/maps.py's buildings are,
+# against. This is fixture data the same way apps/tools/fce.py's ratings are,
 # but still gated through the connections flow so the settings UI has a real
 # toggle rather than a special case. Every citation is is_mock via the registry.
 #

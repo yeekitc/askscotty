@@ -64,9 +64,10 @@ docker compose exec backend python manage.py shell -c \
   "from apps.tools.registry import tools_for_session; print([t.name for t in tools_for_session(None)])"
 ```
 
-Expect 10 public tools (`campus_search`, `find_dining`, `search_courses`,
-`get_course`, `get_fce_ratings`, `find_events`, `find_handshake_events`,
-`nearby`, `walk_time`, `find_available_rooms`). Pass a real session id and it
+Expect 13 public tools (`campus_search`, `find_dining`, `search_courses`,
+`get_course`, `course_requisites`, `find_geneds`, `get_fce_ratings`,
+`find_events`, `find_handshake_events`, `nearby`, `walk_time`, `find_place`,
+`find_available_rooms`). Pass a real session id and it
 also gets that session's personal tools — 14 are registered: 10 live ones across
 Canvas, Ed, Piazza, Gradescope and Stellic, plus 4 demo stand-ins that appear
 *only* while their provider is unconnected, and whose citations are `is_mock`.

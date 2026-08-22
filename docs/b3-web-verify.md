@@ -137,7 +137,8 @@ follows is the shape of each upstream, because none of it is guessable.
 | `search_courses`, `get_course` | `course-tools.apis.scottylabs.org` | `/courses/search` pages at 10 docs, filters nothing server-side, and reshuffles equally-ranked results between calls, so a filtered search has to read every page; `units` arrives as a string (`"12.0"`); an unknown course number comes back as a bare 500, not a 404; meeting times exist only behind `/schedules?courseID=...`, where `days` are ints — 1=Monday … 5=Friday, the only values seen across 60 sampled courses; no confirmed public per-course page, so the citation carries no url |
 | `find_dining` | CMU Eats | No public per-location page, so no url |
 | `find_events` | TartanConnect mobile feed | JSON in transport only: a row names its columns in a `fields` string and sends the values as `p0`, `p1`, …, several of them HTML fragments. Read by name it yields 31 blank events. The one live tool with a real permalink to cite |
-| `nearby`, `walk_time` | Hardcoded fixture | `is_mock: True` on the tool *and* on every result (PRD §9) |
+| `nearby`, `walk_time`, `find_place` | `api.maps.scottylabs.org` | 74 buildings keyed by code, each with label coordinates; `/search` outranks buildings with rooms, and returns Hamerschlag *House* for "hamerschlag" and Posner *Center* for "posner", so resolution consults a curated alias table first. `/path/public` routes only when Cohon University Center is the destination — unusable as a router, so walking times are straight-line estimates and every citation says so |
+| `course_requisites`, `find_geneds` | `course-tools.apis.scottylabs.org` | `/courses/requisites/{id}` is the only source of `postreqs` (what a course unlocks). `GET /geneds?school=` is published for SCS, CIT and MCS only; the others answer 200 with `[]`, which would read as "no gen-eds" rather than "not published". Its `fces` field is always empty without a token |
 
 ## Out of scope
 

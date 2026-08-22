@@ -36,8 +36,8 @@ Django 5.2 REST API             streams progress events while the agent works
         │
 Claude Sonnet 5                 Anthropic Managed Agents; agentic tool-calling loop
         │
-24 tools ──┬── 10 public        campus index, dining, courses, FCE, events,
-           │                    Handshake, maps, rooms
+27 tools ──┬── 13 public        campus index, dining, courses, maps, events,
+           │                    FCE, Handshake, rooms
            └── 14 personal      Canvas · Ed · Piazza · Gradescope · Stellic
                                 (10 live + 4 labelled demo stand-ins)
         │

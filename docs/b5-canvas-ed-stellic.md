@@ -105,7 +105,7 @@ reasoning rules it out: Stellic offers an institutional PAT only, no student
 OAuth, so there is no safe student-facing credential to build against at all.
 
 `stellic_degree_audit` is fixture data, the same way
-`backend/apps/tools/maps.py`'s buildings are — `is_mock=True` on every citation
+`backend/apps/tools/fce.py`'s ratings are — `is_mock=True` on every citation
 it produces. Nothing in the app renders that flag yet (an open PRD §9 gap), so
 what actually tells a reader the data is fake is the tool description, which
 instructs the model to say in the answer that this is placeholder data rather

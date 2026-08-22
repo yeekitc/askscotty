@@ -57,7 +57,7 @@ export const LANES: { mode: Mode; label: string; mock?: boolean }[] = [
   { mode: 'courses', label: 'Courses' },
   { mode: 'dining', label: 'Dining' },
   { mode: 'events', label: 'Events' },
-  { mode: 'maps', label: 'Maps', mock: true },
+  { mode: 'maps', label: 'Maps' },
   { mode: 'rooms', label: 'Rooms', mock: true },
   { mode: 'handshake', label: 'Handshake', mock: true },
   { mode: 'fce', label: 'FCE', mock: true },

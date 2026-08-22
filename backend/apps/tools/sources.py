@@ -149,11 +149,14 @@ register_source(
     note="Live search and fetch used to re-check anything stale or missing.",
 )
 register_source(
-    "Campus maps",
+    "CMU Maps",
     tier="public",
-    access="Mock",
+    access="Live",
     implemented=True,
-    note="Mock landmark coordinates and walking times — no public REST API exists.",
+    note=(
+        "Building locations and campus search. Walking times are straight-line "
+        "estimates: the public routing endpoint answers only for one destination."
+    ),
 )
 register_source(
     "25Live room availability",

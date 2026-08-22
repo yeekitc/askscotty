@@ -12,7 +12,7 @@ flowchart TB
     subgraph shared ["🌐 Shared — public data only"]
         direction LR
         RAG["Campus index<br/>crawl + pgvector · B1"]:::done
-        Live["Live tools<br/>Courses · Eats · Events · Maps* · 25Live* · Handshake* · FCE* · B2"]:::done
+        Live["Live tools<br/>Courses · Eats · Events · Maps · 25Live* · Handshake* · FCE* · B2"]:::done
         Web["Web verify<br/>Anthropic search / fetch · B3"]:::done
     end
 
@@ -37,8 +37,8 @@ flowchart TB
 🟩 built  ·  `*` mock — `is_mock: true` on every citation it produces, though
 nothing renders that as a badge yet (see [Known gaps](#known-gaps))
 
-**24 tools are registered:** 10 public (`campus_search`, Courses ×2, Dining,
-Events, Maps ×2, 25Live, Handshake, FCE) and 14 user-scoped (Canvas ×3, Ed ×3,
+**27 tools are registered:** 13 public (`campus_search`, Courses ×4, Dining,
+Events, Maps ×3, 25Live, Handshake, FCE) and 14 user-scoped (Canvas ×3, Ed ×3,
 Piazza ×2, Gradescope, Stellic mock, plus four demo stand-ins). Web search and
 fetch are not in that count — they arrive with the platform's prebuilt toolset
 rather than being registered by us.
@@ -94,8 +94,8 @@ and `lib/types.ts` — and then nothing draws it.
 `../frontend/app/components/CitationCard.tsx` says so in its own docstring: the
 flag reaches the console and no further. **PRD §10 rule 3 requires a visible
 label, so this is an accepted deviation, not an oversight** — but it is a real one,
-and a Maps or 25Live or Stellic answer is presented today with nothing marking it
-as fixture data. The backend half is done; the badge is a `CitationCard` change.
+and a 25Live, Handshake, FCE or Stellic answer is presented today with nothing
+marking it as fixture data. The backend half is done; the badge is a `CitationCard` change.
 
 **The index is one host wide.** 174 pages of `www.cmu.edu`, against a crawler and
 a 33-seed list that reach much further. Nothing false is claimed by it — a
